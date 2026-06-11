@@ -52,7 +52,7 @@ export default function LoginPage() {
             {loading ? 'Signing in…' : 'Sign in'}
           </Button>
           <p className="text-sm text-muted-foreground text-center">
-            No account? <Link href="/signup" className="underline">Sign up</Link>
+            No account? <Link href="/login/signup" className="underline">Sign up</Link>
           </p>
         </CardFooter>
       </Card>
