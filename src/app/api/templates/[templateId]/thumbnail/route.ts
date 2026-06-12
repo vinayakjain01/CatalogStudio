@@ -71,7 +71,7 @@ export async function POST(
       imageUrl: sampleImage,
     })
 
-    const { url } = await uploadBuffer(buffer, `thumbnail_${templateId}`)
+    const { deliveredUrl: url } = await uploadBuffer(buffer, `thumbnail_${templateId}`)
 
     await supabase
       .from('templates')

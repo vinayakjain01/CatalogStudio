@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
     })
 
     // Sanity check — a valid JPEG starts with FF D8 FF
-    if (buffer.length < 1000 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
+    if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
     return NextResponse.json(
         { error: 'Image generation produced an invalid buffer. Canvas library may not be supported on this runtime.' },
         { status: 500 }
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
     }
 
     const publicId = `product_${product.id}_${templateId}`
-    const { url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
+    const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
 
     await adminSupabase
       .from('generated_images')
