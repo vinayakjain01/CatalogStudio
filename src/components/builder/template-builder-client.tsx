@@ -24,7 +24,7 @@ export function TemplateBuilderClient({ template, categories }: Props) {
   const router = useRouter()
   const { canvasData, loadTemplate, isDirty, resetDirty } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
-  const [categoryId, setCategoryId] = useState(template?.category_id || 'none')
+  const [categoryId, setCategoryId] = useState(template?.category_id ?? 'none')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -39,9 +39,9 @@ export function TemplateBuilderClient({ template, categories }: Props) {
     setError('')
 
     const payload = {
-      name,
-      category_id: categoryId || null,
-      canvas_data: canvasData,
+    name,
+    category_id: categoryId === 'none' ? null : categoryId,
+    canvas_data: canvasData,
     }
 
     const url = template ? `/api/templates/${template.id}` : '/api/templates'
