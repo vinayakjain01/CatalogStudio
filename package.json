@@ -9,10 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.108.1",
     "axios": "^1.17.0",
-    "canvas": "^3.2.3",
     "class-variance-authority": "^0.7.1",
     "cloudinary": "^2.10.0",
     "clsx": "^2.1.1",

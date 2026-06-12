@@ -1,4 +1,4 @@
-import { createCanvas, loadImage } from 'canvas'
+import { createCanvas, loadImage } from '@napi-rs/canvas'
 import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 
@@ -140,7 +140,7 @@ export async function compositeImage(
     ctx.restore()
   }
 
-  return canvas.toBuffer('image/jpeg', { quality: 0.92 })
+  return canvas.toBuffer('image/jpeg', 0.92)
 }
 
 function roundRect(
