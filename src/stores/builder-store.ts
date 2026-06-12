@@ -4,10 +4,23 @@ import { nanoid } from 'nanoid'
 
 // Install nanoid: npm install nanoid
 
+interface PreviewProduct {
+  title: string
+  price: number
+  compare_at_price: number | null
+  vendor: string | null
+  product_type: string | null
+  imageUrl: string | null
+}
+
 interface BuilderStore {
   canvasData: CanvasData
   selectedLayerId: string | null
+  previewProduct: PreviewProduct | null
   isDirty: boolean
+
+  // Preview
+  setPreviewProduct: (p: PreviewProduct | null) => void
 
   // Canvas actions
   setBackgroundColor: (color: string) => void
@@ -39,7 +52,10 @@ const defaultCanvas: CanvasData = {
 export const useBuilderStore = create<BuilderStore>((set, get) => ({
   canvasData: defaultCanvas,
   selectedLayerId: null,
+  previewProduct: null,
   isDirty: false,
+
+  setPreviewProduct: (p) => set({ previewProduct: p }),
 
   setBackgroundColor: (color) =>
     set(s => ({

@@ -1,4 +1,4 @@
-export type LayerType = 'text' | 'image' | 'rectangle' | 'badge' | 'logo'
+export type LayerType = 'text' | 'image' | 'rectangle' | 'badge' | 'logo' | 'overlay'
 
 export interface BaseLayer {
   id: string
@@ -56,6 +56,18 @@ export interface LogoLayer extends BaseLayer {
   type: 'logo'
   src: string             // uploaded logo URL
   objectFit: 'contain' | 'cover'
+  borderRadius: number
+}
+
+// A pre-built design uploaded as PNG/JPG. `placement` decides whether it sits
+// above the product (a transparent frame/design) or below it (a background).
+// Rendering respects this via zIndex at composite time, but we keep the flag
+// explicit so the UI and resolver can reason about it.
+export interface OverlayLayer extends BaseLayer {
+  type: 'overlay'
+  src: string             // uploaded design URL (Cloudinary)
+  objectFit: 'cover' | 'contain' | 'fill'
+  placement: 'above' | 'below'  // above = frame over product, below = background
 }
 
 export type Layer =
@@ -64,6 +76,7 @@ export type Layer =
   | RectangleLayer
   | BadgeLayer
   | LogoLayer
+  | OverlayLayer
 
 export interface CanvasData {
   width: number           // always 1000

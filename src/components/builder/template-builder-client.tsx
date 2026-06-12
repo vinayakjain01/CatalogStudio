@@ -15,14 +15,24 @@ import { Save, ArrowLeft, Loader2 } from 'lucide-react'
 import { CanvasData } from '@/types/template'
 import Link from 'next/link'
 
+interface PreviewProduct {
+  title: string
+  price: number
+  compare_at_price: number | null
+  vendor: string | null
+  product_type: string | null
+  imageUrl: string | null
+}
+
 interface Props {
   template?: { id: string; name: string; description: string | null; category_id: string | null; canvas_data: CanvasData }
   categories: { id: string; name: string }[]
+  previewProduct?: PreviewProduct | null
 }
 
-export function TemplateBuilderClient({ template, categories }: Props) {
+export function TemplateBuilderClient({ template, categories, previewProduct }: Props) {
   const router = useRouter()
-  const { canvasData, loadTemplate, isDirty, resetDirty } = useBuilderStore()
+  const { canvasData, loadTemplate, isDirty, resetDirty, setPreviewProduct } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
   const [categoryId, setCategoryId] = useState(template?.category_id ?? 'none')
   const [saving, setSaving] = useState(false)
@@ -33,6 +43,10 @@ export function TemplateBuilderClient({ template, categories }: Props) {
       loadTemplate(template.canvas_data)
     }
   }, [template])
+
+  useEffect(() => {
+    setPreviewProduct(previewProduct ?? null)
+  }, [previewProduct, setPreviewProduct])
 
   async function handleSave() {
     setSaving(true)

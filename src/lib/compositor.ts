@@ -1,6 +1,6 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
-import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer } from '@/types/template'
+import { CanvasData, Layer, TextLayer, RectangleLayer, BadgeLayer } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -184,24 +184,34 @@ export async function compositeImage(
         break
       }
 
+      case 'overlay':
+      case 'logo':
       case 'image': {
-        const l = layer as ImageLayer
+        // overlay/logo carry an explicit uploaded `src`; image may carry the
+        // product-image token. All three draw the same way.
+        const l = layer as Layer & {
+          src: string
+          objectFit?: 'cover' | 'contain' | 'fill'
+          borderRadius?: number
+        }
         const rawSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
         const imgSrc = rawSrc ? toFullResolution(rawSrc) : null
+        const fit = l.objectFit || 'contain'
+        const radius = (l as any).borderRadius ?? 0
         if (imgSrc) {
           try {
             const img = await loadImage(imgSrc)
             ctx.save()
-            if (l.borderRadius > 0) {
-              roundRect(ctx, x, y, w, h, l.borderRadius * supersample)
+            if (radius > 0) {
+              roundRect(ctx, x, y, w, h, radius * supersample)
               ctx.clip()
             }
-            if (l.objectFit === 'cover') {
+            if (fit === 'cover') {
               const scale = Math.max(w / img.width, h / img.height)
               const sw = img.width * scale
               const sh = img.height * scale
               ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-            } else if (l.objectFit === 'contain') {
+            } else if (fit === 'contain') {
               const scale = Math.min(w / img.width, h / img.height)
               const sw = img.width * scale
               const sh = img.height * scale
@@ -212,10 +222,13 @@ export async function compositeImage(
             ctx.restore()
           } catch (err) {
             console.error(`Failed to load image layer (${l.id}):`, imgSrc, err)
-            // Draw a visible placeholder so failures are obvious
-            ctx.fillStyle = '#e5e7eb'
-            roundRect(ctx, x, y, w, h, l.borderRadius * supersample)
-            ctx.fill()
+            // For product images, show a visible placeholder. For overlay/logo
+            // a load failure should be silent (no ugly grey box on export).
+            if (layer.type === 'image') {
+              ctx.fillStyle = '#e5e7eb'
+              roundRect(ctx, x, y, w, h, radius * supersample)
+              ctx.fill()
+            }
           }
         }
         break
