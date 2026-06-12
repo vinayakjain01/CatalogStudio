@@ -139,11 +139,12 @@ export async function GET(request: NextRequest) {
     .single()
 
   if (storeError || !store) {
-    console.error('Store save error:', storeError)
-    return NextResponse.redirect(
-      new URL('/dashboard/settings?error=store_save_failed', request.url)
-    )
-  }
+  console.error('Store save error:', JSON.stringify(storeError, null, 2))
+
+  return NextResponse.redirect(
+    new URL('/dashboard/settings?error=store_save_failed', request.url)
+  )
+}
 
   // --- Trigger first product sync in background ---
   // Fire-and-forget — don't await so redirect is instant
