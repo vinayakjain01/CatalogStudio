@@ -14,7 +14,7 @@ export default async function SettingsPage({
 
   const { data: stores } = await supabase
     .from('stores')
-    .select('*')
+    .select('id, shop_name, shop_domain, currency, last_synced_at, is_active, feed_token')
     .eq('user_id', user!.id)
     .order('created_at', { ascending: false })
 
@@ -31,7 +31,7 @@ export default async function SettingsPage({
         <div className="space-y-3">
           <h2 className="text-base font-medium">Connected stores</h2>
           {stores.map(store => (
-            <StoreCard key={store.id} store={store} />
+            <StoreCard key={store.id} store={store as any} />
           ))}
         </div>
       )}

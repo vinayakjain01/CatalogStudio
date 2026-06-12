@@ -71,7 +71,8 @@ export function ProductsTable({ products }: { products: Product[] }) {
               const discount = getDiscount(product.price, product.compare_at_price)
 
               return (
-                <tr key={product.id} className="border-b hover:bg-muted/30 transition-colors">
+                <tr
+                  key={product.id} className="border-b hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => router.push(`/dashboard/products/${product.id}`)}>
                   <td className="p-3">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-md bg-muted overflow-hidden flex-shrink-0">

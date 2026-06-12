@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Store } from 'lucide-react'
+import { RefreshCw, Store, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
 interface StoreCardProps {
@@ -16,13 +16,19 @@ interface StoreCardProps {
     currency: string
     last_synced_at: string | null
     is_active: boolean
+    feed_token: string
   }
 }
 
 export function StoreCard({ store }: StoreCardProps) {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<string | null>(null)
+  const [showFeed, setShowFeed] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
   const router = useRouter()
+
+  const feedJsonUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=json`
+  const feedCsvUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=csv`
 
   async function handleSync() {
     setSyncing(true)
@@ -40,31 +46,70 @@ export function StoreCard({ store }: StoreCardProps) {
     setSyncing(false)
   }
 
+  function copyToClipboard(text: string, key: string) {
+    navigator.clipboard.writeText(text)
+    setCopied(key)
+    setTimeout(() => setCopied(null), 2000)
+  }
+
   return (
     <Card>
-      <CardContent className="p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Store className="h-8 w-8 text-muted-foreground" />
-          <div>
-            <div className="flex items-center gap-2">
-              <p className="font-medium text-sm">{store.shop_name || store.shop_domain}</p>
-              <Badge variant={store.is_active ? 'default' : 'secondary'}>
-                {store.is_active ? 'Active' : 'Inactive'}
-              </Badge>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Store className="h-8 w-8 text-muted-foreground" />
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-medium text-sm">{store.shop_name || store.shop_domain}</p>
+                <Badge variant={store.is_active ? 'default' : 'secondary'}>
+                  {store.is_active ? 'Active' : 'Inactive'}
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">{store.shop_domain}</p>
+              {store.last_synced_at && (
+                <p className="text-xs text-muted-foreground">
+                  Last synced {formatDistanceToNow(new Date(store.last_synced_at), { addSuffix: true })}
+                </p>
+              )}
+              {syncResult && <p className="text-xs text-green-600 mt-1">{syncResult}</p>}
             </div>
-            <p className="text-xs text-muted-foreground">{store.shop_domain}</p>
-            {store.last_synced_at && (
-              <p className="text-xs text-muted-foreground">
-                Last synced {formatDistanceToNow(new Date(store.last_synced_at), { addSuffix: true })}
-              </p>
-            )}
-            {syncResult && <p className="text-xs text-green-600 mt-1">{syncResult}</p>}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
+              <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowFeed(!showFeed)}>
+              {showFeed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </Button>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
-          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
-          {syncing ? 'Syncing…' : 'Sync now'}
-        </Button>
+
+        {showFeed && (
+          <div className="mt-4 pt-4 border-t space-y-3">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Feed URLs</p>
+
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs flex-shrink-0">JSON</Badge>
+                <code className="text-xs bg-muted px-2 py-1 rounded flex-1 truncate">{feedJsonUrl}</code>
+                <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={() => copyToClipboard(feedJsonUrl, 'json')}>
+                  {copied === 'json' ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="text-xs flex-shrink-0">CSV</Badge>
+                <code className="text-xs bg-muted px-2 py-1 rounded flex-1 truncate">{feedCsvUrl}</code>
+                <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={() => copyToClipboard(feedCsvUrl, 'csv')}>
+                  {copied === 'csv' ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Use these URLs in Phase 5 to connect to Meta Commerce Manager or Google Merchant Center.
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

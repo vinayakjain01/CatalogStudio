@@ -1,0 +1,42 @@
+'use client'
+
+import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { Button } from '@/components/ui/button'
+import { Wand2, Loader2 } from 'lucide-react'
+
+export function ProductGenerateButton({ productId, storeId }: { productId: string; storeId: string }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const router = useRouter()
+
+  async function handleGenerate() {
+    setLoading(true)
+    setError('')
+
+    const res = await fetch('/api/generate/single', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productId, storeId }),
+    })
+
+    const data = await res.json()
+
+    if (res.ok) {
+      router.refresh()
+    } else {
+      setError(data.error || 'Generation failed')
+    }
+    setLoading(false)
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      {error && <span className="text-xs text-destructive">{error}</span>}
+      <Button size="sm" variant="outline" onClick={handleGenerate} disabled={loading}>
+        {loading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5 mr-1.5" />}
+        {loading ? 'Generating…' : 'Generate'}
+      </Button>
+    </div>
+  )
+}
