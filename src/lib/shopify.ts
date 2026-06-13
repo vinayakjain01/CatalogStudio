@@ -37,7 +37,7 @@ export interface ShopifyShop {
 }
 
 export function createShopifyClient(shopDomain: string, accessToken: string) {
-  const baseURL = `https://${shopDomain}/admin/api/2024-01`
+  const baseURL = `https://${shopDomain}/admin/api/2025-04`
 
   const client = axios.create({
     baseURL,
