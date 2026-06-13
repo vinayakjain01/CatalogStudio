@@ -1,15 +1,24 @@
+import { Suspense } from 'react'
 import { createClient } from '@/lib/supabase/server'
 import { ProductsTable } from '@/components/products/products-table'
-import { Badge } from '@/components/ui/badge'
+import { ProductsPagination } from '@/components/products/products-pagination'
+import { ProductsSearch } from '@/components/products/products-search'
+
+const PAGE_SIZE = 25
 
 export default async function ProductsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string; tag?: string }>
+  searchParams: Promise<{ search?: string; tag?: string; page?: string }>
 }) {
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  const { search, tag } = await searchParams
+  const { search, tag, page } = await searchParams
+
+  const currentPage = Math.max(1, parseInt(page || '1', 10) || 1)
+  const from = (currentPage - 1) * PAGE_SIZE
+  const to = from + PAGE_SIZE - 1
 
   // Get user's stores
   const { data: stores } = await supabase
@@ -31,7 +40,18 @@ export default async function ProductsPage({
     )
   }
 
-  // Build query
+  // Build base query (for count)
+  let countQuery = supabase
+    .from('products')
+    .select('id', { count: 'exact', head: true })
+    .in('store_id', storeIds)
+
+  if (search) countQuery = countQuery.ilike('title', `%${search}%`)
+  if (tag) countQuery = countQuery.contains('tags', [tag])
+
+  const { count: totalCount } = await countQuery
+
+  // Build paginated query
   let query = supabase
     .from('products')
     .select(`
@@ -42,17 +62,14 @@ export default async function ProductsPage({
     .in('store_id', storeIds)
     .eq('product_images.is_primary', true)
     .order('updated_at', { ascending: false })
-    .limit(200)
+    .range(from, to)
 
-  if (search) {
-    query = query.ilike('title', `%${search}%`)
-  }
-
-  if (tag) {
-    query = query.contains('tags', [tag])
-  }
+  if (search) query = query.ilike('title', `%${search}%`)
+  if (tag) query = query.contains('tags', [tag])
 
   const { data: products } = await query
+
+  const totalPages = Math.max(1, Math.ceil((totalCount || 0) / PAGE_SIZE))
 
   return (
     <div className="space-y-6">
@@ -60,11 +77,17 @@ export default async function ProductsPage({
         <div>
           <h1 className="text-2xl font-semibold">Products</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {products?.length || 0} products synced
+            {totalCount || 0} products total
           </p>
         </div>
       </div>
       <ProductsTable products={products || []} />
+      <ProductsPagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalCount={totalCount || 0}
+        pageSize={PAGE_SIZE}
+      />
     </div>
   )
 }
