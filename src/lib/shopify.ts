@@ -59,7 +59,35 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
 
     while (url) {
       const { data, headers } = await client.get(url)
-      allProducts.push(...data.products)
+      try {
+        const { data, headers } = await client.get(url)
+
+        allProducts.push(...data.products)
+
+        const linkHeader = headers['link']
+
+        if (linkHeader && linkHeader.includes('rel="next"')) {
+          const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/)
+
+          if (match) {
+            const nextUrl = new URL(match[1])
+
+            url =
+              nextUrl.pathname.replace('/admin/api/2025-04', '') +
+              nextUrl.search
+          } else {
+            url = ''
+          }
+        } else {
+          url = ''
+        }
+      } catch (err: any) {
+        console.error('SHOPIFY ERROR')
+        console.error(err.response?.status)
+        console.error(err.response?.data)
+
+        throw err
+      }
 
       // Handle pagination via Link header
       const linkHeader = headers['link']
@@ -68,7 +96,7 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
         if (match) {
           // Extract just the path+query from the full URL
           const nextUrl = new URL(match[1])
-          url = nextUrl.pathname.replace('/admin/api/2024-01', '') + nextUrl.search
+          url = nextUrl.pathname.replace('/admin/api/2025-04', '') + nextUrl.search
         } else {
           url = ''
         }
