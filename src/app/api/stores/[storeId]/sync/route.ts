@@ -26,7 +26,25 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
     .single()
 
   const shopify = createShopifyClient(store.shop_domain, store.access_token)
-  const shopifyProducts = await shopify.getProducts()
+  let shopifyProducts = []
+  try {
+    shopifyProducts = await shopify.getProducts()
+
+    console.log(
+      'Products fetched:',
+      shopifyProducts.length,
+      'Store:',
+      store.shop_domain
+    )
+  } catch (err: any) {
+    console.error('SHOPIFY ERROR')
+
+    console.error('Status:', err?.response?.status)
+    console.error('Data:', JSON.stringify(err?.response?.data))
+    console.error('Message:', err?.message)
+
+    throw err
+  }
 
   let syncedCount = 0
 
