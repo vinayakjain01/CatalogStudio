@@ -37,7 +37,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
   const router = useRouter()
   const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
-  const [categoryId, setCategoryId] = useState(template?.category_id || '')
+  const [categoryId, setCategoryId] = useState(template?.category_id || 'none')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -72,7 +72,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
 
     const payload = {
       name,
-      category_id: categoryId || null,
+      category_id: categoryId === 'none' ? null : categoryId,
       canvas_data: canvasData,
     }
 
@@ -140,7 +140,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
               <SelectValue placeholder="No category" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">No category</SelectItem>
+              <SelectItem value="none">No category</SelectItem>
               {categories.map(c => (
                 <SelectItem key={c.id} value={c.id}>
                   {c.name}
