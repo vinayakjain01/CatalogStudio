@@ -7,13 +7,19 @@ import { CanvasPreview } from './canvas-preview'
 import { LayerPanel } from './layer-panel'
 import { LayerProperties } from './layer-properties'
 import { ToolBar } from './toolbar'
+import { ProductPreviewSelector } from './product-preview-selector'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Save, ArrowLeft, Loader2 } from 'lucide-react'
 import { CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import Link from 'next/link'
-import { ProductPreviewSelector } from './product-preview-selector'
 
 interface Props {
   template?: {
@@ -24,10 +30,9 @@ interface Props {
     canvas_data: CanvasData
   }
   categories: { id: string; name: string }[]
-  previewProducts?: any[]   // ADD THIS
+  previewProducts?: any[]
 }
 
-// Update the function signature
 export function TemplateBuilderClient({ template, categories, previewProducts = [] }: Props) {
   const router = useRouter()
   const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio } = useBuilderStore()
@@ -40,7 +45,6 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
     if (template?.canvas_data) {
       loadTemplate(template.canvas_data)
     } else {
-      // New template — seed with base product image layer
       loadTemplate({
         width: 1000,
         height: 1000,
@@ -109,14 +113,12 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
             </Button>
           </Link>
 
-          {/* Template name */}
           <Input
             value={name}
             onChange={e => setName(e.target.value)}
             className="h-8 w-44 font-medium text-sm"
           />
 
-          {/* Aspect ratio selector */}
           <Select
             value={canvasData.aspectRatio || '1:1'}
             onValueChange={v => setAspectRatio(v as AspectRatio)}
@@ -133,7 +135,6 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
             </SelectContent>
           </Select>
 
-          {/* Category */}
           <Select value={categoryId} onValueChange={setCategoryId}>
             <SelectTrigger className="h-8 w-40">
               <SelectValue placeholder="No category" />
@@ -141,7 +142,9 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
             <SelectContent>
               <SelectItem value="">No category</SelectItem>
               {categories.map(c => (
-                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -168,7 +171,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
           <LayerPanel />
         </div>
 
-        {/* Center canvas — scrollable so tall canvases don't overflow */}
+        {/* Center canvas */}
         <div className="flex-1 bg-muted/30 flex items-center justify-center overflow-auto p-8">
           <CanvasPreview />
         </div>
