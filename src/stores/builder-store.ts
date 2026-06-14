@@ -1,32 +1,16 @@
 import { create } from 'zustand'
-import { Layer, CanvasData, TextLayer, ImageLayer, RectangleLayer, BadgeLayer } from '@/types/template'
+import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import { nanoid } from 'nanoid'
-
-// Install nanoid: npm install nanoid
-
-interface PreviewProduct {
-  title: string
-  price: number
-  compare_at_price: number | null
-  vendor: string | null
-  product_type: string | null
-  imageUrl: string | null
-}
 
 interface BuilderStore {
   canvasData: CanvasData
   selectedLayerId: string | null
-  previewProduct: PreviewProduct | null
   isDirty: boolean
 
-  // Preview
-  setPreviewProduct: (p: PreviewProduct | null) => void
-
-  // Canvas actions
   setBackgroundColor: (color: string) => void
   setBackgroundImage: (url: string | null) => void
+  setAspectRatio: (ratio: AspectRatio) => void   // NEW
 
-  // Layer actions
   addLayer: (layer: Omit<Layer, 'id' | 'zIndex'>) => void
   updateLayer: (id: string, updates: Partial<Layer>) => void
   deleteLayer: (id: string) => void
@@ -36,7 +20,6 @@ interface BuilderStore {
   selectLayer: (id: string | null) => void
   reorderLayers: (layers: Layer[]) => void
 
-  // Template actions
   loadTemplate: (canvasData: CanvasData) => void
   resetDirty: () => void
 }
@@ -44,6 +27,7 @@ interface BuilderStore {
 const defaultCanvas: CanvasData = {
   width: 1000,
   height: 1000,
+  aspectRatio: '1:1',
   backgroundColor: '#ffffff',
   backgroundImageUrl: null,
   layers: [],
@@ -52,30 +36,32 @@ const defaultCanvas: CanvasData = {
 export const useBuilderStore = create<BuilderStore>((set, get) => ({
   canvasData: defaultCanvas,
   selectedLayerId: null,
-  previewProduct: null,
   isDirty: false,
 
-  setPreviewProduct: (p) => set({ previewProduct: p }),
-
   setBackgroundColor: (color) =>
-    set(s => ({
-      canvasData: { ...s.canvasData, backgroundColor: color },
-      isDirty: true,
-    })),
+    set(s => ({ canvasData: { ...s.canvasData, backgroundColor: color }, isDirty: true })),
 
   setBackgroundImage: (url) =>
+    set(s => ({ canvasData: { ...s.canvasData, backgroundImageUrl: url }, isDirty: true })),
+
+  // NEW — change ratio and update canvas dimensions
+  setAspectRatio: (ratio) => {
+    const preset = ASPECT_RATIOS.find(r => r.value === ratio)
+    if (!preset) return
     set(s => ({
-      canvasData: { ...s.canvasData, backgroundImageUrl: url },
+      canvasData: {
+        ...s.canvasData,
+        aspectRatio: ratio,
+        width: preset.width,
+        height: preset.height,
+      },
       isDirty: true,
-    })),
+    }))
+  },
 
   addLayer: (layer) => {
     const layers = get().canvasData.layers
-    const newLayer = {
-      ...layer,
-      id: nanoid(),
-      zIndex: layers.length,
-    } as Layer
+    const newLayer = { ...layer, id: nanoid(), zIndex: layers.length } as Layer
     set(s => ({
       canvasData: { ...s.canvasData, layers: [...s.canvasData.layers, newLayer] },
       selectedLayerId: newLayer.id,
@@ -87,9 +73,7 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({
       canvasData: {
         ...s.canvasData,
-        layers: s.canvasData.layers.map(l =>
-          l.id === id ? ({ ...l, ...updates } as Layer) : l
-        ),
+        layers: s.canvasData.layers.map(l => l.id === id ? ({ ...l, ...updates } as Layer) : l),
       },
       isDirty: true,
     })),
@@ -109,10 +93,7 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     if (!layer) return
     const newLayer = { ...layer, id: nanoid(), x: layer.x + 2, y: layer.y + 2 }
     set(s => ({
-      canvasData: {
-        ...s.canvasData,
-        layers: [...s.canvasData.layers, newLayer],
-      },
+      canvasData: { ...s.canvasData, layers: [...s.canvasData.layers, newLayer] },
       selectedLayerId: newLayer.id,
       isDirty: true,
     }))
@@ -141,8 +122,19 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
   reorderLayers: (layers) =>
     set(s => ({ canvasData: { ...s.canvasData, layers }, isDirty: true })),
 
-  loadTemplate: (canvasData) =>
-    set({ canvasData, selectedLayerId: null, isDirty: false }),
+  loadTemplate: (canvasData) => {
+    // Backfill aspectRatio for older templates that don't have it
+    if (!canvasData.aspectRatio) {
+      const ratio = canvasData.height / canvasData.width
+      let aspectRatio: AspectRatio = '1:1'
+      if (ratio > 1.7) aspectRatio = '9:16'
+      else if (ratio > 1.1) aspectRatio = '4:5'
+      else if (ratio < 0.6) aspectRatio = '16:9'
+      else if (ratio < 0.8) aspectRatio = '1.91:1'
+      canvasData = { ...canvasData, aspectRatio }
+    }
+    set({ canvasData, selectedLayerId: null, isDirty: false })
+  },
 
   resetDirty: () => set({ isDirty: false }),
 }))

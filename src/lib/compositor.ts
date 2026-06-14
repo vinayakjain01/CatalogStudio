@@ -88,179 +88,153 @@ async function loadImageSafe(src: string, timeoutMs = 12_000) {
 }
 
 export async function compositeImage(
-  canvasData: CanvasData,
-  product: ProductData,
-  options: CompositeOptions = {}
-): Promise<Buffer> {
-  ensureFontsRegistered()
+    canvasData: CanvasData,
+    product: ProductData
+  ): Promise<Buffer> {
+    ensureFontsRegistered()
 
-  const targetSize = options.targetSize ?? DEFAULT_TARGET_SIZE
-  const supersample = options.supersample ?? SUPERSAMPLE
-  const SIZE = targetSize * supersample
+    // Use actual canvas dimensions from the template
+    const W = canvasData.width || 1000
+    const H = canvasData.height || 1000
 
-  const canvas = createCanvas(SIZE, SIZE)
-  const ctx = canvas.getContext('2d')
+    const canvas = createCanvas(W, H)
+    const ctx = canvas.getContext('2d')
 
-  // High-quality scaling for every drawImage call (product photo, bg, logos).
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = 'high'
+    ctx.fillStyle = canvasData.backgroundColor
+    ctx.fillRect(0, 0, W, H)
 
-  // Background
-  ctx.fillStyle = canvasData.backgroundColor
-  ctx.fillRect(0, 0, SIZE, SIZE)
-
-  if (canvasData.backgroundImageUrl) {
-    try {
-      const bgImg = await loadImageSafe(toFullResolution(canvasData.backgroundImageUrl))
-      ctx.drawImage(bgImg, 0, 0, SIZE, SIZE)
-    } catch {}
-  }
-
-  // Sort layers by zIndex
-  const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
-
-  for (const layer of sorted) {
-    const x = (layer.x / 100) * SIZE
-    const y = (layer.y / 100) * SIZE
-    const w = (layer.width / 100) * SIZE
-    const h = (layer.height / 100) * SIZE
-
-    ctx.save()
-    ctx.globalAlpha = layer.opacity
-
-    // Rotation around layer center
-    if (layer.rotation !== 0) {
-      ctx.translate(x + w / 2, y + h / 2)
-      ctx.rotate((layer.rotation * Math.PI) / 180)
-      ctx.translate(-(x + w / 2), -(y + h / 2))
+    if (canvasData.backgroundImageUrl) {
+      try {
+        const bgImg = await loadImageSafe(canvasData.backgroundImageUrl)
+        ctx.drawImage(bgImg, 0, 0, W, H)
+      } catch {}
     }
 
-    switch (layer.type) {
-      case 'rectangle': {
-        const l = layer as RectangleLayer
-        ctx.fillStyle = l.backgroundColor
-        roundRect(ctx, x, y, w, h, l.borderRadius * supersample)
-        ctx.fill()
-        if (l.borderWidth > 0) {
-          ctx.strokeStyle = l.borderColor
-          ctx.lineWidth = l.borderWidth * supersample
-          roundRect(ctx, x, y, w, h, l.borderRadius * supersample)
-          ctx.stroke()
-        }
-        break
+    const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+
+    for (const layer of sorted) {
+      // x/y/width/height are percentages — apply to actual W/H
+      const x = (layer.x / 100) * W
+      const y = (layer.y / 100) * H
+      const w = (layer.width / 100) * W
+      const h = (layer.height / 100) * H
+
+      ctx.save()
+      ctx.globalAlpha = layer.opacity
+
+      if (layer.rotation !== 0) {
+        ctx.translate(x + w / 2, y + h / 2)
+        ctx.rotate((layer.rotation * Math.PI) / 180)
+        ctx.translate(-(x + w / 2), -(y + h / 2))
       }
 
-      case 'text': {
-        const l = layer as TextLayer
-        const text = resolveVariables(l.content, product)
-        const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
-        // fontSize is authored at the 1000px design space; scale to device px.
-        const fontPx = l.fontSize * (SIZE / 1000)
-        ctx.font = `${fontPx}px "${family}"`
-        ctx.fillStyle = l.color
-        ctx.textBaseline = 'top'
-        ctx.textAlign = l.textAlign as CanvasTextAlign
-
-        if (l.backgroundColor) {
+      switch (layer.type) {
+        case 'rectangle': {
+          const l = layer as RectangleLayer
           ctx.fillStyle = l.backgroundColor
-          roundRect(ctx, x, y, w, h, l.borderRadius * supersample)
+          roundRect(ctx, x, y, w, h, l.borderRadius)
           ctx.fill()
-          ctx.fillStyle = l.color
+          if (l.borderWidth > 0) {
+            ctx.strokeStyle = l.borderColor
+            ctx.lineWidth = l.borderWidth
+            roundRect(ctx, x, y, w, h, l.borderRadius)
+            ctx.stroke()
+          }
+          break
         }
 
-        const padX = l.paddingX * supersample
-        const padY = l.paddingY * supersample
-        const textX =
-          l.textAlign === 'center'
+        case 'text': {
+          const l = layer as TextLayer
+          const text = resolveVariables(l.content, product)
+          const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
+          // Scale font size proportionally to canvas width
+          const scaledFontSize = l.fontSize * (W / 1000)
+          ctx.font = `${scaledFontSize}px "${family}"`
+          ctx.fillStyle = l.color
+          ctx.textBaseline = 'top'
+          ctx.textAlign = l.textAlign as CanvasTextAlign
+
+          if (l.backgroundColor) {
+            ctx.fillStyle = l.backgroundColor
+            roundRect(ctx, x, y, w, h, l.borderRadius)
+            ctx.fill()
+            ctx.fillStyle = l.color
+          }
+
+          const paddingX = l.paddingX * (W / 1000)
+          const paddingY = l.paddingY * (H / 1000)
+          const textX = l.textAlign === 'center'
             ? x + w / 2
             : l.textAlign === 'right'
-            ? x + w - padX
-            : x + padX
-        ctx.fillText(text, textX, y + padY, w - padX * 2)
-        break
-      }
-
-      case 'badge': {
-        const l = layer as BadgeLayer
-        const text = resolveVariables(l.content, product)
-        const radius = l.shape === 'circle' ? Math.min(w, h) / 2 : l.borderRadius * supersample
-        ctx.fillStyle = l.backgroundColor
-        if (l.shape === 'circle') {
-          ctx.beginPath()
-          ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2)
-          ctx.fill()
-        } else {
-          roundRect(ctx, x, y, w, h, radius)
-          ctx.fill()
+              ? x + w - paddingX
+              : x + paddingX
+          ctx.fillText(text, textX, y + paddingY, w - paddingX * 2)
+          break
         }
-        ctx.fillStyle = l.color
-        const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
-        const fontPx = l.fontSize * (SIZE / 1000)
-        ctx.font = `${fontPx}px "${family}"`
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText(text, x + w / 2, y + h / 2, w)
-        break
-      }
 
-      case 'overlay':
-      case 'logo':
-      case 'sticker':
-      case 'image': {
-        // overlay/logo carry an explicit uploaded `src`; image may carry the
-        // product-image token. All three draw the same way.
-        const l = layer as Layer & {
-          src: string
-          objectFit?: 'cover' | 'contain' | 'fill'
-          borderRadius?: number
+        case 'badge': {
+          const l = layer as BadgeLayer
+          const text = resolveVariables(l.content, product)
+          const radius = l.shape === 'circle' ? Math.min(w, h) / 2 : l.borderRadius
+          ctx.fillStyle = l.backgroundColor
+          if (l.shape === 'circle') {
+            ctx.beginPath()
+            ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2)
+            ctx.fill()
+          } else {
+            roundRect(ctx, x, y, w, h, radius)
+            ctx.fill()
+          }
+          ctx.fillStyle = l.color
+          const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
+          ctx.font = `${l.fontSize * (W / 1000)}px "${family}"`
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(text, x + w / 2, y + h / 2, w)
+          break
         }
-        const rawSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
-        const imgSrc = rawSrc ? toFullResolution(rawSrc) : null
-        const fit = l.objectFit || 'contain'
-        const radius = (l as any).borderRadius ?? 0
-        if (imgSrc) {
-          try {
-            const img = await loadImageSafe(imgSrc)
-            ctx.save()
-            if (radius > 0) {
-              roundRect(ctx, x, y, w, h, radius * supersample)
-              ctx.clip()
-            }
-            if (fit === 'cover') {
-              const scale = Math.max(w / img.width, h / img.height)
-              const sw = img.width * scale
-              const sh = img.height * scale
-              ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-            } else if (fit === 'contain') {
-              const scale = Math.min(w / img.width, h / img.height)
-              const sw = img.width * scale
-              const sh = img.height * scale
-              ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-            } else {
-              ctx.drawImage(img, x, y, w, h)
-            }
-            ctx.restore()
-          } catch (err) {
-            console.error(`Failed to load image layer (${l.id}):`, imgSrc, err)
-            // For product images, show a visible placeholder. For overlay/logo
-            // a load failure should be silent (no ugly grey box on export).
-            if (layer.type === 'image') {
-              ctx.fillStyle = '#e5e7eb'
-              roundRect(ctx, x, y, w, h, radius * supersample)
+
+        case 'image': {
+          const l = layer as ImageLayer
+          const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
+          if (imgSrc) {
+            try {
+              const img = await loadImageSafe(imgSrc)
+              ctx.save()
+              if (l.borderRadius > 0) {
+                roundRect(ctx, x, y, w, h, l.borderRadius)
+                ctx.clip()
+              }
+              if (l.objectFit === 'cover') {
+                const scale = Math.max(w / img.width, h / img.height)
+                const sw = img.width * scale
+                const sh = img.height * scale
+                ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
+              } else if (l.objectFit === 'contain') {
+                const scale = Math.min(w / img.width, h / img.height)
+                const sw = img.width * scale
+                const sh = img.height * scale
+                ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
+              } else {
+                ctx.drawImage(img, x, y, w, h)
+              }
+              ctx.restore()
+            } catch (err: any) {
+              console.error('[compositor] image load failed:', imgSrc, err?.message)
+              ctx.fillStyle = '#dddddd'
+              roundRect(ctx, x, y, w, h, l.borderRadius)
               ctx.fill()
             }
           }
+          break
         }
-        break
       }
+
+      ctx.restore()
     }
 
-    ctx.restore()
+    return canvas.toBuffer('image/jpeg', 0.92)
   }
-
-  // LOSSLESS master. Cloudinary applies the single lossy pass at delivery.
-  return canvas.toBuffer('image/png')
-}
 
 function roundRect(
   ctx: any,

@@ -1,5 +1,8 @@
 'use client'
 
+import { AspectRatio, ASPECT_RATIOS } from '@/types/template'
+// add setAspectRatio to the destructure:
+const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio } = useBuilderStore()
 import { useBuilderStore } from '@/stores/builder-store'
 import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, OverlayLayer, LogoLayer, DYNAMIC_VARIABLES } from '@/types/template'
 import { Input } from '@/components/ui/input'
@@ -41,6 +44,34 @@ export function LayerProperties() {
     return (
       <div className="p-4 space-y-4">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Canvas</p>
+
+        {/* Aspect ratio */}
+        <FieldRow label="Aspect ratio">
+          <Select
+            value={canvasData.aspectRatio || '1:1'}
+            onValueChange={v => setAspectRatio(v as AspectRatio)}
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ASPECT_RATIOS.map(r => (
+                <SelectItem key={r.value} value={r.value} className="text-xs">
+                  {r.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FieldRow>
+
+        {/* Canvas size display */}
+        <FieldRow label="Canvas size">
+          <p className="text-xs text-muted-foreground bg-muted px-2 py-1.5 rounded">
+            {canvasData.width} × {canvasData.height} px
+          </p>
+        </FieldRow>
+
+        {/* Background color */}
         <FieldRow label="Background color">
           <div className="flex gap-2">
             <input
@@ -56,10 +87,12 @@ export function LayerProperties() {
             />
           </div>
         </FieldRow>
-        <p className="text-xs text-muted-foreground">Select a layer to edit its properties</p>
+
+        <p className="text-xs text-muted-foreground pt-2">Select a layer to edit its properties</p>
       </div>
     )
   }
+
 
   function upd(updates: any) {
     updateLayer(layer!.id, updates)
@@ -215,6 +248,29 @@ export function LayerProperties() {
         const l = layer as ImageLayer
         return (
           <div className="space-y-3">
+            {/* Quick fit buttons */}
+            <FieldRow label="Quick fit">
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 h-7 text-xs"
+                  onClick={() => upd({ x: 0, y: 0, width: 100, height: 100, objectFit: 'cover' })}
+                >
+                  Fill canvas
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="flex-1 h-7 text-xs"
+                  onClick={() => upd({ x: 0, y: 0, width: 100, height: 100, objectFit: 'contain' })}
+                >
+                  Fit canvas
+                </Button>
+              </div>
+            </FieldRow>
+
+            {/* Source */}
             <FieldRow label="Source">
               <Select value={l.src === '{{product_image}}' ? '{{product_image}}' : 'custom'} onValueChange={v => upd({ src: v })}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
@@ -224,22 +280,27 @@ export function LayerProperties() {
                 </SelectContent>
               </Select>
             </FieldRow>
+
             {l.src !== '{{product_image}}' && (
               <FieldRow label="Image URL">
                 <Input value={l.src} onChange={e => upd({ src: e.target.value })} className="h-7 text-xs" placeholder="https://…" />
               </FieldRow>
             )}
+
             <FieldRow label="Fit">
               <Select value={l.objectFit} onValueChange={v => upd({ objectFit: v })}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="cover">Cover</SelectItem>
-                  <SelectItem value="contain">Contain</SelectItem>
-                  <SelectItem value="fill">Fill</SelectItem>
+                  <SelectItem value="cover">Cover (fills, may crop)</SelectItem>
+                  <SelectItem value="contain">Contain (full image, may letterbox)</SelectItem>
+                  <SelectItem value="fill">Stretch (fills, distorts)</SelectItem>
                 </SelectContent>
               </Select>
             </FieldRow>
-            <FieldRow label="Border radius"><NumInput value={l.borderRadius} onChange={v => upd({ borderRadius: v })} min={0} max={500} /></FieldRow>
+
+            <FieldRow label="Border radius">
+              <NumInput value={l.borderRadius} onChange={v => upd({ borderRadius: v })} min={0} max={500} />
+            </FieldRow>
           </div>
         )
       })()}

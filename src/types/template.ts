@@ -157,3 +157,22 @@ export function resolveVariables(
     .replace(/{{vendor}}/g, product.vendor || '')
     .replace(/{{product_type}}/g, product.product_type || '')
 }
+
+export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1'
+
+export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; height: number }[] = [
+  { label: '1:1 Square',       value: '1:1',    width: 1000, height: 1000 },
+  { label: '4:5 Portrait',     value: '4:5',    width: 1000, height: 1250 },
+  { label: '9:16 Story',       value: '9:16',   width: 1000, height: 1778 },
+  { label: '16:9 Landscape',   value: '16:9',   width: 1000, height: 563  },
+  { label: '1.91:1 Facebook',  value: '1.91:1', width: 1000, height: 524  },
+]
+
+export interface CanvasData {
+  width: number
+  height: number
+  aspectRatio: AspectRatio   // NEW
+  backgroundColor: string
+  backgroundImageUrl: string | null
+  layers: Layer[]
+}
