@@ -1,103 +1,116 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useBuilderStore } from '@/stores/builder-store'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState } from 'react'
+import { useBuilderStore, PreviewProduct } from '@/stores/builder-store'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Eye, EyeOff, Search } from 'lucide-react'
 
-interface PreviewProduct {
+interface Product {
   id: string
   title: string
   price: number
   compare_at_price: number | null
   vendor: string | null
   product_type: string | null
-  imageUrl: string | null
+  product_images: { src: string; is_primary: boolean }[]
 }
 
-// Lets the user flip through real products while editing a template — the
-// canvas re-renders instantly with each product's real image/title/price.
-// Seeded server-side, then lazily fetches the fuller list on first open.
-export function ProductPreviewSelector({
-  storeId,
-  initialProducts,
-}: {
-  storeId?: string
-  initialProducts: PreviewProduct[]
-}) {
-  const { setPreviewProduct } = useBuilderStore()
-  const [products, setProducts] = useState<PreviewProduct[]>(initialProducts)
-  const [selectedId, setSelectedId] = useState<string | null>(initialProducts[0]?.id ?? null)
-  const [loaded, setLoaded] = useState(false)
+interface Props {
+  products: Product[]
+}
 
-  // Push the initial selection into the store on mount.
-  useEffect(() => {
-    if (initialProducts[0]) setPreviewProduct(stripId(initialProducts[0]))
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+export function ProductPreviewSelector({ products }: Props) {
+  const { previewProduct, setPreviewProduct } = useBuilderStore()
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
 
-  async function loadFullList() {
-    if (loaded || !storeId) return
-    try {
-      const res = await fetch(`/api/products?storeId=${storeId}&limit=100`)
-      const data = await res.json()
-      if (data.products?.length) setProducts(data.products)
-    } catch {}
-    setLoaded(true)
+  const filtered = products.filter(p =>
+    p.title.toLowerCase().includes(search.toLowerCase())
+  )
+
+  function selectProduct(p: Product) {
+    const primaryImage = p.product_images?.find(i => i.is_primary) || p.product_images?.[0]
+    const preview: PreviewProduct = {
+      title: p.title,
+      price: p.price,
+      compare_at_price: p.compare_at_price,
+      vendor: p.vendor,
+      product_type: p.product_type,
+      imageUrl: primaryImage?.src || null,
+    }
+    setPreviewProduct(preview)
+    setOpen(false)
   }
 
-  function select(id: string) {
-    const p = products.find(x => x.id === id)
-    if (!p) return
-    setSelectedId(id)
-    setPreviewProduct(stripId(p))
-  }
-
-  function step(dir: 1 | -1) {
-    if (!selectedId) return
-    const idx = products.findIndex(p => p.id === selectedId)
-    const next = products[(idx + dir + products.length) % products.length]
-    if (next) select(next.id)
-  }
-
-  if (products.length === 0) {
-    return <span className="text-xs text-muted-foreground">No products to preview</span>
+  function clearPreview() {
+    setPreviewProduct(null)
   }
 
   return (
-    <div className="flex items-center gap-1">
-      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => step(-1)}
-        disabled={products.length < 2} title="Previous product">
-        <ChevronLeft className="h-4 w-4" />
-      </Button>
+    <div className="relative">
+      <div className="flex items-center gap-1.5 px-3 py-2 border-b">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs gap-1.5 flex-1 justify-start text-muted-foreground"
+          onClick={() => setOpen(!open)}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          {previewProduct ? (
+            <span className="truncate max-w-[120px]">{previewProduct.title}</span>
+          ) : (
+            'Preview with product'
+          )}
+        </Button>
+        {previewProduct && (
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={clearPreview}>
+            <EyeOff className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
 
-      <Select
-        value={selectedId ?? undefined}
-        onValueChange={select}
-        onOpenChange={(open) => { if (open) loadFullList() }}
-      >
-        <SelectTrigger className="h-7 w-52 text-xs">
-          <SelectValue placeholder="Preview product…" />
-        </SelectTrigger>
-        <SelectContent>
-          {products.map(p => (
-            <SelectItem key={p.id} value={p.id} className="text-xs">
-              {p.title}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => step(1)}
-        disabled={products.length < 2} title="Next product">
-        <ChevronRight className="h-4 w-4" />
-      </Button>
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-50 bg-card border-b border-x rounded-b-lg shadow-lg max-h-64 overflow-hidden flex flex-col">
+          <div className="p-2 border-b">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search products…"
+                className="h-7 pl-7 text-xs"
+                autoFocus
+              />
+            </div>
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {filtered.length === 0 && (
+              <p className="text-xs text-muted-foreground text-center py-4">No products found</p>
+            )}
+            {filtered.slice(0, 50).map(p => {
+              const img = p.product_images?.find(i => i.is_primary) || p.product_images?.[0]
+              return (
+                <button
+                  key={p.id}
+                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted text-left transition-colors"
+                  onClick={() => selectProduct(p)}
+                >
+                  <div className="w-8 h-8 rounded bg-muted overflow-hidden flex-shrink-0">
+                    {img && <img src={img.src} alt="" className="w-full h-full object-cover" />}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium truncate">{p.title}</p>
+                    <p className="text-xs text-muted-foreground">
+                      ₹{Number(p.price).toLocaleString('en-IN')}
+                    </p>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
-}
-
-// store expects PreviewProduct without id
-function stripId(p: PreviewProduct) {
-  const { id, ...rest } = p
-  return rest
 }

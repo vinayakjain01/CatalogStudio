@@ -1,7 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { TemplateBuilderClient } from '@/components/builder/template-builder-client'
-import { getEditorPreviewSeed } from '@/lib/editor-preview'
 
 export default async function EditTemplatePage({
   params,
@@ -19,14 +18,25 @@ export default async function EditTemplatePage({
 
   if (!template) notFound()
 
-  const { storeId, previewProducts } = await getEditorPreviewSeed(user!.id)
+  // Fetch products for the preview selector
+  const { data: stores } = await supabase.from('stores').select('id').eq('user_id', user!.id)
+  const storeIds = stores?.map(s => s.id) || []
+
+  const { data: previewProducts } = storeIds.length > 0
+    ? await supabase
+        .from('products')
+        .select('id, title, price, compare_at_price, vendor, product_type, product_images(src, is_primary)')
+        .in('store_id', storeIds)
+        .eq('status', 'active')
+        .order('updated_at', { ascending: false })
+        .limit(100)
+    : { data: [] }
 
   return (
     <TemplateBuilderClient
       template={template}
       categories={categories || []}
-      storeId={storeId}
-      previewProducts={previewProducts}
+      previewProducts={previewProducts || []}
     />
   )
 }

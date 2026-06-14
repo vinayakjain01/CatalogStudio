@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Save, ArrowLeft, Loader2 } from 'lucide-react'
 import { CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import Link from 'next/link'
+import { ProductPreviewSelector } from './product-preview-selector'
 
 interface Props {
   template?: {
@@ -23,9 +24,11 @@ interface Props {
     canvas_data: CanvasData
   }
   categories: { id: string; name: string }[]
+  previewProducts?: any[]   // ADD THIS
 }
 
-export function TemplateBuilderClient({ template, categories }: Props) {
+// Update the function signature
+export function TemplateBuilderClient({ template, categories, previewProducts = [] }: Props) {
   const router = useRouter()
   const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
@@ -160,6 +163,7 @@ export function TemplateBuilderClient({ template, categories }: Props) {
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel */}
         <div className="w-56 border-r flex flex-col bg-card overflow-hidden flex-shrink-0">
+          <ProductPreviewSelector products={previewProducts} />
           <ToolBar />
           <LayerPanel />
         </div>

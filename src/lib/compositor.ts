@@ -1,6 +1,6 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
-import { CanvasData, Layer, TextLayer, RectangleLayer, BadgeLayer } from '@/types/template'
+import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 
 // ──────────────────────────────────────────────────────────────────────────

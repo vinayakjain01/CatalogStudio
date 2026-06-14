@@ -2,14 +2,28 @@ import { create } from 'zustand'
 import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import { nanoid } from 'nanoid'
 
+// Shape of a preview product for live preview in the builder
+export interface PreviewProduct {
+  title: string
+  price: number
+  compare_at_price: number | null
+  vendor: string | null
+  product_type: string | null
+  imageUrl: string | null
+}
+
 interface BuilderStore {
   canvasData: CanvasData
   selectedLayerId: string | null
   isDirty: boolean
 
+  // NEW
+  previewProduct: PreviewProduct | null
+  setPreviewProduct: (product: PreviewProduct | null) => void
+
   setBackgroundColor: (color: string) => void
   setBackgroundImage: (url: string | null) => void
-  setAspectRatio: (ratio: AspectRatio) => void   // NEW
+  setAspectRatio: (ratio: AspectRatio) => void
 
   addLayer: (layer: Omit<Layer, 'id' | 'zIndex'>) => void
   updateLayer: (id: string, updates: Partial<Layer>) => void
@@ -38,13 +52,16 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
   selectedLayerId: null,
   isDirty: false,
 
+  // NEW
+  previewProduct: null,
+  setPreviewProduct: (product) => set({ previewProduct: product }),
+
   setBackgroundColor: (color) =>
     set(s => ({ canvasData: { ...s.canvasData, backgroundColor: color }, isDirty: true })),
 
   setBackgroundImage: (url) =>
     set(s => ({ canvasData: { ...s.canvasData, backgroundImageUrl: url }, isDirty: true })),
 
-  // NEW — change ratio and update canvas dimensions
   setAspectRatio: (ratio) => {
     const preset = ASPECT_RATIOS.find(r => r.value === ratio)
     if (!preset) return
@@ -73,7 +90,9 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({
       canvasData: {
         ...s.canvasData,
-        layers: s.canvasData.layers.map(l => l.id === id ? ({ ...l, ...updates } as Layer) : l),
+        layers: s.canvasData.layers.map(l =>
+          l.id === id ? ({ ...l, ...updates } as Layer) : l
+        ),
       },
       isDirty: true,
     })),
@@ -123,7 +142,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({ canvasData: { ...s.canvasData, layers }, isDirty: true })),
 
   loadTemplate: (canvasData) => {
-    // Backfill aspectRatio for older templates that don't have it
     if (!canvasData.aspectRatio) {
       const ratio = canvasData.height / canvasData.width
       let aspectRatio: AspectRatio = '1:1'
