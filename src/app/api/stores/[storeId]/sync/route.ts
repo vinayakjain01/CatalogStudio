@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { createShopifyClient } from '@/lib/shopify'
+import { enqueueGeneration } from '@/lib/generation-queue'
 
 function getAdminClient() {
   return createSupabaseAdmin(
@@ -47,6 +48,7 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
   }
 
   let syncedCount = 0
+  const changedProductIds: string[] = []
 
   for (const sp of shopifyProducts) {
     const primaryVariant = sp.variants[0]
@@ -57,6 +59,15 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
     const tags = sp.tags
       ? sp.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
       : []
+
+    // Phase 2: capture the pre-sync fingerprint so we can detect meaningful
+    // changes (price, compare-at, tags, vendor, product_type) and auto-generate.
+    const { data: existing } = await supabase
+      .from('products')
+      .select('id, price, compare_at_price, tags, vendor, product_type')
+      .eq('store_id', storeId)
+      .eq('shopify_id', sp.id.toString())
+      .maybeSingle()
 
     const { data: product } = await supabase
       .from('products')
@@ -81,6 +92,18 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
       .single()
 
     if (!product) continue
+
+    // Phase 2: decide whether this product needs a (re)generation.
+    const fp = (v: any) => JSON.stringify([
+      v?.price, v?.compare_at_price,
+      [...(v?.tags || [])].sort(), v?.vendor, v?.product_type,
+    ])
+    const isNew = !existing
+    const changed = existing && fp(existing) !== fp({
+      price, compare_at_price: compareAtPrice, tags, vendor: sp.vendor || null,
+      product_type: sp.product_type || null,
+    })
+    if (isNew || changed) changedProductIds.push(product.id)
 
     if (sp.images?.length > 0) {
       await supabase.from('product_images').delete().eq('product_id', product.id)
@@ -112,6 +135,15 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
       completed_at: new Date().toISOString(),
     })
     .eq('id', syncLog?.id)
+
+  // Phase 2 + 8: auto-generate creatives for new/changed products only.
+  if (changedProductIds.length > 0) {
+    try {
+      await enqueueGeneration({ storeId, productIds: changedProductIds }, supabase)
+    } catch (e) {
+      console.error('auto-enqueue failed:', e)
+    }
+  }
 
   return syncedCount
 }
