@@ -11,24 +11,36 @@ export default async function NewTemplatePage() {
     .eq('user_id', user!.id)
     .order('name')
 
-  // Fetch products for preview selector
-  const { data: stores } = await supabase.from('stores').select('id').eq('user_id', user!.id)
-  const storeIds = stores?.map(s => s.id) || []
+  // Get stores first
+  const { data: stores } = await supabase
+    .from('stores')
+    .select('id')
+    .eq('user_id', user!.id)
 
-  const { data: previewProducts } = storeIds.length > 0
-    ? await supabase
-        .from('products')
-        .select('id, title, price, compare_at_price, vendor, product_type, product_images(src, is_primary)')
-        .in('store_id', storeIds)
-        .eq('status', 'active')
-        .order('updated_at', { ascending: false })
-        .limit(100)
-    : { data: [] }
+  const storeIds = stores?.map(s => s.id) ?? []
+
+  // Safe conditional — don't call Supabase in a ternary
+  let previewProducts: any[] = []
+
+  if (storeIds.length > 0) {
+    const { data } = await supabase
+      .from('products')
+      .select(`
+        id, title, price, compare_at_price, vendor, product_type,
+        product_images(src, is_primary)
+      `)
+      .in('store_id', storeIds)
+      .eq('status', 'active')
+      .order('updated_at', { ascending: false })
+      .limit(100)
+
+    previewProducts = data ?? []
+  }
 
   return (
     <TemplateBuilderClient
-      categories={categories || []}
-      previewProducts={previewProducts || []}
+      categories={categories ?? []}
+      previewProducts={previewProducts}
     />
   )
 }

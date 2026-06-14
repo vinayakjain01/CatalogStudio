@@ -142,17 +142,23 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({ canvasData: { ...s.canvasData, layers }, isDirty: true })),
 
   loadTemplate: (canvasData) => {
-    if (!canvasData.aspectRatio) {
-      const ratio = canvasData.height / canvasData.width
-      let aspectRatio: AspectRatio = '1:1'
-      if (ratio > 1.7) aspectRatio = '9:16'
-      else if (ratio > 1.1) aspectRatio = '4:5'
-      else if (ratio < 0.6) aspectRatio = '16:9'
-      else if (ratio < 0.8) aspectRatio = '1.91:1'
-      canvasData = { ...canvasData, aspectRatio }
-    }
-    set({ canvasData, selectedLayerId: null, isDirty: false })
-  },
+  // Guarantee width/height always exist
+  if (!canvasData.width) canvasData = { ...canvasData, width: 1000 }
+  if (!canvasData.height) canvasData = { ...canvasData, height: 1000 }
+
+  // Backfill aspectRatio for older templates
+  if (!canvasData.aspectRatio) {
+    const ratio = canvasData.height / canvasData.width
+    let aspectRatio: AspectRatio = '1:1'
+    if (ratio > 1.7) aspectRatio = '9:16'
+    else if (ratio > 1.1) aspectRatio = '4:5'
+    else if (ratio < 0.6) aspectRatio = '16:9'
+    else if (ratio < 0.8) aspectRatio = '1.91:1'
+    canvasData = { ...canvasData, aspectRatio }
+  }
+
+  set({ canvasData, selectedLayerId: null, isDirty: false })
+},
 
   resetDirty: () => set({ isDirty: false }),
 }))
