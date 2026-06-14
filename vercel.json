@@ -1,6 +1,8 @@
 {
   "crons": [
-    { "path": "/api/cron/sync", "schedule": "0 * * * *" },
-    { "path": "/api/cron/generate", "schedule": "* * * * *" }
+    {
+      "path": "/api/cron/sync",
+      "schedule": "0 0 * * *"
+    }
   ]
 }
