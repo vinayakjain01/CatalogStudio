@@ -1,9 +1,7 @@
 'use client'
 
-import { AspectRatio, ASPECT_RATIOS } from '@/types/template'
-// add setAspectRatio to the destructure:
-const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio } = useBuilderStore()
 import { useBuilderStore } from '@/stores/builder-store'
+import { AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, OverlayLayer, LogoLayer, DYNAMIC_VARIABLES } from '@/types/template'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -37,7 +35,7 @@ function NumInput({ value, onChange, min, max, step = 1 }: {
 }
 
 export function LayerProperties() {
-  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor } = useBuilderStore()
+  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio } = useBuilderStore()
   const layer = canvasData.layers.find(l => l.id === selectedLayerId)
 
   if (!selectedLayerId || !layer) {

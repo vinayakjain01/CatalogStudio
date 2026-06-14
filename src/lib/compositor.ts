@@ -233,7 +233,10 @@ export async function compositeImage(
       ctx.restore()
     }
 
-    return canvas.toBuffer('image/jpeg', 0.92)
+    // Lossless PNG master. The single lossy pass happens at Cloudinary delivery
+    // (f_auto,q_auto:good). Must stay PNG: the upload route validates the PNG
+    // signature (0x89 0x50) and the quality pipeline depends on a lossless master.
+    return canvas.toBuffer('image/png')
   }
 
 function roundRect(
