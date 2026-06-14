@@ -5,6 +5,12 @@ import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 
+// @napi-rs/canvas is a native module — it must run on the Node.js runtime, not
+// Edge. maxDuration gives the composite + remote image fetch + Cloudinary
+// upload room to finish (raise to 60 on Vercel Pro).
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
 function getAdminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -88,22 +94,28 @@ export async function POST(request: NextRequest) {
     )
     }
 
-    const publicId = `product_${product.id}_${templateId}`
+    const publicId = `product_${product.id}_${templateId}_default`
     const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
 
-    await adminSupabase
+    const { error: upsertError } = await adminSupabase
       .from('generated_images')
       .upsert(
         {
           product_id: product.id,
           template_id: templateId,
+          creative_type: 'default',
           cloudinary_public_id: cloudPublicId,
           generated_url: url,
           status: 'completed',
           updated_at: new Date().toISOString(),
         },
-        { onConflict: 'product_id,template_id' }
+        { onConflict: 'product_id,template_id,creative_type' }
       )
+
+    if (upsertError) {
+      // Surface the real DB error instead of silently showing "No creative".
+      return NextResponse.json({ error: `Save failed: ${upsertError.message}` }, { status: 500 })
+    }
 
     return NextResponse.json({ success: true, url })
   } catch (err: any) {

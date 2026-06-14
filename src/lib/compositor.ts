@@ -68,6 +68,25 @@ function toFullResolution(src: string): string {
   }
 }
 
+// Remote image loader with a hard timeout. @napi-rs/canvas's loadImage has no
+// timeout, so a slow or unreachable product-image URL would hang the whole
+// serverless function until it 504s. We fetch the bytes ourselves with an
+// AbortController and hand the buffer to loadImage (which accepts Buffers).
+async function loadImageSafe(src: string, timeoutMs = 12_000) {
+  // data: URLs and local buffers pass straight through
+  if (src.startsWith('data:')) return loadImage(src)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(src, { signal: controller.signal })
+    if (!res.ok) throw new Error(`image fetch ${res.status} for ${src}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    return await loadImage(buf)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function compositeImage(
   canvasData: CanvasData,
   product: ProductData,
@@ -92,7 +111,7 @@ export async function compositeImage(
 
   if (canvasData.backgroundImageUrl) {
     try {
-      const bgImg = await loadImage(toFullResolution(canvasData.backgroundImageUrl))
+      const bgImg = await loadImageSafe(toFullResolution(canvasData.backgroundImageUrl))
       ctx.drawImage(bgImg, 0, 0, SIZE, SIZE)
     } catch {}
   }
@@ -201,7 +220,7 @@ export async function compositeImage(
         const radius = (l as any).borderRadius ?? 0
         if (imgSrc) {
           try {
-            const img = await loadImage(imgSrc)
+            const img = await loadImageSafe(imgSrc)
             ctx.save()
             if (radius > 0) {
               roundRect(ctx, x, y, w, h, radius * supersample)
