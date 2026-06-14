@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "worker": "tsx src/lib/queue/worker.ts",
     "lint": "eslint"
   },
   "dependencies": {
@@ -13,10 +14,12 @@
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.108.1",
     "axios": "^1.17.0",
+    "bullmq": "^5.78.1",
     "class-variance-authority": "^0.7.1",
     "cloudinary": "^2.10.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "ioredis": "^5.11.1",
     "lucide-react": "^1.17.0",
     "nanoid": "^5.1.11",
     "next": "16.2.9",
@@ -38,6 +41,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5"
   }
 }
