@@ -192,7 +192,8 @@ function LayerRenderer({
       )
     }
 
-    case 'logo': {
+    case 'logo':
+    case 'sticker': {
       const l = layer as LogoLayer
       return wrap(
         l.src ? (
@@ -201,7 +202,7 @@ function LayerRenderer({
         ) : (
           <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
             justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
-            Logo
+            {layer.type === 'sticker' ? 'Sticker' : 'Logo'}
           </div>
         ),
         { borderRadius: l.borderRadius, overflow: 'hidden' }

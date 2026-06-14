@@ -3,11 +3,11 @@
 import { useRef, useState } from 'react'
 import { useBuilderStore } from '@/stores/builder-store'
 import { Button } from '@/components/ui/button'
-import { Type, Image as ImageIcon, Square, Tag, Upload, BadgePlus, Loader2 } from 'lucide-react'
-import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, LogoLayer, OverlayLayer } from '@/types/template'
+import { Type, Image as ImageIcon, Square, Tag, Upload, BadgePlus, Sticker, Loader2 } from 'lucide-react'
+import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, LogoLayer, OverlayLayer, StickerLayer } from '@/types/template'
 import { toast } from 'sonner'
 
-async function uploadFile(file: File, kind: 'overlay' | 'logo'): Promise<string> {
+async function uploadFile(file: File, kind: 'overlay' | 'logo' | 'sticker'): Promise<string> {
   const form = new FormData()
   form.append('file', file)
   form.append('kind', kind)
@@ -21,7 +21,8 @@ export function ToolBar() {
   const { addLayer } = useBuilderStore()
   const overlayInput = useRef<HTMLInputElement>(null)
   const logoInput = useRef<HTMLInputElement>(null)
-  const [uploading, setUploading] = useState<'overlay' | 'logo' | null>(null)
+  const stickerInput = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState<'overlay' | 'logo' | 'sticker' | null>(null)
 
   function addText() {
     addLayer({
@@ -93,6 +94,25 @@ export function ToolBar() {
     }
   }
 
+  async function onStickerPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading('sticker')
+    try {
+      const url = await uploadFile(file, 'sticker')
+      addLayer({
+        type: 'sticker', x: 8, y: 8, width: 18, height: 18, rotation: 0, opacity: 1,
+        src: url, objectFit: 'contain', borderRadius: 0,
+      } as Omit<StickerLayer, 'id' | 'zIndex'>)
+      toast.success('Sticker added')
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setUploading(null)
+      if (stickerInput.current) stickerInput.current.value = ''
+    }
+  }
+
   const tools = [
     { label: 'Text', icon: Type, action: addText },
     { label: 'Image', icon: ImageIcon, action: addImage },
@@ -128,6 +148,11 @@ export function ToolBar() {
             {uploading === 'logo' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BadgePlus className="h-3.5 w-3.5" />}
             Logo
           </Button>
+          <Button variant="outline" size="sm" className="h-9 flex flex-col gap-0.5 text-xs"
+            disabled={uploading !== null} onClick={() => stickerInput.current?.click()}>
+            {uploading === 'sticker' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sticker className="h-3.5 w-3.5" />}
+            Sticker
+          </Button>
         </div>
       </div>
 
@@ -135,6 +160,8 @@ export function ToolBar() {
         className="hidden" onChange={onOverlayPick} />
       <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp"
         className="hidden" onChange={onLogoPick} />
+      <input ref={stickerInput} type="file" accept="image/png,image/jpeg,image/webp"
+        className="hidden" onChange={onStickerPick} />
     </div>
   )
 }

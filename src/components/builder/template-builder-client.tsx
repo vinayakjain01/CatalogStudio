@@ -13,9 +13,11 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Save, ArrowLeft, Loader2 } from 'lucide-react'
 import { CanvasData } from '@/types/template'
+import { ProductPreviewSelector } from './product-preview-selector'
 import Link from 'next/link'
 
 interface PreviewProduct {
+  id: string
   title: string
   price: number
   compare_at_price: number | null
@@ -27,12 +29,13 @@ interface PreviewProduct {
 interface Props {
   template?: { id: string; name: string; description: string | null; category_id: string | null; canvas_data: CanvasData }
   categories: { id: string; name: string }[]
-  previewProduct?: PreviewProduct | null
+  storeId?: string
+  previewProducts?: PreviewProduct[]
 }
 
-export function TemplateBuilderClient({ template, categories, previewProduct }: Props) {
+export function TemplateBuilderClient({ template, categories, storeId, previewProducts = [] }: Props) {
   const router = useRouter()
-  const { canvasData, loadTemplate, isDirty, resetDirty, setPreviewProduct } = useBuilderStore()
+  const { canvasData, loadTemplate, isDirty, resetDirty } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
   const [categoryId, setCategoryId] = useState(template?.category_id ?? 'none')
   const [saving, setSaving] = useState(false)
@@ -43,10 +46,6 @@ export function TemplateBuilderClient({ template, categories, previewProduct }: 
       loadTemplate(template.canvas_data)
     }
   }, [template])
-
-  useEffect(() => {
-    setPreviewProduct(previewProduct ?? null)
-  }, [previewProduct, setPreviewProduct])
 
   async function handleSave() {
     setSaving(true)
@@ -115,6 +114,7 @@ export function TemplateBuilderClient({ template, categories, previewProduct }: 
           </Select>
         </div>
         <div className="flex items-center gap-2">
+          <ProductPreviewSelector storeId={storeId} initialProducts={previewProducts} />
           {error && <p className="text-sm text-destructive">{error}</p>}
           {isDirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
           <Button size="sm" onClick={handleSave} disabled={saving}>

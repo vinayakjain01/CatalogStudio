@@ -186,6 +186,7 @@ export async function compositeImage(
 
       case 'overlay':
       case 'logo':
+      case 'sticker':
       case 'image': {
         // overlay/logo carry an explicit uploaded `src`; image may carry the
         // product-image token. All three draw the same way.

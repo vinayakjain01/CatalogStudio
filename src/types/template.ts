@@ -1,4 +1,4 @@
-export type LayerType = 'text' | 'image' | 'rectangle' | 'badge' | 'logo' | 'overlay'
+export type LayerType = 'text' | 'image' | 'rectangle' | 'badge' | 'logo' | 'overlay' | 'sticker'
 
 export interface BaseLayer {
   id: string
@@ -70,6 +70,15 @@ export interface OverlayLayer extends BaseLayer {
   placement: 'above' | 'below'  // above = frame over product, below = background
 }
 
+// A small decorative PNG (e.g. "NEW", a ribbon, sparkles) placed on top.
+// Renders identically to a logo; separated for clearer UX + defaults.
+export interface StickerLayer extends BaseLayer {
+  type: 'sticker'
+  src: string
+  objectFit: 'contain' | 'cover'
+  borderRadius: number
+}
+
 export type Layer =
   | TextLayer
   | ImageLayer
@@ -77,6 +86,7 @@ export type Layer =
   | BadgeLayer
   | LogoLayer
   | OverlayLayer
+  | StickerLayer
 
 export interface CanvasData {
   width: number           // always 1000

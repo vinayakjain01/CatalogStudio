@@ -3,11 +3,11 @@
 import { useBuilderStore } from '@/stores/builder-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Trash2, Copy, ChevronUp, ChevronDown, Type, Image, Square, Tag, Layers, BadgePlus } from 'lucide-react'
+import { Trash2, Copy, ChevronUp, ChevronDown, Type, Image, Square, Tag, Layers, BadgePlus, Sticker } from 'lucide-react'
 import { Layer } from '@/types/template'
 
 function LayerIcon({ type }: { type: Layer['type'] }) {
-  const icons = { text: Type, image: Image, rectangle: Square, badge: Tag, logo: BadgePlus, overlay: Layers }
+  const icons = { text: Type, image: Image, rectangle: Square, badge: Tag, logo: BadgePlus, overlay: Layers, sticker: Sticker }
   const Icon = icons[type] || Square
   return <Icon className="h-3.5 w-3.5 flex-shrink-0" />
 }
@@ -20,7 +20,7 @@ function layerLabel(layer: Layer): string {
     case 'rectangle': return 'Rectangle'
     case 'overlay': return 'Template design'
     case 'logo': return 'Logo'
-    case 'logo': return 'Logo'
+    case 'sticker': return 'Sticker'
     default: return 'Layer'
   }
 }

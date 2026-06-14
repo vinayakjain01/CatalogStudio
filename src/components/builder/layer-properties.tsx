@@ -286,11 +286,11 @@ export function LayerProperties() {
         )
       })()}
 
-      {layer.type === 'logo' && (() => {
+      {(layer.type === 'logo' || layer.type === 'sticker') && (() => {
         const l = layer as LogoLayer
         return (
           <div className="space-y-3">
-            <FieldRow label="Logo preview">
+            <FieldRow label={layer.type === 'sticker' ? 'Sticker preview' : 'Logo preview'}>
               <img src={l.src} alt="" className="w-full rounded border bg-muted/30 object-contain max-h-24" />
             </FieldRow>
             <FieldRow label="Fit">
