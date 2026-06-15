@@ -5,6 +5,9 @@ import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
 function getAdminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -12,32 +15,23 @@ function getAdminClient() {
   )
 }
 
+// Bulk-generate creatives for every product whose rule matches.
+//   POST /api/generate  { storeId, filter?: { type, value } }
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await request.json()
-  const { storeId, filter } = body
-  // filter: { type: 'all' | 'tag' | 'vendor' | 'product_type', value?: string }
-
+  const { storeId, filter } = await request.json()
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
 
-  // Verify store ownership
   const { data: store } = await supabase
-    .from('stores')
-    .select('id')
-    .eq('id', storeId)
-    .eq('user_id', user.id)
-    .single()
-
+    .from('stores').select('id').eq('id', storeId).eq('user_id', user.id).single()
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })
 
-  // Build product query
   const adminSupabase = getAdminClient()
 
-  // Fetch ALL matching products via pagination (Supabase caps at 1000/page;
-  // we page in 1000s so large catalogs aren't silently truncated at 100).
+  // Fetch ALL matching products (paginated; not capped at 100).
   const PAGE = 1000
   const products: any[] = []
   let from = 0
@@ -51,13 +45,9 @@ export async function POST(request: NextRequest) {
       .eq('status', 'active')
       .range(from, from + PAGE - 1)
 
-    if (filter?.type === 'tag' && filter.value) {
-      pageQuery = pageQuery.contains('tags', [filter.value])
-    } else if (filter?.type === 'vendor' && filter.value) {
-      pageQuery = pageQuery.eq('vendor', filter.value)
-    } else if (filter?.type === 'product_type' && filter.value) {
-      pageQuery = pageQuery.eq('product_type', filter.value)
-    }
+    if (filter?.type === 'tag' && filter.value) pageQuery = pageQuery.contains('tags', [filter.value])
+    else if (filter?.type === 'vendor' && filter.value) pageQuery = pageQuery.eq('vendor', filter.value)
+    else if (filter?.type === 'product_type' && filter.value) pageQuery = pageQuery.eq('product_type', filter.value)
 
     const { data: page } = await pageQuery
     if (!page || page.length === 0) break
@@ -70,37 +60,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: 'No products found', generated: 0 })
   }
 
-  // Skip products that already have a completed creative, so re-running
-  // Generate continues where it left off instead of redoing finished ones.
+  // Skip products that already have a completed creative (so re-runs continue).
   const allIds = products.map(p => p.id)
   const done = new Set<string>()
   for (let i = 0; i < allIds.length; i += 1000) {
-    const chunk = allIds.slice(i, i + 1000)
     const { data: existing } = await adminSupabase
       .from('generated_images')
       .select('product_id')
-      .in('product_id', chunk)
+      .in('product_id', allIds.slice(i, i + 1000))
       .eq('status', 'completed')
     for (const e of existing || []) done.add((e as any).product_id)
   }
   const pending = products.filter(p => !done.has(p.id))
 
-  // Process synchronously within the function time budget. On very large
-  // catalogs this may not finish every product in one request; we track a
-  // deadline and report how far we got so nothing is silently dropped.
   const DEADLINE = Date.now() + 55_000
   let generated = 0
   let skippedForTime = 0
+  let noRule = 0
   const errors: string[] = []
 
   for (const product of pending) {
-    // Stop before the function times out; report what's left.
     if (Date.now() > DEADLINE) {
-      skippedForTime = pending.length - generated - errors.length
+      skippedForTime = pending.length - generated - errors.length - noRule
       break
     }
     try {
-      // Resolve which template to use
       const templateId = await resolveTemplateForProduct(
         {
           id: product.id,
@@ -112,23 +96,15 @@ export async function POST(request: NextRequest) {
         },
         storeId
       )
+      if (!templateId) { noRule++; continue }
 
-      if (!templateId) continue // no matching rule
-
-      // Fetch template
       const { data: template } = await adminSupabase
-        .from('templates')
-        .select('canvas_data')
-        .eq('id', templateId)
-        .single()
+        .from('templates').select('canvas_data').eq('id', templateId).single()
+      if (!template) { errors.push(`${product.title}: template missing`); continue }
 
-      if (!template) continue
-
-      // Get primary product image
       const images = (product as any).product_images || []
       const primaryImage = images.find((i: any) => i.is_primary) || images[0]
 
-      // Composite image
       const buffer = await compositeImage(template.canvas_data as any, {
         title: product.title,
         price: product.price,
@@ -138,32 +114,34 @@ export async function POST(request: NextRequest) {
         imageUrl: primaryImage?.src || null,
       })
 
-      // Sanity check — a valid JPEG starts with FF D8 FF
-        if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
-        return NextResponse.json(
-            { error: 'Image generation produced an invalid buffer. Canvas library may not be supported on this runtime.' },
-            { status: 500 }
-        )
-        }
+      if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
+        errors.push(`${product.title}: invalid image buffer`)
+        continue
+      }
 
-      // Upload to Cloudinary
-      const publicId = `product_${product.id}_${templateId}`
+      const publicId = `product_${product.id}_${templateId}_default`
       const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
 
-      // Save to generated_images
-      await adminSupabase
+      // Capture the upsert error — DO NOT count a generation that didn't save.
+      const { error: upsertError } = await adminSupabase
         .from('generated_images')
         .upsert(
           {
             product_id: product.id,
             template_id: templateId,
+            creative_type: 'default',
             cloudinary_public_id: cloudPublicId,
             generated_url: url,
             status: 'completed',
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'product_id,template_id' }
+          { onConflict: 'product_id,template_id,creative_type' }
         )
+
+      if (upsertError) {
+        errors.push(`${product.title}: ${upsertError.message}`)
+        continue
+      }
 
       generated++
     } catch (err: any) {
@@ -176,10 +154,12 @@ export async function POST(request: NextRequest) {
     total: products.length,
     alreadyDone: done.size,
     pending: pending.length,
+    noRule,
     skippedForTime,
     errors: errors.slice(0, 5),
-    message: skippedForTime > 0
-      ? `Generated ${generated} this run. ${skippedForTime} still pending — click Generate again to continue.`
-      : `Generated ${generated} creatives (${done.size} already existed).`,
+    message:
+      skippedForTime > 0
+        ? `Generated ${generated} this run. ${skippedForTime} still pending — click Generate again to continue.`
+        : `Generated ${generated} creatives. (${noRule} had no matching rule, ${done.size} already existed.)`,
   })
 }
