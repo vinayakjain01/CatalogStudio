@@ -194,23 +194,34 @@ export async function compositeImage(
           break
         }
 
+        case 'overlay':
+        case 'logo':
+        case 'sticker':
         case 'image': {
-          const l = layer as ImageLayer
+          // overlay/logo/sticker carry an uploaded `src`; image may carry the
+          // product-image token. All four draw a remote image the same way.
+          const l = layer as Layer & {
+            src: string
+            objectFit?: 'cover' | 'contain' | 'fill'
+            borderRadius?: number
+          }
           const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
+          const fit = l.objectFit || 'contain'
+          const radius = l.borderRadius ?? 0
           if (imgSrc) {
             try {
               const img = await loadImageSafe(imgSrc)
               ctx.save()
-              if (l.borderRadius > 0) {
-                roundRect(ctx, x, y, w, h, l.borderRadius)
+              if (radius > 0) {
+                roundRect(ctx, x, y, w, h, radius)
                 ctx.clip()
               }
-              if (l.objectFit === 'cover') {
+              if (fit === 'cover') {
                 const scale = Math.max(w / img.width, h / img.height)
                 const sw = img.width * scale
                 const sh = img.height * scale
                 ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-              } else if (l.objectFit === 'contain') {
+              } else if (fit === 'contain') {
                 const scale = Math.min(w / img.width, h / img.height)
                 const sw = img.width * scale
                 const sh = img.height * scale
@@ -221,9 +232,13 @@ export async function compositeImage(
               ctx.restore()
             } catch (err: any) {
               console.error('[compositor] image load failed:', imgSrc, err?.message)
-              ctx.fillStyle = '#dddddd'
-              roundRect(ctx, x, y, w, h, l.borderRadius)
-              ctx.fill()
+              // Only show a grey placeholder for the product image; for
+              // overlay/logo/sticker a load failure should be silent (no ugly box).
+              if (layer.type === 'image') {
+                ctx.fillStyle = '#dddddd'
+                roundRect(ctx, x, y, w, h, radius)
+                ctx.fill()
+              }
             }
           }
           break
