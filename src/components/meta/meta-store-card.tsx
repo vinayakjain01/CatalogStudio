@@ -35,7 +35,7 @@ export function MetaStoreCard({ store, stats }: { store: Store; stats: Stats }) 
   const [copied, setCopied] = useState(false)
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || ''
-  const feedUrl = `${appUrl}/api/meta/supplementary-feed/${store.id}?token=${store.feed_token}`
+  const feedUrl = `${appUrl}/api/meta/feed/${store.id}?token=${store.feed_token}`
 
   async function copyFeed() {
     await navigator.clipboard.writeText(feedUrl)
@@ -118,7 +118,7 @@ export function MetaStoreCard({ store, stats }: { store: Store; stats: Stats }) 
 
       {/* Feed URL */}
       <div className="space-y-1">
-        <Label className="text-xs text-muted-foreground">Supplementary Feed URL</Label>
+        <Label className="text-xs text-muted-foreground">Catalog Feed URL (XML)</Label>
         <div className="flex gap-2">
           <Input readOnly value={feedUrl} className="h-8 text-xs font-mono" onFocus={e => e.target.select()} />
           <Button size="sm" variant="outline" className="h-8" onClick={copyFeed}>
@@ -126,7 +126,9 @@ export function MetaStoreCard({ store, stats }: { store: Store; stats: Stats }) 
           </Button>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          Add this as a scheduled supplementary feed in Commerce Manager (hourly).
+          In Commerce Manager → Catalog → Data Sources, choose <b>Add Items → Use a URL</b>,
+          paste this link, and schedule it (e.g. hourly). Meta builds the full catalog from
+          this feed, using your generated creatives as the product images.
           Last pulled: {store.meta_feed_last_sync ? new Date(store.meta_feed_last_sync).toLocaleString() : 'never'}
         </p>
       </div>

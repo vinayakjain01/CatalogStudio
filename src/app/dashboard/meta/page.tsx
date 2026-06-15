@@ -55,7 +55,7 @@ export default async function MetaPage() {
       <div>
         <h1 className="text-2xl font-semibold">Meta Commerce Manager</h1>
         <p className="text-muted-foreground mt-1">
-          Connect catalogs and serve generated creatives to Meta via a supplementary feed.
+          Connect catalogs and serve generated creatives to Meta via an XML product feed.
         </p>
       </div>
 
