@@ -5,9 +5,6 @@ import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 
-// @napi-rs/canvas is a native module — it must run on the Node.js runtime, not
-// Edge. maxDuration gives the composite + remote image fetch + Cloudinary
-// upload room to finish (raise to 60 on Vercel Pro).
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
@@ -23,12 +20,13 @@ export async function POST(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { productId, storeId } = await request.json()
-  if (!productId || !storeId) {
-    return NextResponse.json({ error: 'productId and storeId required' }, { status: 400 })
-  }
+  const body = await request.json()
+  const { storeId, filter } = body
+  // filter: { type: 'all' | 'tag' | 'vendor' | 'product_type', value?: string }
 
-  // Verify ownership
+  if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
+
+  // Verify store ownership
   const { data: store } = await supabase
     .from('stores')
     .select('id')
@@ -38,87 +36,109 @@ export async function POST(request: NextRequest) {
 
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })
 
+  // Build product query
   const adminSupabase = getAdminClient()
-
-  const { data: product } = await adminSupabase
+  let productQuery = adminSupabase
     .from('products')
-    .select('id, title, vendor, product_type, tags, price, compare_at_price, product_images(src, is_primary)')
-    .eq('id', productId)
+    .select(`id, title, vendor, product_type, tags, price, compare_at_price,
+      product_images(src, is_primary)`)
     .eq('store_id', storeId)
-    .single()
+    .eq('status', 'active')
 
-  if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
-
-  const templateId = await resolveTemplateForProduct(
-    {
-      id: product.id,
-      tags: product.tags || [],
-      vendor: product.vendor,
-      product_type: product.product_type,
-      price: product.price,
-      compare_at_price: product.compare_at_price,
-    },
-    storeId
-  )
-
-  if (!templateId) {
-    return NextResponse.json({ error: 'No matching rule found for this product. Set up a rule first.' }, { status: 400 })
+  if (filter?.type === 'tag' && filter.value) {
+    productQuery = productQuery.contains('tags', [filter.value])
+  } else if (filter?.type === 'vendor' && filter.value) {
+    productQuery = productQuery.eq('vendor', filter.value)
+  } else if (filter?.type === 'product_type' && filter.value) {
+    productQuery = productQuery.eq('product_type', filter.value)
   }
 
-  const { data: template } = await adminSupabase
-    .from('templates')
-    .select('canvas_data')
-    .eq('id', templateId)
-    .single()
+  const { data: products } = await productQuery.limit(100)
+  if (!products || products.length === 0) {
+    return NextResponse.json({ message: 'No products found', generated: 0 })
+  }
 
-  if (!template) return NextResponse.json({ error: 'Template not found' }, { status: 404 })
+  // Kick off generation — return immediately, process in background
+  // For MVP we process synchronously (max 100 products per call)
+  let generated = 0
+  const errors: string[] = []
 
-  const images = (product as any).product_images || []
-  const primaryImage = images.find((i: any) => i.is_primary) || images[0]
-
-  try {
-    const buffer = await compositeImage(template.canvas_data as any, {
-      title: product.title,
-      price: product.price,
-      compare_at_price: product.compare_at_price,
-      vendor: product.vendor,
-      product_type: product.product_type,
-      imageUrl: primaryImage?.src || null,
-    })
-
-    // Sanity check — a valid JPEG starts with FF D8 FF
-    if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
-    return NextResponse.json(
-        { error: 'Image generation produced an invalid buffer. Canvas library may not be supported on this runtime.' },
-        { status: 500 }
-    )
-    }
-
-    const publicId = `product_${product.id}_${templateId}_default`
-    const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
-
-    const { error: upsertError } = await adminSupabase
-      .from('generated_images')
-      .upsert(
+  for (const product of products) {
+    try {
+      // Resolve which template to use
+      const templateId = await resolveTemplateForProduct(
         {
-          product_id: product.id,
-          template_id: templateId,
-          creative_type: 'default',
-          cloudinary_public_id: cloudPublicId,
-          generated_url: url,
-          status: 'completed',
-          updated_at: new Date().toISOString(),
+          id: product.id,
+          tags: product.tags || [],
+          vendor: product.vendor,
+          product_type: product.product_type,
+          price: product.price,
+          compare_at_price: product.compare_at_price,
         },
-        { onConflict: 'product_id,template_id,creative_type' }
+        storeId
       )
 
-    if (upsertError) {
-      // Surface the real DB error instead of silently showing "No creative".
-      return NextResponse.json({ error: `Save failed: ${upsertError.message}` }, { status: 500 })
-    }
+      if (!templateId) continue // no matching rule
 
-    return NextResponse.json({ success: true, url })
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+      // Fetch template
+      const { data: template } = await adminSupabase
+        .from('templates')
+        .select('canvas_data')
+        .eq('id', templateId)
+        .single()
+
+      if (!template) continue
+
+      // Get primary product image
+      const images = (product as any).product_images || []
+      const primaryImage = images.find((i: any) => i.is_primary) || images[0]
+
+      // Composite image
+      const buffer = await compositeImage(template.canvas_data as any, {
+        title: product.title,
+        price: product.price,
+        compare_at_price: product.compare_at_price,
+        vendor: product.vendor,
+        product_type: product.product_type,
+        imageUrl: primaryImage?.src || null,
+      })
+
+      // Sanity check — a valid PNG starts with 89 50
+      if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
+        errors.push(`${product.title}: invalid image buffer`)
+        continue
+      }
+
+      // Upload to Cloudinary
+      const publicId = `product_${product.id}_${templateId}_default`
+      const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
+
+      // Save to generated_images
+      const { error: upsertError } = await adminSupabase
+        .from('generated_images')
+        .upsert(
+          {
+            product_id: product.id,
+            template_id: templateId,
+            creative_type: 'default',
+            cloudinary_public_id: cloudPublicId,
+            generated_url: url,
+            status: 'completed',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'product_id,template_id,creative_type' }
+        )
+
+      if (upsertError) {
+        errors.push(`${product.title}: ${upsertError.message}`)
+        continue
+      }
+
+      generated++
+    } catch (err: any) {
+      errors.push(`${product.title}: ${err.message}`)
+    }
   }
+
+  return NextResponse.json({ generated, errors: errors.slice(0, 5), total: products.length })
 }

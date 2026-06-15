@@ -34,8 +34,10 @@ export function ToolBar() {
 
   function addImage() {
     addLayer({
-      type: 'image', x: 10, y: 10, width: 80, height: 80, rotation: 0, opacity: 1,
-      src: '{{product_image}}', objectFit: 'cover', borderRadius: 8,
+      // Full-canvas cover: fills the frame edge-to-edge (no white letterbox).
+      // User can switch to "Contain" or resize from the properties panel.
+      type: 'image', x: 0, y: 0, width: 100, height: 100, rotation: 0, opacity: 1,
+      src: '{{product_image}}', objectFit: 'cover', borderRadius: 0,
     } as Omit<ImageLayer, 'id' | 'zIndex'>)
   }
 
