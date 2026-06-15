@@ -88,14 +88,6 @@ export type Layer =
   | OverlayLayer
   | StickerLayer
 
-export interface CanvasData {
-  width: number           // always 1000
-  height: number          // always 1000
-  backgroundColor: string
-  backgroundImageUrl: string | null
-  layers: Layer[]
-}
-
 export interface Template {
   id: string
   user_id: string
@@ -158,7 +150,7 @@ export function resolveVariables(
     .replace(/{{product_type}}/g, product.product_type || '')
 }
 
-export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1'
+export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1' | 'custom'
 
 export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; height: number }[] = [
   { label: '1:1 Square',      value: '1:1',    width: 1000, height: 1000 },

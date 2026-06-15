@@ -35,7 +35,7 @@ function NumInput({ value, onChange, min, max, step = 1 }: {
 }
 
 export function LayerProperties() {
-  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio } = useBuilderStore()
+  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio, setCanvasSize } = useBuilderStore()
   const layer = canvasData.layers.find(l => l.id === selectedLayerId)
 
   if (!selectedLayerId || !layer) {
@@ -58,16 +58,36 @@ export function LayerProperties() {
                   {r.label}
                 </SelectItem>
               ))}
+              <SelectItem value="custom" className="text-xs">Custom size…</SelectItem>
             </SelectContent>
           </Select>
         </FieldRow>
 
-        {/* Canvas size display */}
-        <FieldRow label="Canvas size">
-          <p className="text-xs text-muted-foreground bg-muted px-2 py-1.5 rounded">
-            {canvasData.width} × {canvasData.height} px
-          </p>
-        </FieldRow>
+        {/* Canvas size: editable when custom, read-only otherwise */}
+        {canvasData.aspectRatio === 'custom' ? (
+          <div className="grid grid-cols-2 gap-2">
+            <FieldRow label="Width (px)">
+              <NumInput
+                value={canvasData.width}
+                onChange={v => setCanvasSize(v, canvasData.height)}
+                min={200} max={4000} step={10}
+              />
+            </FieldRow>
+            <FieldRow label="Height (px)">
+              <NumInput
+                value={canvasData.height}
+                onChange={v => setCanvasSize(canvasData.width, v)}
+                min={200} max={4000} step={10}
+              />
+            </FieldRow>
+          </div>
+        ) : (
+          <FieldRow label="Canvas size">
+            <p className="text-xs text-muted-foreground bg-muted px-2 py-1.5 rounded">
+              {canvasData.width} × {canvasData.height} px
+            </p>
+          </FieldRow>
+        )}
 
         {/* Background color */}
         <FieldRow label="Background color">

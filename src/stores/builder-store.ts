@@ -24,6 +24,7 @@ interface BuilderStore {
   setBackgroundColor: (color: string) => void
   setBackgroundImage: (url: string | null) => void
   setAspectRatio: (ratio: AspectRatio) => void
+  setCanvasSize: (width: number, height: number) => void
 
   addLayer: (layer: Omit<Layer, 'id' | 'zIndex'>) => void
   updateLayer: (id: string, updates: Partial<Layer>) => void
@@ -63,6 +64,14 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({ canvasData: { ...s.canvasData, backgroundImageUrl: url }, isDirty: true })),
 
   setAspectRatio: (ratio) => {
+    // 'custom' keeps the current pixel size; user edits it via setCanvasSize.
+    if (ratio === 'custom') {
+      set(s => ({
+        canvasData: { ...s.canvasData, aspectRatio: 'custom' },
+        isDirty: true,
+      }))
+      return
+    }
     const preset = ASPECT_RATIOS.find(r => r.value === ratio)
     if (!preset) return
     set(s => ({
@@ -72,6 +81,16 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
         width: preset.width,
         height: preset.height,
       },
+      isDirty: true,
+    }))
+  },
+
+  setCanvasSize: (width, height) => {
+    // Clamp to sane bounds (Meta/IG creatives top out around 2048).
+    const w = Math.max(200, Math.min(4000, Math.round(width) || 1000))
+    const h = Math.max(200, Math.min(4000, Math.round(height) || 1000))
+    set(s => ({
+      canvasData: { ...s.canvasData, aspectRatio: 'custom', width: w, height: h },
       isDirty: true,
     }))
   },
