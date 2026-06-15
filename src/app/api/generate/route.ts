@@ -35,32 +35,70 @@ export async function POST(request: NextRequest) {
 
   // Build product query
   const adminSupabase = getAdminClient()
-  let productQuery = adminSupabase
-    .from('products')
-    .select(`id, title, vendor, product_type, tags, price, compare_at_price,
-      product_images(src, is_primary)`)
-    .eq('store_id', storeId)
-    .eq('status', 'active')
 
-  if (filter?.type === 'tag' && filter.value) {
-    productQuery = productQuery.contains('tags', [filter.value])
-  } else if (filter?.type === 'vendor' && filter.value) {
-    productQuery = productQuery.eq('vendor', filter.value)
-  } else if (filter?.type === 'product_type' && filter.value) {
-    productQuery = productQuery.eq('product_type', filter.value)
+  // Fetch ALL matching products via pagination (Supabase caps at 1000/page;
+  // we page in 1000s so large catalogs aren't silently truncated at 100).
+  const PAGE = 1000
+  const products: any[] = []
+  let from = 0
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let pageQuery = adminSupabase
+      .from('products')
+      .select(`id, title, vendor, product_type, tags, price, compare_at_price,
+        product_images(src, is_primary)`)
+      .eq('store_id', storeId)
+      .eq('status', 'active')
+      .range(from, from + PAGE - 1)
+
+    if (filter?.type === 'tag' && filter.value) {
+      pageQuery = pageQuery.contains('tags', [filter.value])
+    } else if (filter?.type === 'vendor' && filter.value) {
+      pageQuery = pageQuery.eq('vendor', filter.value)
+    } else if (filter?.type === 'product_type' && filter.value) {
+      pageQuery = pageQuery.eq('product_type', filter.value)
+    }
+
+    const { data: page } = await pageQuery
+    if (!page || page.length === 0) break
+    products.push(...page)
+    if (page.length < PAGE) break
+    from += PAGE
   }
 
-  const { data: products } = await productQuery.limit(100)
-  if (!products || products.length === 0) {
+  if (products.length === 0) {
     return NextResponse.json({ message: 'No products found', generated: 0 })
   }
 
-  // Kick off generation — return immediately, process in background
-  // For MVP we process synchronously (max 100 products per call)
+  // Skip products that already have a completed creative, so re-running
+  // Generate continues where it left off instead of redoing finished ones.
+  const allIds = products.map(p => p.id)
+  const done = new Set<string>()
+  for (let i = 0; i < allIds.length; i += 1000) {
+    const chunk = allIds.slice(i, i + 1000)
+    const { data: existing } = await adminSupabase
+      .from('generated_images')
+      .select('product_id')
+      .in('product_id', chunk)
+      .eq('status', 'completed')
+    for (const e of existing || []) done.add((e as any).product_id)
+  }
+  const pending = products.filter(p => !done.has(p.id))
+
+  // Process synchronously within the function time budget. On very large
+  // catalogs this may not finish every product in one request; we track a
+  // deadline and report how far we got so nothing is silently dropped.
+  const DEADLINE = Date.now() + 55_000
   let generated = 0
+  let skippedForTime = 0
   const errors: string[] = []
 
-  for (const product of products) {
+  for (const product of pending) {
+    // Stop before the function times out; report what's left.
+    if (Date.now() > DEADLINE) {
+      skippedForTime = pending.length - generated - errors.length
+      break
+    }
     try {
       // Resolve which template to use
       const templateId = await resolveTemplateForProduct(
@@ -133,5 +171,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ generated, errors: errors.slice(0, 5), total: products.length })
+  return NextResponse.json({
+    generated,
+    total: products.length,
+    alreadyDone: done.size,
+    pending: pending.length,
+    skippedForTime,
+    errors: errors.slice(0, 5),
+    message: skippedForTime > 0
+      ? `Generated ${generated} this run. ${skippedForTime} still pending — click Generate again to continue.`
+      : `Generated ${generated} creatives (${done.size} already existed).`,
+  })
 }

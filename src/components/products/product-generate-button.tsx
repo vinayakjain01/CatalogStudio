@@ -23,7 +23,12 @@ export function ProductGenerateButton({ productId, storeId }: { productId: strin
     const data = await res.json()
 
     if (res.ok) {
-      router.refresh()
+      if (data.generated === 0) {
+        // No rule matched — tell the user instead of silently doing nothing.
+        setError(data.message || 'No rule matches this product.')
+      } else {
+        router.refresh()
+      }
     } else {
       setError(data.error || 'Generation failed')
     }
