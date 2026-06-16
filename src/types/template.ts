@@ -153,11 +153,11 @@ export function resolveVariables(
 export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1' | 'custom'
 
 export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; height: number }[] = [
-  { label: '1:1 Square',      value: '1:1',    width: 1000, height: 1000 },
-  { label: '4:5 Portrait',    value: '4:5',    width: 1000, height: 1250 },
-  { label: '9:16 Story',      value: '9:16',   width: 1000, height: 1778 },
-  { label: '16:9 Landscape',  value: '16:9',   width: 1000, height: 563  },
-  { label: '1.91:1 Facebook', value: '1.91:1', width: 1000, height: 524  },
+  { label: '1:1 Square (1080×1080)', value: '1:1',    width: 1080, height: 1080 },
+  { label: '4:5 Portrait',           value: '4:5',    width: 1080, height: 1350 },
+  { label: '9:16 Story',             value: '9:16',   width: 1080, height: 1920 },
+  { label: '16:9 Landscape',         value: '16:9',   width: 1920, height: 1080 },
+  { label: '1.91:1 Facebook',        value: '1.91:1', width: 1200, height: 628  },
 ]
 
 // ─── Smart Background ────────────────────────────────────────────────────────

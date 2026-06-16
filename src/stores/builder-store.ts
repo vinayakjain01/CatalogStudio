@@ -41,8 +41,8 @@ interface BuilderStore {
 }
 
 const defaultCanvas: CanvasData = {
-  width: 1000,
-  height: 1000,
+  width: 1080,
+  height: 1080,
   aspectRatio: '1:1',
   backgroundColor: '#ffffff',
   backgroundImageUrl: null,
@@ -100,8 +100,8 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
 
   setCanvasSize: (width, height) => {
     // Clamp to sane bounds (Meta/IG creatives top out around 2048).
-    const w = Math.max(200, Math.min(4000, Math.round(width) || 1000))
-    const h = Math.max(200, Math.min(4000, Math.round(height) || 1000))
+    const w = Math.max(200, Math.min(4000, Math.round(width) || 1080))
+    const h = Math.max(200, Math.min(4000, Math.round(height) || 1080))
     set(s => ({
       canvasData: { ...s.canvasData, aspectRatio: 'custom', width: w, height: h },
       isDirty: true,
@@ -175,8 +175,8 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
 
   loadTemplate: (canvasData) => {
   // Guarantee width/height always exist
-  if (!canvasData.width) canvasData = { ...canvasData, width: 1000 }
-  if (!canvasData.height) canvasData = { ...canvasData, height: 1000 }
+  if (!canvasData.width) canvasData = { ...canvasData, width: 1080 }
+  if (!canvasData.height) canvasData = { ...canvasData, height: 1080 }
 
   // Backfill aspectRatio for older templates
   if (!canvasData.aspectRatio) {

@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { useBuilderStore } from '@/stores/builder-store'
 import { AspectRatio, ASPECT_RATIOS, BackgroundMode, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
 import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, OverlayLayer, LogoLayer, DYNAMIC_VARIABLES } from '@/types/template'
@@ -8,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Button } from '@/components/ui/button'
+import { LayoutTemplate, Layers } from 'lucide-react'
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -34,246 +36,260 @@ function NumInput({ value, onChange, min, max, step = 1 }: {
   )
 }
 
-export function LayerProperties() {
-  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio, setCanvasSize, setBackgroundSettings } = useBuilderStore()
-  const layer = canvasData.layers.find(l => l.id === selectedLayerId)
+// ─── Canvas Panel ─────────────────────────────────────────────────────────────
+// All canvas + background settings. Always available via the tab bar.
+
+function CanvasPanel() {
+  const { canvasData, setBackgroundColor, setAspectRatio, setCanvasSize, setBackgroundSettings } = useBuilderStore()
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
-  if (!selectedLayerId || !layer) {
-    return (
-      <div className="p-4 space-y-4">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Canvas</p>
+  return (
+    <div className="p-4 space-y-4 overflow-y-auto">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Canvas</p>
 
-        {/* Aspect ratio */}
-        <FieldRow label="Aspect ratio">
-          <Select
-            value={canvasData.aspectRatio || '1:1'}
-            onValueChange={v => setAspectRatio(v as AspectRatio)}
-          >
-            <SelectTrigger className="h-7 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {ASPECT_RATIOS.map(r => (
-                <SelectItem key={r.value} value={r.value} className="text-xs">
-                  {r.label}
-                </SelectItem>
-              ))}
-              <SelectItem value="custom" className="text-xs">Custom size…</SelectItem>
-            </SelectContent>
-          </Select>
-        </FieldRow>
+      {/* Aspect ratio */}
+      <FieldRow label="Aspect ratio">
+        <Select
+          value={canvasData.aspectRatio || '1:1'}
+          onValueChange={v => setAspectRatio(v as AspectRatio)}
+        >
+          <SelectTrigger className="h-7 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ASPECT_RATIOS.map(r => (
+              <SelectItem key={r.value} value={r.value} className="text-xs">
+                {r.label}
+              </SelectItem>
+            ))}
+            <SelectItem value="custom" className="text-xs">Custom size…</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldRow>
 
-        {/* Canvas size: editable when custom, read-only otherwise */}
-        {canvasData.aspectRatio === 'custom' ? (
-          <div className="grid grid-cols-2 gap-2">
-            <FieldRow label="Width (px)">
-              <NumInput
-                value={canvasData.width}
-                onChange={v => setCanvasSize(v, canvasData.height)}
-                min={200} max={4000} step={10}
-              />
-            </FieldRow>
-            <FieldRow label="Height (px)">
-              <NumInput
-                value={canvasData.height}
-                onChange={v => setCanvasSize(canvasData.width, v)}
-                min={200} max={4000} step={10}
-              />
-            </FieldRow>
-          </div>
-        ) : (
-          <FieldRow label="Canvas size">
-            <p className="text-xs text-muted-foreground bg-muted px-2 py-1.5 rounded">
-              {canvasData.width} × {canvasData.height} px
-            </p>
+      {/* Canvas size: editable when custom, read-only otherwise */}
+      {canvasData.aspectRatio === 'custom' ? (
+        <div className="grid grid-cols-2 gap-2">
+          <FieldRow label="Width (px)">
+            <NumInput
+              value={canvasData.width}
+              onChange={v => setCanvasSize(v, canvasData.height)}
+              min={200} max={4000} step={10}
+            />
           </FieldRow>
-        )}
-
-        <Separator />
-
-        {/* ── Background Settings ─────────────────────────────────────────── */}
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Background</p>
-
-        {/* Mode selector */}
-        <FieldRow label="Background mode">
-          <Select
-            value={bgSettings.mode}
-            onValueChange={v => setBackgroundSettings({ mode: v as BackgroundMode })}
-          >
-            <SelectTrigger className="h-7 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="solid" className="text-xs">Solid color</SelectItem>
-              <SelectItem value="smart" className="text-xs">✨ Smart Fill</SelectItem>
-              <SelectItem value="blur-extend" className="text-xs">Blur Extend</SelectItem>
-              <SelectItem value="gradient" className="text-xs">Gradient</SelectItem>
-              <SelectItem value="transparent" className="text-xs">Transparent</SelectItem>
-            </SelectContent>
-          </Select>
+          <FieldRow label="Height (px)">
+            <NumInput
+              value={canvasData.height}
+              onChange={v => setCanvasSize(canvasData.width, v)}
+              min={200} max={4000} step={10}
+            />
+          </FieldRow>
+        </div>
+      ) : (
+        <FieldRow label="Canvas size">
+          <p className="text-xs text-muted-foreground bg-muted px-2 py-1.5 rounded">
+            {canvasData.width} × {canvasData.height} px
+          </p>
         </FieldRow>
+      )}
 
-        {/* Mode description */}
-        {bgSettings.mode === 'smart' && (
-          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
-            Analyzes product image colors and generates a matching blended background — no white gaps.
-          </p>
-        )}
-        {bgSettings.mode === 'blur-extend' && (
-          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
-            Creates a blurred, zoomed version of the image behind it — as seen on Instagram and Canva.
-          </p>
-        )}
-        {bgSettings.mode === 'gradient' && (
-          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
-            Linear gradient. Enable Auto Colors to derive shades from the product image automatically.
-          </p>
-        )}
-        {bgSettings.mode === 'transparent' && (
-          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
-            Transparent background. Useful for PNG exports placed on custom backgrounds.
-          </p>
-        )}
+      <Separator />
 
-        {/* Solid color — always shown (it's the base/fallback for all modes) */}
-        {(bgSettings.mode === 'solid' || bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
-          <FieldRow label={bgSettings.mode === 'solid' ? 'Color' : 'Fallback color'}>
-            <div className="flex gap-2">
+      {/* ── Background Settings ─────────────────────────────────────────── */}
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Background</p>
+
+      {/* Mode selector */}
+      <FieldRow label="Background mode">
+        <Select
+          value={bgSettings.mode}
+          onValueChange={v => setBackgroundSettings({ mode: v as BackgroundMode })}
+        >
+          <SelectTrigger className="h-7 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="solid" className="text-xs">Solid color</SelectItem>
+            <SelectItem value="smart" className="text-xs">✨ Smart Fill</SelectItem>
+            <SelectItem value="blur-extend" className="text-xs">Blur Extend</SelectItem>
+            <SelectItem value="gradient" className="text-xs">Gradient</SelectItem>
+            <SelectItem value="transparent" className="text-xs">Transparent</SelectItem>
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      {/* Mode description */}
+      {bgSettings.mode === 'smart' && (
+        <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+          Analyzes product image colors and generates a matching blended background — no white gaps.
+        </p>
+      )}
+      {bgSettings.mode === 'blur-extend' && (
+        <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+          Creates a blurred, zoomed version of the image behind it — as seen on Instagram and Canva.
+        </p>
+      )}
+      {bgSettings.mode === 'gradient' && (
+        <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+          Linear gradient. Enable Auto Colors to derive shades from the product image automatically.
+        </p>
+      )}
+      {bgSettings.mode === 'transparent' && (
+        <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+          Transparent background. Useful for PNG exports placed on custom backgrounds.
+        </p>
+      )}
+
+      {/* Solid color — always shown (it's the base/fallback for all modes) */}
+      {(bgSettings.mode === 'solid' || bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
+        <FieldRow label={bgSettings.mode === 'solid' ? 'Color' : 'Fallback color'}>
+          <div className="flex gap-2">
+            <input
+              type="color"
+              value={canvasData.backgroundColor}
+              onChange={e => setBackgroundColor(e.target.value)}
+              className="h-7 w-10 rounded border cursor-pointer"
+            />
+            <Input
+              value={canvasData.backgroundColor}
+              onChange={e => setBackgroundColor(e.target.value)}
+              className="h-7 text-xs font-mono flex-1"
+            />
+          </div>
+        </FieldRow>
+      )}
+
+      {/* Blur strength — for smart and blur-extend */}
+      {(bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
+        <FieldRow label={`Blur strength (${bgSettings.blurStrength})`}>
+          <input
+            type="range"
+            min={0} max={40} step={1}
+            value={bgSettings.blurStrength}
+            onChange={e => setBackgroundSettings({ blurStrength: Number(e.target.value) })}
+            className="w-full accent-primary h-4"
+          />
+        </FieldRow>
+      )}
+
+      {/* Blend strength — for smart only */}
+      {bgSettings.mode === 'smart' && (
+        <FieldRow label={`Blend strength (${Math.round(bgSettings.blendStrength * 100)}%)`}>
+          <input
+            type="range"
+            min={0} max={100} step={5}
+            value={Math.round(bgSettings.blendStrength * 100)}
+            onChange={e => setBackgroundSettings({ blendStrength: Number(e.target.value) / 100 })}
+            className="w-full accent-primary h-4"
+          />
+        </FieldRow>
+      )}
+
+      {/* Gradient controls */}
+      {bgSettings.mode === 'gradient' && (
+        <div className="space-y-3">
+          <FieldRow label="Auto colors from image">
+            <div className="flex items-center gap-2">
               <input
-                type="color"
-                value={canvasData.backgroundColor}
-                onChange={e => setBackgroundColor(e.target.value)}
-                className="h-7 w-10 rounded border cursor-pointer"
+                type="checkbox"
+                checked={bgSettings.autoColors}
+                onChange={e => setBackgroundSettings({ autoColors: e.target.checked })}
+                className="h-4 w-4 accent-primary cursor-pointer"
+                id="auto-colors"
               />
-              <Input
-                value={canvasData.backgroundColor}
-                onChange={e => setBackgroundColor(e.target.value)}
-                className="h-7 text-xs font-mono flex-1"
-              />
+              <label htmlFor="auto-colors" className="text-xs cursor-pointer">
+                Derive from product image
+              </label>
             </div>
           </FieldRow>
-        )}
 
-        {/* Blur strength — for smart and blur-extend */}
-        {(bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
-          <FieldRow label={`Blur strength (${bgSettings.blurStrength})`}>
+          <FieldRow label={`Angle (${bgSettings.gradientAngle}°)`}>
             <input
               type="range"
-              min={0} max={40} step={1}
-              value={bgSettings.blurStrength}
-              onChange={e => setBackgroundSettings({ blurStrength: Number(e.target.value) })}
+              min={0} max={360} step={5}
+              value={bgSettings.gradientAngle}
+              onChange={e => setBackgroundSettings({ gradientAngle: Number(e.target.value) })}
               className="w-full accent-primary h-4"
             />
           </FieldRow>
-        )}
 
-        {/* Blend strength — for smart only */}
-        {bgSettings.mode === 'smart' && (
-          <FieldRow label={`Blend strength (${Math.round(bgSettings.blendStrength * 100)}%)`}>
-            <input
-              type="range"
-              min={0} max={100} step={5}
-              value={Math.round(bgSettings.blendStrength * 100)}
-              onChange={e => setBackgroundSettings({ blendStrength: Number(e.target.value) / 100 })}
-              className="w-full accent-primary h-4"
-            />
-          </FieldRow>
-        )}
+          {!bgSettings.autoColors && (
+            <>
+              <FieldRow label="Start color">
+                <div className="flex gap-2">
+                  <input
+                    type="color"
+                    value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
+                    onChange={e => {
+                      const stops = [...bgSettings.gradientStops]
+                      stops[0] = { ...stops[0], color: e.target.value }
+                      setBackgroundSettings({ gradientStops: stops })
+                    }}
+                    className="h-7 w-10 rounded border cursor-pointer"
+                  />
+                  <Input
+                    value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
+                    onChange={e => {
+                      const stops = [...bgSettings.gradientStops]
+                      stops[0] = { ...stops[0], color: e.target.value }
+                      setBackgroundSettings({ gradientStops: stops })
+                    }}
+                    className="h-7 text-xs font-mono flex-1"
+                  />
+                </div>
+              </FieldRow>
+              <FieldRow label="End color">
+                <div className="flex gap-2">
+                  <input
+                    type="color"
+                    value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
+                    onChange={e => {
+                      const stops = [...bgSettings.gradientStops]
+                      stops[1] = { ...stops[1], color: e.target.value }
+                      setBackgroundSettings({ gradientStops: stops })
+                    }}
+                    className="h-7 w-10 rounded border cursor-pointer"
+                  />
+                  <Input
+                    value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
+                    onChange={e => {
+                      const stops = [...bgSettings.gradientStops]
+                      stops[1] = { ...stops[1], color: e.target.value }
+                      setBackgroundSettings({ gradientStops: stops })
+                    }}
+                    className="h-7 text-xs font-mono flex-1"
+                  />
+                </div>
+              </FieldRow>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
-        {/* Gradient controls */}
-        {bgSettings.mode === 'gradient' && (
-          <div className="space-y-3">
-            <FieldRow label="Auto colors from image">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={bgSettings.autoColors}
-                  onChange={e => setBackgroundSettings({ autoColors: e.target.checked })}
-                  className="h-4 w-4 accent-primary cursor-pointer"
-                  id="auto-colors"
-                />
-                <label htmlFor="auto-colors" className="text-xs cursor-pointer">
-                  Derive from product image
-                </label>
-              </div>
-            </FieldRow>
+// ─── Layer Panel ─────────────────────────────────────────────────────────────
+// Properties for the currently selected layer. All existing logic unchanged.
 
-            <FieldRow label={`Angle (${bgSettings.gradientAngle}°)`}>
-              <input
-                type="range"
-                min={0} max={360} step={5}
-                value={bgSettings.gradientAngle}
-                onChange={e => setBackgroundSettings({ gradientAngle: Number(e.target.value) })}
-                className="w-full accent-primary h-4"
-              />
-            </FieldRow>
+function LayerPanel() {
+  const { canvasData, selectedLayerId, updateLayer } = useBuilderStore()
+  const layer = canvasData.layers.find(l => l.id === selectedLayerId)
 
-            {!bgSettings.autoColors && (
-              <>
-                <FieldRow label="Start color">
-                  <div className="flex gap-2">
-                    <input
-                      type="color"
-                      value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
-                      onChange={e => {
-                        const stops = [...bgSettings.gradientStops]
-                        stops[0] = { ...stops[0], color: e.target.value }
-                        setBackgroundSettings({ gradientStops: stops })
-                      }}
-                      className="h-7 w-10 rounded border cursor-pointer"
-                    />
-                    <Input
-                      value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
-                      onChange={e => {
-                        const stops = [...bgSettings.gradientStops]
-                        stops[0] = { ...stops[0], color: e.target.value }
-                        setBackgroundSettings({ gradientStops: stops })
-                      }}
-                      className="h-7 text-xs font-mono flex-1"
-                    />
-                  </div>
-                </FieldRow>
-                <FieldRow label="End color">
-                  <div className="flex gap-2">
-                    <input
-                      type="color"
-                      value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
-                      onChange={e => {
-                        const stops = [...bgSettings.gradientStops]
-                        stops[1] = { ...stops[1], color: e.target.value }
-                        setBackgroundSettings({ gradientStops: stops })
-                      }}
-                      className="h-7 w-10 rounded border cursor-pointer"
-                    />
-                    <Input
-                      value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
-                      onChange={e => {
-                        const stops = [...bgSettings.gradientStops]
-                        stops[1] = { ...stops[1], color: e.target.value }
-                        setBackgroundSettings({ gradientStops: stops })
-                      }}
-                      className="h-7 text-xs font-mono flex-1"
-                    />
-                  </div>
-                </FieldRow>
-              </>
-            )}
-          </div>
-        )}
-
-        <p className="text-xs text-muted-foreground pt-1">Select a layer to edit its properties</p>
+  if (!layer) {
+    return (
+      <div className="p-4 flex flex-col items-center justify-center h-full text-center gap-2">
+        <Layers className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-xs text-muted-foreground">Select a layer on the canvas to edit its properties</p>
       </div>
     )
   }
-
 
   function upd(updates: any) {
     updateLayer(layer!.id, updates)
   }
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-4 space-y-4 overflow-y-auto">
       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         {layer.type.charAt(0).toUpperCase() + layer.type.slice(1)} Layer
       </p>
@@ -490,8 +506,6 @@ export function LayerProperties() {
               <Select
                 value={l.placement}
                 onValueChange={(v) => {
-                  // above = render in front of product (high zIndex)
-                  // below = render behind product (low zIndex)
                   const layers = [...canvasData.layers]
                   const maxZ = Math.max(0, ...layers.map(x => x.zIndex))
                   upd({ placement: v, zIndex: v === 'above' ? maxZ + 1 : -1 })
@@ -541,6 +555,66 @@ export function LayerProperties() {
           </div>
         )
       })()}
+    </div>
+  )
+}
+
+// ─── LayerProperties (main export) ───────────────────────────────────────────
+// Permanent tab bar: Canvas (always available) | Layer (only when selected)
+// When a layer is selected, automatically switches to the Layer tab.
+// User can always click Canvas to go back to canvas/background settings.
+
+export function LayerProperties() {
+  const { selectedLayerId } = useBuilderStore()
+  const [activeTab, setActiveTab] = useState<'canvas' | 'layer'>('canvas')
+
+  // Auto-switch to layer tab whenever a layer gets selected
+  useEffect(() => {
+    if (selectedLayerId) {
+      setActiveTab('layer')
+    }
+  }, [selectedLayerId])
+
+  // If no layer selected, always show canvas regardless of tab state
+  const effectiveTab = selectedLayerId ? activeTab : 'canvas'
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Permanent tab bar */}
+      <div className="flex border-b flex-shrink-0">
+        <button
+          onClick={() => setActiveTab('canvas')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 ${
+            effectiveTab === 'canvas'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <LayoutTemplate className="h-3.5 w-3.5" />
+          Canvas
+        </button>
+        <button
+          onClick={() => selectedLayerId && setActiveTab('layer')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 ${
+            effectiveTab === 'layer'
+              ? 'border-primary text-primary'
+              : selectedLayerId
+                ? 'border-transparent text-muted-foreground hover:text-foreground'
+                : 'border-transparent text-muted-foreground/40 cursor-not-allowed'
+          }`}
+        >
+          <Layers className="h-3.5 w-3.5" />
+          Layer
+          {selectedLayerId && (
+            <span className="ml-1 h-1.5 w-1.5 rounded-full bg-primary" />
+          )}
+        </button>
+      </div>
+
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto">
+        {effectiveTab === 'canvas' ? <CanvasPanel /> : <LayerPanel />}
+      </div>
     </div>
   )
 }

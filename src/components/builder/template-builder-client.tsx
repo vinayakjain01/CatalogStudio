@@ -46,8 +46,8 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
       loadTemplate(template.canvas_data)
     } else {
       loadTemplate({
-        width: 1000,
-        height: 1000,
+        width: 1080,
+        height: 1080,
         aspectRatio: '1:1',
         backgroundColor: '#ffffff',
         backgroundImageUrl: null,
@@ -177,7 +177,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
         </div>
 
         {/* Right panel */}
-        <div className="w-64 border-l bg-card overflow-y-auto flex-shrink-0">
+        <div className="w-64 border-l bg-card flex flex-col overflow-hidden flex-shrink-0">
           <LayerProperties />
         </div>
       </div>
