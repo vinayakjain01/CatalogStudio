@@ -1,22 +1,23 @@
-import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-import { Sidebar } from '@/components/dashboard/sidebar'
-import { getActiveStore } from '@/lib/active-store'
+import type { Metadata } from 'next'
+import './globals.css'
+import { Toaster } from '@/components/ui/sonner'
 
-export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+export const metadata: Metadata = {
+  title: 'CatalogCreative',
+  description: 'Catalog creative automation for Shopify → Meta',
+}
 
-  if (!user) redirect('/login')
-
-  const { activeStoreId, stores } = await getActiveStore()
-
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
   return (
-    <div className="flex h-screen bg-background">
-      <Sidebar stores={stores} activeStoreId={activeStoreId} />
-      <main className="flex-1 overflow-auto p-6">
+    <html lang="en" suppressHydrationWarning>
+      <body className="antialiased">
         {children}
-      </main>
-    </div>
+        <Toaster />
+      </body>
+    </html>
   )
 }
