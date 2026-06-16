@@ -160,6 +160,46 @@ export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; 
   { label: '1.91:1 Facebook', value: '1.91:1', width: 1000, height: 524  },
 ]
 
+// ─── Smart Background ────────────────────────────────────────────────────────
+// All fields are optional so existing saved templates stay backward-compatible.
+// The compositor and canvas-preview both fall back to 'solid' when absent.
+
+export type BackgroundMode =
+  | 'solid'        // plain backgroundColor (existing default)
+  | 'smart'        // color-analysis + blur-extend (AI-feel, all client/server canvas)
+  | 'blur-extend'  // blurred + zoomed copy of the image behind it (Instagram style)
+  | 'gradient'     // 2-stop gradient derived from image OR user-chosen colors
+  | 'transparent'  // alpha-0 fill (for PNG exports)
+
+export interface GradientStop {
+  color: string   // hex
+  position: number // 0–100
+}
+
+export interface BackgroundSettings {
+  mode: BackgroundMode
+  // blur-extend / smart
+  blurStrength: number    // 0–40, default 20
+  blendStrength: number   // 0–1, default 0.85
+  // gradient
+  gradientAngle: number   // degrees, default 135
+  gradientStops: GradientStop[]
+  // whether to auto-derive gradient/smart colors from the image
+  autoColors: boolean
+}
+
+export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
+  mode: 'solid',
+  blurStrength: 20,
+  blendStrength: 0.85,
+  gradientAngle: 135,
+  gradientStops: [
+    { color: '#f0f0f0', position: 0 },
+    { color: '#d0d0d0', position: 100 },
+  ],
+  autoColors: true,
+}
+
 export interface CanvasData {
   width: number
   height: number
@@ -167,4 +207,6 @@ export interface CanvasData {
   backgroundColor: string
   backgroundImageUrl: string | null
   layers: Layer[]
+  // Smart background — optional; absent = backward-compat solid fill
+  backgroundSettings?: BackgroundSettings
 }

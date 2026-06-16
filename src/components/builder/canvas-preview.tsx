@@ -5,7 +5,9 @@ import { useBuilderStore } from '@/stores/builder-store'
 import {
   Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
   LogoLayer, OverlayLayer, StickerLayer, resolveVariables,
+  DEFAULT_BACKGROUND_SETTINGS,
 } from '@/types/template'
+import { useSmartBackground } from './smart-background'
 
 const MAX_W = 580
 const MAX_H = 680
@@ -208,6 +210,37 @@ export function CanvasPreview() {
   const displayH = Math.round(cH * scale)
   const scaleX = displayW / 1000
 
+  // ── Smart background ──────────────────────────────────────────────────────
+  // Find the first image or overlay layer that has a real (non-placeholder) src
+  // to use as the color-sampling source.
+  const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
+  const sampleSrc = (() => {
+    if (bgSettings.mode === 'solid' || bgSettings.mode === 'transparent') return null
+    // Prefer the actual preview product image if available
+    if (product.imageUrl) return product.imageUrl
+    // Fall back to the first image layer with a static src
+    const imgLayer = canvasData.layers.find(
+      l => (l.type === 'image' || l.type === 'overlay') &&
+        (l as any).src &&
+        (l as any).src !== '{{product_image}}'
+    )
+    return imgLayer ? (imgLayer as any).src : null
+  })()
+
+  const { backgroundImageCss } = useSmartBackground({
+    mode: bgSettings.mode,
+    imageSrc: sampleSrc,
+    canvasWidth: displayW,
+    canvasHeight: displayH,
+    settings: bgSettings,
+    solidColor: canvasData.backgroundColor,
+  })
+
+  // For transparent mode, use a checkerboard pattern to indicate alpha
+  const transparentBg = bgSettings.mode === 'transparent'
+    ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
+    : undefined
+
   return (
     <div className="flex flex-col items-center gap-3">
       <span className="text-xs text-muted-foreground">{cW} × {cH}px</span>
@@ -215,9 +248,10 @@ export function CanvasPreview() {
         ref={canvasRef}
         style={{
           width: displayW, height: displayH,
-          backgroundColor: canvasData.backgroundColor,
-          backgroundImage: canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined,
-          backgroundSize: 'cover', backgroundPosition: 'center',
+          backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
+          backgroundImage: backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined)),
+          backgroundSize: backgroundImageCss ? 'cover' : 'cover',
+          backgroundPosition: 'center',
           position: 'relative', overflow: 'hidden', flexShrink: 0,
           boxShadow: '0 4px 32px rgba(0,0,0,0.12)', borderRadius: 6, userSelect: 'none',
         }}

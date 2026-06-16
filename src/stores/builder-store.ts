@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
+import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
 import { nanoid } from 'nanoid'
 
 // Shape of a preview product for live preview in the builder
@@ -25,6 +25,7 @@ interface BuilderStore {
   setBackgroundImage: (url: string | null) => void
   setAspectRatio: (ratio: AspectRatio) => void
   setCanvasSize: (width: number, height: number) => void
+  setBackgroundSettings: (settings: Partial<BackgroundSettings>) => void
 
   addLayer: (layer: Omit<Layer, 'id' | 'zIndex'>) => void
   updateLayer: (id: string, updates: Partial<Layer>) => void
@@ -62,6 +63,18 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
 
   setBackgroundImage: (url) =>
     set(s => ({ canvasData: { ...s.canvasData, backgroundImageUrl: url }, isDirty: true })),
+
+  setBackgroundSettings: (settings) =>
+    set(s => ({
+      canvasData: {
+        ...s.canvasData,
+        backgroundSettings: {
+          ...(s.canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS),
+          ...settings,
+        },
+      },
+      isDirty: true,
+    })),
 
   setAspectRatio: (ratio) => {
     // 'custom' keeps the current pixel size; user edits it via setCanvasSize.

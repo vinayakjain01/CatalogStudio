@@ -1,7 +1,7 @@
 'use client'
 
 import { useBuilderStore } from '@/stores/builder-store'
-import { AspectRatio, ASPECT_RATIOS } from '@/types/template'
+import { AspectRatio, ASPECT_RATIOS, BackgroundMode, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
 import { TextLayer, ImageLayer, RectangleLayer, BadgeLayer, OverlayLayer, LogoLayer, DYNAMIC_VARIABLES } from '@/types/template'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,8 +35,9 @@ function NumInput({ value, onChange, min, max, step = 1 }: {
 }
 
 export function LayerProperties() {
-  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio, setCanvasSize } = useBuilderStore()
+  const { canvasData, selectedLayerId, updateLayer, setBackgroundColor, setAspectRatio, setCanvasSize, setBackgroundSettings } = useBuilderStore()
   const layer = canvasData.layers.find(l => l.id === selectedLayerId)
+  const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
   if (!selectedLayerId || !layer) {
     return (
@@ -89,24 +90,179 @@ export function LayerProperties() {
           </FieldRow>
         )}
 
-        {/* Background color */}
-        <FieldRow label="Background color">
-          <div className="flex gap-2">
-            <input
-              type="color"
-              value={canvasData.backgroundColor}
-              onChange={e => setBackgroundColor(e.target.value)}
-              className="h-7 w-10 rounded border cursor-pointer"
-            />
-            <Input
-              value={canvasData.backgroundColor}
-              onChange={e => setBackgroundColor(e.target.value)}
-              className="h-7 text-xs font-mono flex-1"
-            />
-          </div>
+        <Separator />
+
+        {/* ── Background Settings ─────────────────────────────────────────── */}
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Background</p>
+
+        {/* Mode selector */}
+        <FieldRow label="Background mode">
+          <Select
+            value={bgSettings.mode}
+            onValueChange={v => setBackgroundSettings({ mode: v as BackgroundMode })}
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="solid" className="text-xs">Solid color</SelectItem>
+              <SelectItem value="smart" className="text-xs">✨ Smart Fill</SelectItem>
+              <SelectItem value="blur-extend" className="text-xs">Blur Extend</SelectItem>
+              <SelectItem value="gradient" className="text-xs">Gradient</SelectItem>
+              <SelectItem value="transparent" className="text-xs">Transparent</SelectItem>
+            </SelectContent>
+          </Select>
         </FieldRow>
 
-        <p className="text-xs text-muted-foreground pt-2">Select a layer to edit its properties</p>
+        {/* Mode description */}
+        {bgSettings.mode === 'smart' && (
+          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+            Analyzes product image colors and generates a matching blended background — no white gaps.
+          </p>
+        )}
+        {bgSettings.mode === 'blur-extend' && (
+          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+            Creates a blurred, zoomed version of the image behind it — as seen on Instagram and Canva.
+          </p>
+        )}
+        {bgSettings.mode === 'gradient' && (
+          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+            Linear gradient. Enable Auto Colors to derive shades from the product image automatically.
+          </p>
+        )}
+        {bgSettings.mode === 'transparent' && (
+          <p className="text-[11px] text-muted-foreground leading-snug bg-muted/60 rounded px-2 py-1.5">
+            Transparent background. Useful for PNG exports placed on custom backgrounds.
+          </p>
+        )}
+
+        {/* Solid color — always shown (it's the base/fallback for all modes) */}
+        {(bgSettings.mode === 'solid' || bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
+          <FieldRow label={bgSettings.mode === 'solid' ? 'Color' : 'Fallback color'}>
+            <div className="flex gap-2">
+              <input
+                type="color"
+                value={canvasData.backgroundColor}
+                onChange={e => setBackgroundColor(e.target.value)}
+                className="h-7 w-10 rounded border cursor-pointer"
+              />
+              <Input
+                value={canvasData.backgroundColor}
+                onChange={e => setBackgroundColor(e.target.value)}
+                className="h-7 text-xs font-mono flex-1"
+              />
+            </div>
+          </FieldRow>
+        )}
+
+        {/* Blur strength — for smart and blur-extend */}
+        {(bgSettings.mode === 'smart' || bgSettings.mode === 'blur-extend') && (
+          <FieldRow label={`Blur strength (${bgSettings.blurStrength})`}>
+            <input
+              type="range"
+              min={0} max={40} step={1}
+              value={bgSettings.blurStrength}
+              onChange={e => setBackgroundSettings({ blurStrength: Number(e.target.value) })}
+              className="w-full accent-primary h-4"
+            />
+          </FieldRow>
+        )}
+
+        {/* Blend strength — for smart only */}
+        {bgSettings.mode === 'smart' && (
+          <FieldRow label={`Blend strength (${Math.round(bgSettings.blendStrength * 100)}%)`}>
+            <input
+              type="range"
+              min={0} max={100} step={5}
+              value={Math.round(bgSettings.blendStrength * 100)}
+              onChange={e => setBackgroundSettings({ blendStrength: Number(e.target.value) / 100 })}
+              className="w-full accent-primary h-4"
+            />
+          </FieldRow>
+        )}
+
+        {/* Gradient controls */}
+        {bgSettings.mode === 'gradient' && (
+          <div className="space-y-3">
+            <FieldRow label="Auto colors from image">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={bgSettings.autoColors}
+                  onChange={e => setBackgroundSettings({ autoColors: e.target.checked })}
+                  className="h-4 w-4 accent-primary cursor-pointer"
+                  id="auto-colors"
+                />
+                <label htmlFor="auto-colors" className="text-xs cursor-pointer">
+                  Derive from product image
+                </label>
+              </div>
+            </FieldRow>
+
+            <FieldRow label={`Angle (${bgSettings.gradientAngle}°)`}>
+              <input
+                type="range"
+                min={0} max={360} step={5}
+                value={bgSettings.gradientAngle}
+                onChange={e => setBackgroundSettings({ gradientAngle: Number(e.target.value) })}
+                className="w-full accent-primary h-4"
+              />
+            </FieldRow>
+
+            {!bgSettings.autoColors && (
+              <>
+                <FieldRow label="Start color">
+                  <div className="flex gap-2">
+                    <input
+                      type="color"
+                      value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
+                      onChange={e => {
+                        const stops = [...bgSettings.gradientStops]
+                        stops[0] = { ...stops[0], color: e.target.value }
+                        setBackgroundSettings({ gradientStops: stops })
+                      }}
+                      className="h-7 w-10 rounded border cursor-pointer"
+                    />
+                    <Input
+                      value={bgSettings.gradientStops[0]?.color ?? '#f0f0f0'}
+                      onChange={e => {
+                        const stops = [...bgSettings.gradientStops]
+                        stops[0] = { ...stops[0], color: e.target.value }
+                        setBackgroundSettings({ gradientStops: stops })
+                      }}
+                      className="h-7 text-xs font-mono flex-1"
+                    />
+                  </div>
+                </FieldRow>
+                <FieldRow label="End color">
+                  <div className="flex gap-2">
+                    <input
+                      type="color"
+                      value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
+                      onChange={e => {
+                        const stops = [...bgSettings.gradientStops]
+                        stops[1] = { ...stops[1], color: e.target.value }
+                        setBackgroundSettings({ gradientStops: stops })
+                      }}
+                      className="h-7 w-10 rounded border cursor-pointer"
+                    />
+                    <Input
+                      value={bgSettings.gradientStops[1]?.color ?? '#d0d0d0'}
+                      onChange={e => {
+                        const stops = [...bgSettings.gradientStops]
+                        stops[1] = { ...stops[1], color: e.target.value }
+                        setBackgroundSettings({ gradientStops: stops })
+                      }}
+                      className="h-7 text-xs font-mono flex-1"
+                    />
+                  </div>
+                </FieldRow>
+              </>
+            )}
+          </div>
+        )}
+
+        <p className="text-xs text-muted-foreground pt-1">Select a layer to edit its properties</p>
       </div>
     )
   }
