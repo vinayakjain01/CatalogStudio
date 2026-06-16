@@ -18,9 +18,10 @@ export async function getEditorPreviewSeed(userId: string): Promise<{
 }> {
   const supabase = await createClient()
 
-  const { data: stores } = await supabase
-    .from('stores').select('id').eq('user_id', userId).limit(1)
-  const storeId = stores?.[0]?.id as string | undefined
+  // Use the active store so the editor previews the right store's products.
+  const { getActiveStore } = await import('@/lib/active-store')
+  const { activeStoreId } = await getActiveStore()
+  const storeId = activeStoreId as string | undefined
   if (!storeId) return { storeId: undefined, previewProducts: [] }
 
   const { data: products } = await supabase

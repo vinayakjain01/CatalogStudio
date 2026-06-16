@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveStore } from '@/lib/active-store'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
 import { ProductsSearch } from '@/components/products/products-search'
@@ -13,22 +14,16 @@ export default async function ProductsPage({
 }) {
 
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
   const { search, tag, page } = await searchParams
 
   const currentPage = Math.max(1, parseInt(page || '1', 10) || 1)
   const from = (currentPage - 1) * PAGE_SIZE
   const to = from + PAGE_SIZE - 1
 
-  // Get user's stores
-  const { data: stores } = await supabase
-    .from('stores')
-    .select('id')
-    .eq('user_id', user!.id)
+  // Active store only — never aggregate across stores.
+  const { activeStoreId } = await getActiveStore()
 
-  const storeIds = stores?.map(s => s.id) || []
-
-  if (storeIds.length === 0) {
+  if (!activeStoreId) {
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-semibold">Products</h1>
@@ -44,7 +39,7 @@ export default async function ProductsPage({
   let countQuery = supabase
     .from('products')
     .select('id', { count: 'exact', head: true })
-    .in('store_id', storeIds)
+    .eq('store_id', activeStoreId)
 
   if (search) countQuery = countQuery.ilike('title', `%${search}%`)
   if (tag) countQuery = countQuery.contains('tags', [tag])
@@ -59,7 +54,7 @@ export default async function ProductsPage({
       inventory_quantity, status, updated_at,
       product_images!inner(src, is_primary)
     `)
-    .in('store_id', storeIds)
+    .eq('store_id', activeStoreId)
     .eq('product_images.is_primary', true)
     .order('updated_at', { ascending: false })
     .range(from, to)

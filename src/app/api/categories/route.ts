@@ -6,11 +6,12 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data } = await supabase
-    .from('template_categories')
-    .select('*')
-    .eq('user_id', user.id)
-    .order('name')
+  const { getActiveStore } = await import('@/lib/active-store')
+  const { activeStoreId } = await getActiveStore()
+  const { data } = activeStoreId
+    ? await supabase.from('template_categories').select('*')
+        .eq('store_id', activeStoreId).order('name')
+    : { data: [] }
 
   return NextResponse.json({ categories: data || [] })
 }
@@ -23,9 +24,13 @@ export async function POST(request: NextRequest) {
   const { name } = await request.json()
   if (!name) return NextResponse.json({ error: 'name required' }, { status: 400 })
 
+  const { getActiveStore } = await import('@/lib/active-store')
+  const { activeStoreId } = await getActiveStore()
+  if (!activeStoreId) return NextResponse.json({ error: 'No active store' }, { status: 400 })
+
   const { data, error } = await supabase
     .from('template_categories')
-    .insert({ user_id: user.id, name })
+    .insert({ user_id: user.id, store_id: activeStoreId, name })
     .select()
     .single()
 

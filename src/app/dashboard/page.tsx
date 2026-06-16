@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getActiveStore } from '@/lib/active-store'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ShoppingBag, Layers, ImageIcon, Store } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
@@ -7,29 +8,40 @@ export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
+  const { activeStoreId, stores: storeList } = await getActiveStore()
+
+  // Full store row for the active store (for sync status display).
   const { data: stores } = await supabase
     .from('stores')
     .select('*')
     .eq('user_id', user!.id)
+    .order('created_at', { ascending: true })
 
-  const storeIds = stores?.map(s => s.id) || []
+  const activeStore = stores?.find(s => s.id === activeStoreId) || null
 
-  const [{ count: productCount }, { count: templateCount }, { count: creativeCount }] = await Promise.all([
-    supabase.from('products').select('*', { count: 'exact', head: true }).in('store_id', storeIds),
-    supabase.from('templates').select('*', { count: 'exact', head: true }).eq('user_id', user!.id),
-    supabase.from('generated_images').select('*', { count: 'exact', head: true })
-      .in('product_id',
-        storeIds.length > 0
-          ? (await supabase.from('products').select('id').in('store_id', storeIds)).data?.map(p => p.id) || []
-          : []
-      ),
-  ])
+  // All metrics scoped to the ACTIVE store only — never aggregated.
+  let productCount = 0, templateCount = 0, creativeCount = 0
+  if (activeStoreId) {
+    const productIdsRes = await supabase.from('products').select('id').eq('store_id', activeStoreId)
+    const productIds = (productIdsRes.data || []).map(p => p.id)
+
+    const [pc, tc, cc] = await Promise.all([
+      supabase.from('products').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
+      supabase.from('templates').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
+      productIds.length > 0
+        ? supabase.from('generated_images').select('*', { count: 'exact', head: true }).in('product_id', productIds)
+        : Promise.resolve({ count: 0 } as any),
+    ])
+    productCount = pc.count || 0
+    templateCount = tc.count || 0
+    creativeCount = cc.count || 0
+  }
 
   const stats = [
-    { label: 'Connected stores', value: stores?.length || 0, icon: Store },
-    { label: 'Products synced', value: productCount || 0, icon: ShoppingBag },
-    { label: 'Templates', value: templateCount || 0, icon: Layers },
-    { label: 'Creatives generated', value: creativeCount || 0, icon: ImageIcon },
+    { label: 'Connected stores', value: storeList.length, icon: Store },
+    { label: 'Products synced', value: productCount, icon: ShoppingBag },
+    { label: 'Templates', value: templateCount, icon: Layers },
+    { label: 'Creatives generated', value: creativeCount, icon: ImageIcon },
   ]
 
   return (
@@ -53,30 +65,28 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      {stores && stores.length > 0 && (
+      {activeStore && (
         <div>
           <h2 className="text-base font-medium mb-3">Store sync status</h2>
           <div className="space-y-2">
-            {stores.map(store => (
-              <Card key={store.id}>
-                <CardContent className="p-4 flex items-center justify-between">
-                  <div>
-                    <p className="font-medium text-sm">{store.shop_name || store.shop_domain}</p>
-                    <p className="text-xs text-muted-foreground">{store.shop_domain}</p>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {store.last_synced_at
-                      ? `Synced ${formatDistanceToNow(new Date(store.last_synced_at), { addSuffix: true })}`
-                      : 'Never synced'}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
+            <Card key={activeStore.id}>
+              <CardContent className="p-4 flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-sm">{activeStore.shop_name || activeStore.shop_domain}</p>
+                  <p className="text-xs text-muted-foreground">{activeStore.shop_domain}</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {activeStore.last_synced_at
+                    ? `Synced ${formatDistanceToNow(new Date(activeStore.last_synced_at), { addSuffix: true })}`
+                    : 'Never synced'}
+                </p>
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}
 
-      {(!stores || stores.length === 0) && (
+      {!activeStore && (
         <Card className="border-dashed">
           <CardContent className="text-center py-12 text-muted-foreground">
             <Store className="h-8 w-8 mx-auto mb-3 opacity-40" />

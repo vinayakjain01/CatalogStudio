@@ -1,14 +1,20 @@
 import { createClient } from '@/lib/supabase/server'
+import { getActiveStore } from '@/lib/active-store'
 import { RulesClient } from '@/components/rules/rules-client'
 
 export default async function RulesPage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const { activeStoreId, stores } = await getActiveStore()
 
-  const [{ data: stores }, { data: templates }] = await Promise.all([
-    supabase.from('stores').select('id, shop_name, shop_domain').eq('user_id', user!.id),
-    supabase.from('templates').select('id, name').eq('user_id', user!.id).eq('is_active', true),
-  ])
+  // Templates for the active store only (rules are store-scoped).
+  const { data: templates } = activeStoreId
+    ? await supabase.from('templates').select('id, name')
+        .eq('store_id', activeStoreId).eq('is_active', true)
+    : { data: [] }
+
+  const activeStores = stores
+    .filter(s => s.id === activeStoreId)
+    .map(s => ({ id: s.id, shop_name: s.shop_name || '', shop_domain: s.shop_domain }))
 
   return (
     <div className="space-y-6">
@@ -18,7 +24,7 @@ export default async function RulesPage() {
           Automatically assign templates to products based on tags, vendor, type, or discount
         </p>
       </div>
-      <RulesClient stores={stores || []} templates={templates || []} />
+      <RulesClient stores={activeStores} templates={templates || []} />
     </div>
   )
 }

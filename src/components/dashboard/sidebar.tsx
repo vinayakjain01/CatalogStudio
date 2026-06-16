@@ -7,6 +7,13 @@ import { useRouter } from 'next/navigation'
 import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Megaphone } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { StoreSwitcher } from '@/components/dashboard/store-switcher'
+
+interface StoreLite {
+  id: string
+  shop_name: string | null
+  shop_domain: string
+}
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -18,7 +25,13 @@ const navItems = [
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]
 
-export function Sidebar() {
+export function Sidebar({
+  stores = [],
+  activeStoreId = null,
+}: {
+  stores?: StoreLite[]
+  activeStoreId?: string | null
+}) {
   const pathname = usePathname()
   const router = useRouter()
   const supabase = createClient()
@@ -35,6 +48,9 @@ export function Sidebar() {
           <Wand2 className="h-5 w-5 text-primary" />
           <span className="font-semibold text-base">CatalogCreative</span>
         </div>
+      </div>
+      <div className="border-b">
+        <StoreSwitcher stores={stores} activeStoreId={activeStoreId} />
       </div>
       <nav className="flex-1 p-3 space-y-1">
         {navItems.map(({ href, label, icon: Icon }) => (

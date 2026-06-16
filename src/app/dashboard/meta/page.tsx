@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getActiveStore } from '@/lib/active-store'
 import { MetaStoreCard } from '@/components/meta/meta-store-card'
 
 export const dynamic = 'force-dynamic'
@@ -6,11 +7,13 @@ export const dynamic = 'force-dynamic'
 export default async function MetaPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  const { activeStoreId } = await getActiveStore()
 
   const { data: stores } = await supabase
     .from('stores')
     .select('id, shop_name, shop_domain, feed_token, meta_catalog_id, meta_feed_status, meta_feed_last_sync')
     .eq('user_id', user!.id)
+    .eq('id', activeStoreId || '')
     .order('created_at', { ascending: false })
 
   // Per-store counts: products synced, completed creatives, failed creatives,

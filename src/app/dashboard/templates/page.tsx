@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getActiveStore } from '@/lib/active-store'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,13 +9,15 @@ import { DeleteTemplateButton } from '@/components/templates/delete-template-but
 
 export default async function TemplatesPage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const { activeStoreId } = await getActiveStore()
 
-  const { data: templates } = await supabase
-    .from('templates')
-    .select('*, template_categories(name)')
-    .eq('user_id', user!.id)
-    .order('created_at', { ascending: false })
+  const { data: templates } = activeStoreId
+    ? await supabase
+        .from('templates')
+        .select('*, template_categories(name)')
+        .eq('store_id', activeStoreId)
+        .order('created_at', { ascending: false })
+    : { data: [] }
 
   return (
     <div className="space-y-6">

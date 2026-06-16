@@ -31,10 +31,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'name and canvas_data required' }, { status: 400 })
   }
 
+  // Templates are store-scoped. Use the active store (validated against the user).
+  const { getActiveStore } = await import('@/lib/active-store')
+  const { activeStoreId } = await getActiveStore()
+  if (!activeStoreId) {
+    return NextResponse.json({ error: 'No active store. Connect a store first.' }, { status: 400 })
+  }
+
   const { data, error } = await supabase
     .from('templates')
     .insert({
       user_id: user.id,
+      store_id: activeStoreId,
       name,
       description: description || null,
       category_id: category_id || null,
