@@ -19,35 +19,35 @@ export default async function MetaPage() {
   // Per-store counts: products synced, completed creatives, failed creatives,
   // and pending jobs. Done with lightweight count queries per store.
   const cards = await Promise.all((stores || []).map(async (store) => {
-    const [{ count: products }, { data: productIds }] = await Promise.all([
+    const [
+      { count: products },
+      { count: generatedCount },
+      { count: failedCount },
+      { count: pendingJobs },
+    ] = await Promise.all([
       supabase.from('products').select('id', { count: 'exact', head: true })
         .eq('store_id', store.id).eq('status', 'active'),
-      supabase.from('products').select('id').eq('store_id', store.id),
+      supabase
+        .from('generated_images')
+        .select('id, products!inner(store_id)', { count: 'exact', head: true })
+        .eq('products.store_id', store.id)
+        .eq('status', 'completed'),
+      supabase
+        .from('generated_images')
+        .select('id, products!inner(store_id)', { count: 'exact', head: true })
+        .eq('products.store_id', store.id)
+        .eq('status', 'failed'),
+      supabase
+        .from('generation_jobs').select('id', { count: 'exact', head: true })
+        .eq('store_id', store.id).in('status', ['pending', 'processing']),
     ])
-
-    const ids = (productIds || []).map((p: any) => p.id)
-    let generated = 0, failed = 0
-    if (ids.length > 0) {
-      const [{ count: gen }, { count: fail }] = await Promise.all([
-        supabase.from('generated_images').select('id', { count: 'exact', head: true })
-          .in('product_id', ids).eq('status', 'completed'),
-        supabase.from('generated_images').select('id', { count: 'exact', head: true })
-          .in('product_id', ids).eq('status', 'failed'),
-      ])
-      generated = gen || 0
-      failed = fail || 0
-    }
-
-    const { count: pendingJobs } = await supabase
-      .from('generation_jobs').select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id).in('status', ['pending', 'processing'])
 
     return {
       store,
       stats: {
         products: products || 0,
-        generated,
-        failed,
+        generated: generatedCount || 0,
+        failed: failedCount || 0,
         pendingJobs: pendingJobs || 0,
       },
     }

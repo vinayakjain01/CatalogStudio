@@ -47,26 +47,15 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   async function fetchCreatives() {
     setLoading(true)
     const supabase = (await import('@/lib/supabase/client')).createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-
-    // Get products for this store
-    const { data: products } = await supabase
-      .from('products')
-      .select('id')
-      .eq('store_id', selectedStore)
-
-    if (!products?.length) { setCreatives([]); setLoading(false); return }
-
-    const productIds = products.map(p => p.id)
 
     const { data } = await supabase
       .from('generated_images')
       .select(`
         id, generated_url, status, updated_at, template_id, cloudinary_public_id,
-        products(title, price, product_images(src, is_primary)),
+        products!inner(title, price, store_id, product_images(src, is_primary)),
         templates(name)
       `)
-      .in('product_id', productIds)
+      .eq('products.store_id', selectedStore)
       .eq('status', 'completed')
       .order('updated_at', { ascending: false })
       .limit(100)

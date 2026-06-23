@@ -16,7 +16,7 @@ interface Product {
   compare_at_price: number | null
 }
 
-interface Rule {
+export interface TemplateRule {
   id: string
   rule_type: string
   rule_operator: string
@@ -25,10 +25,7 @@ interface Rule {
   template_id: string
 }
 
-export async function resolveTemplateForProduct(
-  product: Product,
-  storeId: string
-): Promise<string | null> {
+export async function getActiveTemplateRules(storeId: string): Promise<TemplateRule[]> {
   const supabase = getAdminClient()
 
   const { data: rules } = await supabase
@@ -38,8 +35,22 @@ export async function resolveTemplateForProduct(
     .eq('is_active', true)
     .order('priority', { ascending: false })
 
-  if (!rules || rules.length === 0) return null
+  return rules || []
+}
 
+export async function resolveTemplateForProduct(
+  product: Product,
+  storeId: string
+): Promise<string | null> {
+  const rules = await getActiveTemplateRules(storeId)
+  return resolveTemplateFromRules(product, rules)
+}
+
+export function resolveTemplateFromRules(
+  product: Product,
+  rules: TemplateRule[]
+): string | null {
+  if (rules.length === 0) return null
   const discount =
     product.compare_at_price && product.compare_at_price > product.price
       ? Math.round(((product.compare_at_price - product.price) / product.compare_at_price) * 100)

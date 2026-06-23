@@ -24,13 +24,29 @@ export async function POST(request: NextRequest) {
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })
 
   const admin = getAdminClient()
-  let q = admin.from('products').select('id').eq('store_id', storeId).eq('status', 'active')
-  if (filter?.type === 'tag' && filter.value) q = q.contains('tags', [filter.value])
-  else if (filter?.type === 'vendor' && filter.value) q = q.eq('vendor', filter.value)
-  else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
+  const productIds: string[] = []
+  const PAGE = 1000
+  let from = 0
 
-  const { data: products } = await q
-  const productIds = (products || []).map((p: any) => p.id)
+  while (true) {
+    let q = admin
+      .from('products')
+      .select('id')
+      .eq('store_id', storeId)
+      .eq('status', 'active')
+      .range(from, from + PAGE - 1)
+
+    if (filter?.type === 'tag' && filter.value) q = q.contains('tags', [filter.value])
+    else if (filter?.type === 'vendor' && filter.value) q = q.eq('vendor', filter.value)
+    else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
+
+    const { data: products, error } = await q
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!products || products.length === 0) break
+    productIds.push(...products.map((p: any) => p.id))
+    if (products.length < PAGE) break
+    from += PAGE
+  }
   if (productIds.length === 0) {
     return NextResponse.json({ message: 'No products matched', enqueued: 0 })
   }

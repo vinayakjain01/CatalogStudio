@@ -44,8 +44,6 @@ export default async function ProductsPage({
   if (search) countQuery = countQuery.ilike('title', `%${search}%`)
   if (tag) countQuery = countQuery.contains('tags', [tag])
 
-  const { count: totalCount } = await countQuery
-
   // Build paginated query
   let query = supabase
     .from('products')
@@ -62,7 +60,10 @@ export default async function ProductsPage({
   if (search) query = query.ilike('title', `%${search}%`)
   if (tag) query = query.contains('tags', [tag])
 
-  const { data: products } = await query
+  const [{ count: totalCount }, { data: products }] = await Promise.all([
+    countQuery,
+    query,
+  ])
 
   const totalPages = Math.max(1, Math.ceil((totalCount || 0) / PAGE_SIZE))
 

@@ -22,15 +22,13 @@ export default async function DashboardPage() {
   // All metrics scoped to the ACTIVE store only — never aggregated.
   let productCount = 0, templateCount = 0, creativeCount = 0
   if (activeStoreId) {
-    const productIdsRes = await supabase.from('products').select('id').eq('store_id', activeStoreId)
-    const productIds = (productIdsRes.data || []).map(p => p.id)
-
     const [pc, tc, cc] = await Promise.all([
       supabase.from('products').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
       supabase.from('templates').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
-      productIds.length > 0
-        ? supabase.from('generated_images').select('*', { count: 'exact', head: true }).in('product_id', productIds)
-        : Promise.resolve({ count: 0 } as any),
+      supabase
+        .from('generated_images')
+        .select('id, products!inner(store_id)', { count: 'exact', head: true })
+        .eq('products.store_id', activeStoreId),
     ])
     productCount = pc.count || 0
     templateCount = tc.count || 0

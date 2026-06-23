@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { measureAsync } from '@/lib/perf'
 
 export interface ShopifyProduct {
   id: number
@@ -52,15 +53,21 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
     return data.shop
   }
 
-  async function getProducts(sinceId?: string): Promise<ShopifyProduct[]> {
+  async function getProducts(options: { sinceId?: string; updatedAtMin?: string } | string = {}): Promise<ShopifyProduct[]> {
+    const sinceId = typeof options === 'string' ? options : options.sinceId
+    const updatedAtMin = typeof options === 'string' ? undefined : options.updatedAtMin
     const allProducts: ShopifyProduct[] = []
     let url = '/products.json?limit=250&status=active'
     if (sinceId) url += `&since_id=${sinceId}`
+    if (updatedAtMin) url += `&updated_at_min=${encodeURIComponent(updatedAtMin)}`
 
     while (url) {
-      const { data, headers } = await client.get(url)
       try {
-        const { data, headers } = await client.get(url)
+        const { data, headers } = await measureAsync(
+          'shopify.products.page_fetch',
+          () => client.get(url),
+          { url }
+        )
 
         allProducts.push(...data.products)
 
@@ -87,21 +94,6 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
         console.error(err.response?.data)
 
         throw err
-      }
-
-      // Handle pagination via Link header
-      const linkHeader = headers['link']
-      if (linkHeader && linkHeader.includes('rel="next"')) {
-        const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/)
-        if (match) {
-          // Extract just the path+query from the full URL
-          const nextUrl = new URL(match[1])
-          url = nextUrl.pathname.replace('/admin/api/2025-04', '') + nextUrl.search
-        } else {
-          url = ''
-        }
-      } else {
-        url = ''
       }
     }
 

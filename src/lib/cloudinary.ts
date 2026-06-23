@@ -1,4 +1,5 @@
 import { v2 as cloudinary } from 'cloudinary'
+import { logPerf } from '@/lib/perf'
 
 cloudinary.config({
   cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
@@ -23,6 +24,7 @@ export async function uploadBuffer(
   buffer: Buffer,
   publicId: string
 ): Promise<{ url: string; deliveredUrl: string; publicId: string }> {
+  const started = Date.now()
   return new Promise((resolve, reject) => {
     cloudinary.uploader
       .upload_stream(
@@ -35,6 +37,11 @@ export async function uploadBuffer(
           // keep the original PNG master lossless.
         },
         (error, result) => {
+          logPerf('cloudinary.upload.stream', Date.now() - started, {
+            publicId,
+            bytes: buffer.length,
+            ok: Boolean(!error && result),
+          })
           if (error || !result) return reject(error)
           resolve({
             url: result.secure_url,

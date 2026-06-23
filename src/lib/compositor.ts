@@ -2,6 +2,8 @@ import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
 import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
 import { resolveVariables } from '@/types/template'
+import { mapWithConcurrency } from '@/lib/concurrency'
+import { logPerf, measureAsync } from '@/lib/perf'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
@@ -18,6 +20,15 @@ import { resolveVariables } from '@/types/template'
 
 const DEFAULT_TARGET_SIZE = 1080
 const SUPERSAMPLE = 2 // 2x is the sweet spot; 3x for print, at higher memory cost
+const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
+const IMAGE_CACHE_MAX = 250
+
+type CachedImage = {
+  promise: Promise<any>
+  expiresAt: number
+}
+
+const imageCache = new Map<string, CachedImage>()
 
 // Register fonts once (module-level, runs on cold start)
 let fontsRegistered = false
@@ -72,19 +83,75 @@ function toFullResolution(src: string): string {
 // timeout, so a slow or unreachable product-image URL would hang the whole
 // serverless function until it 504s. We fetch the bytes ourselves with an
 // AbortController and hand the buffer to loadImage (which accepts Buffers).
-async function loadImageSafe(src: string, timeoutMs = 12_000) {
+async function loadImageUncached(src: string, timeoutMs = 12_000) {
   // data: URLs and local buffers pass straight through
   if (src.startsWith('data:')) return loadImage(src)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(src, { signal: controller.signal })
+    const res = await fetch(src, { signal: controller.signal, cache: 'force-cache' })
     if (!res.ok) throw new Error(`image fetch ${res.status} for ${src}`)
     const buf = Buffer.from(await res.arrayBuffer())
     return await loadImage(buf)
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function loadImageSafe(src: string, timeoutMs = 12_000) {
+  if (src.startsWith('data:')) return loadImageUncached(src, timeoutMs)
+
+  const now = Date.now()
+  const cached = imageCache.get(src)
+  if (cached && cached.expiresAt > now) return cached.promise
+
+  const promise = loadImageUncached(src, timeoutMs).catch(err => {
+    imageCache.delete(src)
+    throw err
+  })
+
+  imageCache.set(src, { promise, expiresAt: now + IMAGE_CACHE_TTL_MS })
+  pruneImageCache(now)
+  return promise
+}
+
+function pruneImageCache(now = Date.now()) {
+  for (const [key, value] of imageCache) {
+    if (value.expiresAt <= now) imageCache.delete(key)
+  }
+
+  while (imageCache.size > IMAGE_CACHE_MAX) {
+    const firstKey = imageCache.keys().next().value as string | undefined
+    if (!firstKey) break
+    imageCache.delete(firstKey)
+  }
+}
+
+async function preloadRenderableImages(canvasData: CanvasData, product: { imageUrl: string | null }) {
+  const urls = new Set<string>()
+  const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
+
+  if (settings.mode === 'solid' && canvasData.backgroundImageUrl) {
+    urls.add(canvasData.backgroundImageUrl)
+  }
+  if (settings.mode !== 'solid' && settings.mode !== 'transparent' && product.imageUrl) {
+    urls.add(product.imageUrl)
+  }
+
+  for (const layer of canvasData.layers) {
+    if (!['overlay', 'logo', 'sticker', 'image'].includes(layer.type)) continue
+    const imageLayer = layer as Layer & { src?: string }
+    const src = imageLayer.src === '{{product_image}}' ? product.imageUrl : imageLayer.src
+    if (src) urls.add(src)
+  }
+
+  await mapWithConcurrency([...urls], 6, async src => {
+    try {
+      await loadImageSafe(src)
+    } catch {
+      // The draw path keeps the existing per-layer fallback behavior.
+    }
+  })
 }
 
 // ─── Server-side background renderers ────────────────────────────────────────
@@ -237,10 +304,11 @@ async function serverRenderBackground(
     }
   }
 }
-  export async function compositeImage(
-    canvasData: CanvasData,
-    product: ProductData
-  ): Promise<Buffer> {
+export async function compositeImage(
+  canvasData: CanvasData,
+  product: ProductData
+): Promise<Buffer> {
+  return measureAsync('creative.render.total', async () => {
     ensureFontsRegistered()
 
     // Use actual canvas dimensions from the template
@@ -249,6 +317,11 @@ async function serverRenderBackground(
 
     const canvas = createCanvas(W, H)
     const ctx = canvas.getContext('2d')
+
+    await measureAsync('creative.render.asset_preload', () =>
+      preloadRenderableImages(canvasData, product),
+      { layers: canvasData.layers.length }
+    )
 
     // Background
     await serverRenderBackground(ctx, canvasData, product, W, H)
@@ -395,8 +468,16 @@ async function serverRenderBackground(
     // Lossless PNG master. The single lossy pass happens at Cloudinary delivery
     // (f_auto,q_auto:good). Must stay PNG: the upload route validates the PNG
     // signature (0x89 0x50) and the quality pipeline depends on a lossless master.
-    return canvas.toBuffer('image/png')
-  }
+    const pngStarted = Date.now()
+    const buffer = canvas.toBuffer('image/png')
+    logPerf('creative.render.png_encode', Date.now() - pngStarted, {
+      bytes: buffer.length,
+      width: W,
+      height: H,
+    })
+    return buffer
+  }, { layers: canvasData.layers.length })
+}
 
 function roundRect(
   ctx: any,
