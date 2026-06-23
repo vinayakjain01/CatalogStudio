@@ -27,15 +27,30 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Protect dashboard routes
-  if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
+  const pathname = request.nextUrl.pathname
+
+  // --- Shopify embedded app launch ---
+  // These paths must NOT be blocked regardless of auth state.
+  // /api/shopify/auth validates via HMAC, not Supabase session.
+  // /api/shopify/auth/finalize is hit after Supabase magic-link auth.
+  const isShopifyAuthRoute =
+    pathname.startsWith('/api/shopify/auth') ||
+    pathname.startsWith('/api/shopify/install') ||
+    pathname.startsWith('/api/shopify/callback')
+
+  if (isShopifyAuthRoute) {
+    return supabaseResponse
+  }
+
+  // Protect dashboard routes — redirect to login if not authenticated
+  if (!user && pathname.startsWith('/dashboard')) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
   // Redirect logged-in users away from auth pages
-  if (user && (request.nextUrl.pathname === '/login' || request.nextUrl.pathname === '/signup')) {
+  if (user && (pathname === '/login' || pathname === '/signup' || pathname === '/login/signup')) {
     const url = request.nextUrl.clone()
     url.pathname = '/dashboard'
     return NextResponse.redirect(url)
@@ -45,5 +60,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|api).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/cron).*)'],
 }
