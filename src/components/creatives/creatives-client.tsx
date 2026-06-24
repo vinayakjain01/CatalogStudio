@@ -68,7 +68,9 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     setGenerating(true)
     setGenResult(null)
 
-    const res = await fetch('/api/generate', {
+    // Enqueue the run — returns instantly. The DigitalOcean worker (via Redis)
+    // does the heavy compositing, so this no longer times out on large catalogs.
+    const res = await fetch('/api/generate/enqueue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -78,13 +80,37 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     })
 
     const data = await res.json()
-    if (res.ok) {
-      setGenResult(`Generated ${data.generated} creatives from ${data.total} products`)
-      fetchCreatives()
-    } else {
+    if (!res.ok) {
       setGenResult(data.error || 'Generation failed')
+      setGenerating(false)
+      return
     }
-    setGenerating(false)
+
+    if (!data.enqueued) {
+      setGenResult(data.message || 'No products matched the rules.')
+      setGenerating(false)
+      return
+    }
+
+    const batchId = data.batchId
+    setGenResult(`Queued ${data.enqueued} products. Generating…`)
+
+    // Poll batch progress until all jobs finish.
+    const poll = async (): Promise<void> => {
+      const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
+      const c = await pr.json()
+      const done = (c.completed || 0) + (c.failed || 0)
+      setGenResult(`Generating… ${done}/${c.total} done`)
+      fetchCreatives()
+      if (done < c.total && c.total > 0) {
+        setTimeout(poll, 2500)
+      } else {
+        setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
+        fetchCreatives()
+        setGenerating(false)
+      }
+    }
+    setTimeout(poll, 2500)
   }
 
   async function handleDelete(creativeId: string, publicId: string) {

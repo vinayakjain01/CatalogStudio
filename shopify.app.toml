@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "120d47f11df977847c541a3248390cde"
-name = "CatalogStudio"
+client_id = "a43b10e6f1a97ebe20d14d8d12dd6be9"
+name = "Craftify"
 application_url = "https://catalogstudio.vercel.app/"
 embedded = true
 

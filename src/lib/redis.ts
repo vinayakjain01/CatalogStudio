@@ -9,12 +9,13 @@ export function isRedisEnabled() {
 export function getRedisConnection() {
   if (!process.env.REDIS_URL) return null
   if (!connection) {
+    // DigitalOcean Managed Redis uses rediss:// (TLS). A plain redis:// URL
+    // (e.g. local dev) must NOT set tls or ioredis fails to connect.
+    const useTls = process.env.REDIS_URL.startsWith('rediss://')
     connection = new IORedis(process.env.REDIS_URL, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
-      tls: {
-        rejectUnauthorized: false,
-      },
+      ...(useTls ? { tls: {} } : {}),
     })
   }
   return connection
