@@ -95,22 +95,31 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     const batchId = data.batchId
     setGenResult(`Queued ${data.enqueued} products. Generating…`)
 
-    // Poll batch progress until all jobs finish.
-    const poll = async (): Promise<void> => {
+    // Actively DRAIN the queue from the browser: each tick processes a batch
+    // server-side, then checks progress. This works with no worker and no
+    // per-minute cron (Vercel Hobby-friendly). Keep the tab open until done.
+    const tick = async (): Promise<void> => {
+      try {
+        await fetch('/api/generate/drain', { method: 'POST' })
+      } catch {
+        // network blip — progress check below still runs; we retry next tick
+      }
+
       const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
       const c = await pr.json()
       const done = (c.completed || 0) + (c.failed || 0)
       setGenResult(`Generating… ${done}/${c.total} done`)
       fetchCreatives()
-      if (done < c.total && c.total > 0) {
-        setTimeout(poll, 2500)
+
+      if (c.total > 0 && done < c.total) {
+        setTimeout(tick, 1500)
       } else {
         setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
         fetchCreatives()
         setGenerating(false)
       }
     }
-    setTimeout(poll, 2500)
+    tick()
   }
 
   async function handleDelete(creativeId: string, publicId: string) {
