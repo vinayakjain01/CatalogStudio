@@ -28,6 +28,27 @@ function adminClient() {
   )
 }
 
+/**
+ * The public origin this app is served from.
+ *
+ * We do NOT trust NEXT_PUBLIC_APP_URL blindly: if it is unset or still points
+ * at http://localhost:3000 (a very common Vercel misconfiguration), the magic
+ * link would redirect the embedded iframe to localhost and the merchant sees
+ * "localhost refused to connect". Deriving the origin from the incoming request
+ * is always correct because Shopify loads this route on the real app domain.
+ */
+function getAppOrigin(request: NextRequest): string {
+  const env = process.env.NEXT_PUBLIC_APP_URL
+  if (env && !env.includes('localhost') && !env.includes('127.0.0.1')) {
+    return env.replace(/\/$/, '')
+  }
+  const forwardedHost = request.headers.get('x-forwarded-host')
+  const host = forwardedHost ?? request.headers.get('host')
+  const proto = request.headers.get('x-forwarded-proto') ?? 'https'
+  if (host) return `${proto}://${host}`
+  return request.nextUrl.origin
+}
+
 function verifyHmac(query: URLSearchParams, secret: string): boolean {
   const hmac = query.get('hmac')
   if (!hmac) return false
@@ -99,7 +120,7 @@ export async function GET(request: NextRequest) {
   // without ever seeing a login form. The magic link redirects to our
   // /api/shopify/auth/finalize which sets the active store cookie and
   // then goes to /dashboard.
-  const redirectTo = `${process.env.NEXT_PUBLIC_APP_URL}/api/shopify/auth/finalize?store_id=${store.id}&host=${encodeURIComponent(host)}`
+  const redirectTo = `${getAppOrigin(request)}/api/shopify/auth/finalize?store_id=${store.id}&host=${encodeURIComponent(host)}`
 
   const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
     type: 'magiclink',

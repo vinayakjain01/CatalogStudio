@@ -19,6 +19,30 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
   })
 }
 
+/**
+ * Turn an error into a useful message for the UI.
+ * For Shopify/axios HTTP errors we expose the upstream status + body so the
+ * real cause (e.g. invalid token, missing scope, suspended shop) is visible
+ * instead of the opaque "Request failed with status code 403".
+ */
+function describeError(err: any): { message: string; status: number } {
+  const httpStatus = err?.response?.status
+  if (httpStatus) {
+    const body = err.response?.data
+    const detail =
+      typeof body === 'string'
+        ? body
+        : body?.errors
+          ? JSON.stringify(body.errors)
+          : JSON.stringify(body ?? {})
+    return {
+      message: `Shopify API ${httpStatus}: ${detail || err.message}`,
+      status: 502,
+    }
+  }
+  return { message: err?.message ?? 'Sync failed', status: 500 }
+}
+
 // Called by the user from the UI (authenticated)
 export async function POST(
   request: NextRequest,
@@ -34,7 +58,8 @@ export async function POST(
       const synced = await runSync(storeId, supabase)
       return NextResponse.json({ success: true, productsSync: synced })
     } catch (err: any) {
-      return NextResponse.json({ error: err.message }, { status: 500 })
+      const e = describeError(err)
+      return NextResponse.json({ error: e.message }, { status: e.status })
     }
   }
 
@@ -63,6 +88,7 @@ export async function POST(
     const synced = await runSync(storeId, adminSupabase)
     return NextResponse.json({ success: true, productsSync: synced })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    const e = describeError(err)
+    return NextResponse.json({ error: e.message }, { status: e.status })
   }
 }

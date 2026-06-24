@@ -27,6 +27,18 @@ function adminClient() {
   )
 }
 
+/** Public origin, ignoring a localhost NEXT_PUBLIC_APP_URL (see auth route). */
+function getAppOrigin(request: NextRequest): string {
+  const env = process.env.NEXT_PUBLIC_APP_URL
+  if (env && !env.includes('localhost') && !env.includes('127.0.0.1')) {
+    return env.replace(/\/$/, '')
+  }
+  const host =
+    request.headers.get('x-forwarded-host') ?? request.headers.get('host')
+  const proto = request.headers.get('x-forwarded-proto') ?? 'https'
+  return host ? `${proto}://${host}` : request.nextUrl.origin
+}
+
 function verifyShopifyHmac(query: URLSearchParams, secret: string): boolean {
   const hmac = query.get('hmac')
   if (!hmac) return false
@@ -202,7 +214,7 @@ export async function GET(request: NextRequest) {
   }
 
   // --- Trigger first product sync (fire and forget) ---
-  fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/stores/${store.id}/sync`, {
+  fetch(`${getAppOrigin(request)}/api/stores/${store.id}/sync`, {
     method: 'POST',
     headers: { 'x-internal-secret': process.env.CRON_SECRET! },
   }).catch(console.error)
@@ -232,7 +244,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Scenario B: new merchant — generate magic link to sign them in automatically
-  const redirectTo = `${process.env.NEXT_PUBLIC_APP_URL}/api/shopify/auth/finalize?store_id=${store.id}`
+  const redirectTo = `${getAppOrigin(request)}/api/shopify/auth/finalize?store_id=${store.id}`
 
   const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
     type: 'magiclink',
