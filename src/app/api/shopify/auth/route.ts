@@ -3,23 +3,23 @@
  *
  * Embedded app launch handler.
  *
- * When Shopify Admin opens the app it loads:
- *   https://yourapp.com/api/shopify/auth?shop=store.myshopify.com&hmac=...&host=...
- *
  * Flow:
- * 1. Validate HMAC — confirms the request is genuinely from Shopify
- * 2. Look up the store in Supabase by shop_domain
- *    - Not found → send through the normal OAuth install flow
- *    - Found → use Supabase Admin API to create a short-lived session token
- *      for the store owner, then redirect to /dashboard with the session set
- * 3. Set active_store_id cookie so the dashboard opens on the right store
- *
- * The merchant never sees a login form. The app loads instantly.
+ * 1. Validate HMAC.
+ * 2. Look up the store. Not installed -> classic OAuth install.
+ * 3. Token exchange: trade the launch `id_token` for an EXPIRING offline access
+ *    token and store it. (Shopify rejects the old non-expiring tokens.)
+ * 4. Sign the store owner into Supabase SERVER-SIDE (verifyOtp on a generated
+ *    magic-link hash) and write the auth cookies as SameSite=None; Secure;
+ *    Partitioned so they survive inside Shopify's admin iframe.
+ * 5. Redirect straight to /dashboard. No client login form, no supabase.co hop.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createAdmin } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
 import crypto from 'crypto'
+import { ACTIVE_STORE_COOKIE } from '@/lib/active-store'
+import { exchangeSessionTokenForOfflineToken } from '@/lib/shopify-token'
 
 function adminClient() {
   return createAdmin(
@@ -28,25 +28,15 @@ function adminClient() {
   )
 }
 
-/**
- * The public origin this app is served from.
- *
- * We do NOT trust NEXT_PUBLIC_APP_URL blindly: if it is unset or still points
- * at http://localhost:3000 (a very common Vercel misconfiguration), the magic
- * link would redirect the embedded iframe to localhost and the merchant sees
- * "localhost refused to connect". Deriving the origin from the incoming request
- * is always correct because Shopify loads this route on the real app domain.
- */
 function getAppOrigin(request: NextRequest): string {
   const env = process.env.NEXT_PUBLIC_APP_URL
   if (env && !env.includes('localhost') && !env.includes('127.0.0.1')) {
     return env.replace(/\/$/, '')
   }
-  const forwardedHost = request.headers.get('x-forwarded-host')
-  const host = forwardedHost ?? request.headers.get('host')
+  const host =
+    request.headers.get('x-forwarded-host') ?? request.headers.get('host')
   const proto = request.headers.get('x-forwarded-proto') ?? 'https'
-  if (host) return `${proto}://${host}`
-  return request.nextUrl.origin
+  return host ? `${proto}://${host}` : request.nextUrl.origin
 }
 
 function verifyHmac(query: URLSearchParams, secret: string): boolean {
@@ -71,13 +61,41 @@ function verifyHmac(query: URLSearchParams, secret: string): boolean {
   }
 }
 
+/**
+ * Supabase server client that writes session cookies onto `response` with
+ * SameSite=None so they're sent on requests inside the Shopify iframe.
+ */
+function sessionClient(request: NextRequest, response: NextResponse) {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll()
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, {
+              ...options,
+              sameSite: 'none',
+              secure: true,
+              partitioned: true,
+              path: '/',
+            })
+          })
+        },
+      },
+    }
+  )
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const shop = searchParams.get('shop')
   const hmac = searchParams.get('hmac')
-  const host = searchParams.get('host') ?? ''   // base64 host, used by App Bridge
+  const idToken = searchParams.get('id_token') ?? ''
 
-  // Basic validation
   if (!shop || !hmac) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
@@ -87,7 +105,6 @@ export async function GET(request: NextRequest) {
     return new NextResponse('Invalid shop domain', { status: 400 })
   }
 
-  // Verify this request is genuinely from Shopify
   if (!verifyHmac(searchParams, process.env.SHOPIFY_CLIENT_SECRET!)) {
     console.error('[shopify/auth] HMAC invalid for shop:', shop)
     return new NextResponse('Unauthorized', { status: 401 })
@@ -95,46 +112,86 @@ export async function GET(request: NextRequest) {
 
   const supabase = adminClient()
 
-  // Look up the store
   const { data: store } = await supabase
     .from('stores')
     .select('id, user_id')
     .eq('shop_domain', shop)
     .maybeSingle()
 
-  // Not installed yet — run OAuth install
+  // Not installed yet — run OAuth install.
   if (!store) {
     const installUrl = new URL('/api/shopify/install', request.url)
     installUrl.searchParams.set('shop', shop)
     return NextResponse.redirect(installUrl.toString())
   }
 
-  // Get the owner's user record so we can create a session
-  const { data: userData, error: userError } = await supabase.auth.admin.getUserById(store.user_id)
-  if (userError || !userData?.user) {
+  // --- 3. Token exchange: refresh to an expiring offline access token. ---
+  if (idToken) {
+    try {
+      const { access_token, scope } = await exchangeSessionTokenForOfflineToken(
+        shop,
+        idToken
+      )
+      await supabase
+        .from('stores')
+        .update({ access_token, ...(scope ? { scope } : {}) })
+        .eq('id', store.id)
+    } catch (err) {
+      // Don't block the app load if exchange fails; log for diagnosis.
+      console.error('[shopify/auth] token exchange failed:', err)
+    }
+  }
+
+  // --- 4. Sign the owner into Supabase, server-side. ---
+  const { data: userData, error: userError } =
+    await supabase.auth.admin.getUserById(store.user_id)
+  if (userError || !userData?.user?.email) {
     console.error('[shopify/auth] Cannot find user for store:', store.id, userError)
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  // Create a short-lived magic link so the user is signed into Supabase
-  // without ever seeing a login form. The magic link redirects to our
-  // /api/shopify/auth/finalize which sets the active store cookie and
-  // then goes to /dashboard.
-  const redirectTo = `${getAppOrigin(request)}/api/shopify/auth/finalize?store_id=${store.id}&host=${encodeURIComponent(host)}`
+  const { data: linkData, error: linkError } =
+    await supabase.auth.admin.generateLink({
+      type: 'magiclink',
+      email: userData.user.email,
+    })
 
-  const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
-    type: 'magiclink',
-    email: userData.user.email!,
-    options: { redirectTo },
+  const tokenHash = linkData?.properties?.hashed_token
+
+  // Build the response we'll attach cookies to, then redirect to /dashboard.
+  const response = NextResponse.redirect(
+    new URL('/dashboard', getAppOrigin(request))
+  )
+  response.cookies.set(ACTIVE_STORE_COOKIE, store.id, {
+    httpOnly: false,
+    secure: true,
+    sameSite: 'none',
+    partitioned: true,
+    maxAge: 60 * 60 * 24 * 30,
+    path: '/',
   })
 
-  if (linkError || !linkData?.properties?.action_link) {
-    console.error('[shopify/auth] Failed to generate magic link:', linkError)
-    // Graceful fallback — let them log in normally
-    const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('next', `/dashboard?shop=${shop}`)
-    return NextResponse.redirect(loginUrl.toString())
+  if (linkError || !tokenHash) {
+    console.error('[shopify/auth] generateLink failed:', linkError)
+    return NextResponse.redirect(new URL('/login', request.url))
   }
 
-  return NextResponse.redirect(linkData.properties.action_link)
+  const session = sessionClient(request, response)
+  // generateLink('magiclink') hashes can verify as either type depending on
+  // project config; try both before giving up.
+  let verified = false
+  for (const type of ['email', 'magiclink'] as const) {
+    const { error } = await session.auth.verifyOtp({ token_hash: tokenHash, type })
+    if (!error) {
+      verified = true
+      break
+    }
+  }
+
+  if (!verified) {
+    console.error('[shopify/auth] verifyOtp failed for store:', store.id)
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
+
+  return response
 }
