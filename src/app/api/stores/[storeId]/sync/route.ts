@@ -19,6 +19,19 @@ async function runSync(storeId: string, supabase: ReturnType<typeof getAdminClie
   })
 }
 
+/** True when the error is a Shopify 403 caused by a stale/non-expiring token. */
+function isTokenError(err: any): boolean {
+  const status = err?.response?.status
+  if (status !== 403) return false
+  const body = err?.response?.data
+  const text = typeof body === 'string' ? body : JSON.stringify(body ?? '')
+  return (
+    text.includes('Non-expiring access tokens') ||
+    text.includes('offline-access-tokens') ||
+    text.includes('token')
+  )
+}
+
 /**
  * Turn an error into a useful message for the UI.
  * For Shopify/axios HTTP errors we expose the upstream status + body so the
@@ -58,8 +71,15 @@ export async function POST(
       const synced = await runSync(storeId, supabase)
       return NextResponse.json({ success: true, productsSync: synced })
     } catch (err: any) {
+      if (isTokenError(err)) {
+        // Mark needs_reauth so the UI shows a Reconnect button
+        await getAdminClient()
+          .from('stores')
+          .update({ needs_reauth: true })
+          .eq('id', storeId)
+      }
       const e = describeError(err)
-      return NextResponse.json({ error: e.message }, { status: e.status })
+      return NextResponse.json({ error: e.message, needs_reauth: isTokenError(err) }, { status: e.status })
     }
   }
 
@@ -86,9 +106,21 @@ export async function POST(
   try {
     const adminSupabase = getAdminClient()
     const synced = await runSync(storeId, adminSupabase)
+    // Sync succeeded — clear any previous needs_reauth flag
+    await adminSupabase
+      .from('stores')
+      .update({ needs_reauth: false })
+      .eq('id', storeId)
     return NextResponse.json({ success: true, productsSync: synced })
   } catch (err: any) {
+    if (isTokenError(err)) {
+      // Token is stale — mark for reconnect
+      await getAdminClient()
+        .from('stores')
+        .update({ needs_reauth: true })
+        .eq('id', storeId)
+    }
     const e = describeError(err)
-    return NextResponse.json({ error: e.message }, { status: e.status })
+    return NextResponse.json({ error: e.message, needs_reauth: isTokenError(err) }, { status: e.status })
   }
 }

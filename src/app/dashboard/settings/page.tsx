@@ -14,7 +14,7 @@ export default async function SettingsPage({
 
   const { data: stores } = await supabase
     .from('stores')
-    .select('id, shop_name, shop_domain, currency, last_synced_at, is_active, feed_token')
+    .select('id, shop_name, shop_domain, currency, last_synced_at, is_active, feed_token, needs_reauth')
     .eq('user_id', user!.id)
     .order('created_at', { ascending: false })
 

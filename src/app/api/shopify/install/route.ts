@@ -51,6 +51,10 @@ export async function GET(request: NextRequest) {
     `${process.env.NEXT_PUBLIC_APP_URL}/api/shopify/callback`
   )
   authUrl.searchParams.set('state', nonce)
+  // Request an expiring offline access token.
+  // Without this Shopify issues a non-expiring token which it now rejects
+  // with: "[API] Non-expiring access tokens are no longer accepted for the Admin API"
+  authUrl.searchParams.set('grant_options[]', 'offline')
 
   const response = NextResponse.redirect(authUrl.toString())
 

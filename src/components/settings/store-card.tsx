@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { RefreshCw, Store, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react'
+import { RefreshCw, Store, Copy, Check, ChevronDown, ChevronUp, AlertTriangle, ExternalLink } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
 interface StoreCardProps {
@@ -17,12 +17,15 @@ interface StoreCardProps {
     last_synced_at: string | null
     is_active: boolean
     feed_token: string
+    needs_reauth?: boolean
   }
 }
 
 export function StoreCard({ store }: StoreCardProps) {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<string | null>(null)
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [needsReauth, setNeedsReauth] = useState(store.needs_reauth ?? false)
   const [showFeed, setShowFeed] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const router = useRouter()
@@ -30,18 +33,29 @@ export function StoreCard({ store }: StoreCardProps) {
   const feedJsonUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=json`
   const feedCsvUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=csv`
 
+  // Reconnect sends the merchant through a fresh OAuth flow, which issues a
+  // new expiring offline token. This clears the 403 / non-expiring token error.
+  const reconnectUrl = `/api/shopify/install?shop=${encodeURIComponent(store.shop_domain)}`
+
   async function handleSync() {
     setSyncing(true)
     setSyncResult(null)
+    setSyncError(null)
 
     const res = await fetch(`/api/stores/${store.id}/sync`, { method: 'POST' })
     const data = await res.json()
 
     if (res.ok) {
       setSyncResult(`Synced ${data.productsSync} products`)
+      setNeedsReauth(false)
       router.refresh()
     } else {
-      setSyncResult(data.error || 'Sync failed')
+      if (data.needs_reauth) {
+        setNeedsReauth(true)
+        setSyncError('Your Shopify access token has expired and needs to be refreshed.')
+      } else {
+        setSyncError(data.error || 'Sync failed')
+      }
     }
     setSyncing(false)
   }
@@ -53,7 +67,7 @@ export function StoreCard({ store }: StoreCardProps) {
   }
 
   return (
-    <Card>
+    <Card className={needsReauth ? 'border-amber-300' : ''}>
       <CardContent className="p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -66,24 +80,46 @@ export function StoreCard({ store }: StoreCardProps) {
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground">{store.shop_domain}</p>
-              {store.last_synced_at && (
+              {store.last_synced_at && !needsReauth && (
                 <p className="text-xs text-muted-foreground">
                   Last synced {formatDistanceToNow(new Date(store.last_synced_at), { addSuffix: true })}
                 </p>
               )}
               {syncResult && <p className="text-xs text-green-600 mt-1">{syncResult}</p>}
+              {syncError && !needsReauth && <p className="text-xs text-red-600 mt-1">{syncError}</p>}
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
-              <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing…' : 'Sync now'}
-            </Button>
+            {!needsReauth && (
+              <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
+                <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Syncing…' : 'Sync now'}
+              </Button>
+            )}
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowFeed(!showFeed)}>
               {showFeed ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
           </div>
         </div>
+
+        {/* Token expired / needs reconnect banner */}
+        {needsReauth && (
+          <div className="mt-3 flex items-start gap-3 p-3 rounded-md bg-amber-50 border border-amber-200">
+            <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-amber-800">Shopify access token expired</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Shopify no longer accepts the old token. Reconnect to get a fresh one — it only takes a second.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 flex-shrink-0" asChild>
+              <a href={reconnectUrl}>
+                <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                Reconnect
+              </a>
+            </Button>
+          </div>
+        )}
 
         {showFeed && (
           <div className="mt-4 pt-4 border-t space-y-3">
