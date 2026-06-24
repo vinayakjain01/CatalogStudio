@@ -51,12 +51,12 @@ export async function GET(request: NextRequest) {
     `${process.env.NEXT_PUBLIC_APP_URL}/api/shopify/callback`
   )
   authUrl.searchParams.set('state', nonce)
-  // Request an expiring offline access token.
-  // Without this Shopify issues a non-expiring token which it now rejects
-  // with: "[API] Non-expiring access tokens are no longer accepted for the Admin API"
-  authUrl.searchParams.set('grant_options[]', 'offline')
+  // grant_options[] MUST be appended as a raw string — URLSearchParams encodes
+  // the brackets to %5B%5D which Shopify does not recognise, so it silently
+  // falls back to issuing the old non-expiring token (causing the 403).
+  const finalAuthUrl = authUrl.toString() + '&grant_options[]=offline'
 
-  const response = NextResponse.redirect(authUrl.toString())
+  const response = NextResponse.redirect(finalAuthUrl)
 
   // Store nonce for CSRF check in callback
   response.cookies.set('shopify_oauth_nonce', nonce, {
