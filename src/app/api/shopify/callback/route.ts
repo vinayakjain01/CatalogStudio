@@ -98,6 +98,7 @@ export async function GET(request: NextRequest) {
   // --- Exchange code for access token ---
   let accessToken: string
   let scope: string
+  let expiresAt: string | null = null
 
   try {
     const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
@@ -117,6 +118,11 @@ export async function GET(request: NextRequest) {
     const tokenData = await tokenRes.json()
     accessToken = tokenData.access_token
     scope = tokenData.scope
+    // Expiring offline tokens include expires_in (seconds). Store the absolute
+    // expiry so we can re-auth before it lapses. Legacy permanent tokens omit it.
+    if (tokenData.expires_in) {
+      expiresAt = new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+    }
   } catch (err: any) {
     console.error('[callback] Token exchange error:', err)
     return NextResponse.redirect(
@@ -194,6 +200,8 @@ export async function GET(request: NextRequest) {
         user_id: resolvedUserId,
         shop_domain: shop,
         access_token: accessToken,
+        token_expires_at: expiresAt,
+        needs_reauth: false,
         scope,
         shop_name: shopInfo.name,
         shop_email: shopInfo.email,

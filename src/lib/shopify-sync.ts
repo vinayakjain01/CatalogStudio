@@ -83,6 +83,19 @@ export async function syncStoreProducts({
 
     return synced
   } catch (err: any) {
+    // A 403/401 means the stored token is invalid/expired (Shopify's
+    // non-expiring-token deprecation). Flag the store so the UI prompts a
+    // reconnect instead of silently failing every sync.
+    const msg = String(err?.message || '')
+    const isAuthError = msg.includes('403') || msg.includes('401') ||
+      msg.toLowerCase().includes('access token')
+    if (isAuthError) {
+      await supabase
+        .from('stores')
+        .update({ needs_reauth: true })
+        .eq('id', storeId)
+    }
+
     await supabase
       .from('sync_logs')
       .update({
