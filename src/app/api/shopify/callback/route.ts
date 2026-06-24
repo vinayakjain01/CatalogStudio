@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import crypto from 'crypto'
 import { ACTIVE_STORE_COOKIE } from '@/lib/active-store'
+import { createShopifyClient } from '@/lib/shopify'
 
 function adminClient() {
   return createSupabaseAdmin(
@@ -111,18 +112,15 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // --- Fetch shop info from Shopify ---
+  // --- Fetch shop info from Shopify (GraphQL — REST /shop.json is deprecated) ---
   let shopInfo = { name: shop, email: '', currency: 'INR' }
 
   try {
-    const shopRes = await fetch(`https://${shop}/admin/api/2024-01/shop.json`, {
-      headers: { 'X-Shopify-Access-Token': accessToken },
-    })
-    const shopData = await shopRes.json()
+    const shopData = await createShopifyClient(shop, accessToken).getShop()
     shopInfo = {
-      name: shopData.shop?.name ?? shop,
-      email: shopData.shop?.email ?? '',
-      currency: shopData.shop?.currency ?? 'INR',
+      name: shopData.name ?? shop,
+      email: shopData.email ?? '',
+      currency: shopData.currency ?? 'INR',
     }
   } catch (err) {
     console.warn('[callback] Failed to fetch shop info, using defaults')
