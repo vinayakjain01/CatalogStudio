@@ -13,7 +13,17 @@ import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
 export function getAdminClient(): SupabaseClient {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      realtime: {
+        // Worker only needs DB access — disable Realtime to avoid
+        // WebSocket initialisation on Node.js 20 (no native WebSocket global).
+        transport: undefined as any,
+      },
+      global: {
+        headers: { 'x-client-info': 'catalog-worker' },
+      },
+    }
   )
 }
 
