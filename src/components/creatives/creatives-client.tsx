@@ -39,28 +39,50 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [filterType, setFilterType] = useState('all')
   const [filterValue, setFilterValue] = useState('')
   const [genResult, setGenResult] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [totalCreatives, setTotalCreatives] = useState(0)
+  const [stats, setStats] = useState<{ matched: number; generated: number; pending: number } | null>(null)
+
+  const PER_PAGE = 10
+
+  useEffect(() => {
+    if (selectedStore) { setPage(0); fetchStats() }
+  }, [selectedStore])
 
   useEffect(() => {
     if (selectedStore) fetchCreatives()
-  }, [selectedStore])
+  }, [selectedStore, page])
+
+  // How many products match a rule, how many have a creative, how many remain.
+  async function fetchStats() {
+    if (!selectedStore) return
+    try {
+      const r = await fetch(`/api/generate/stats?storeId=${selectedStore}`)
+      if (r.ok) setStats(await r.json())
+    } catch { /* non-fatal */ }
+  }
 
   async function fetchCreatives() {
     setLoading(true)
     const supabase = (await import('@/lib/supabase/client')).createClient()
 
-    const { data } = await supabase
+    const fromRow = page * PER_PAGE
+    const toRow = fromRow + PER_PAGE - 1
+
+    const { data, count } = await supabase
       .from('generated_images')
       .select(`
         id, generated_url, status, updated_at, template_id, cloudinary_public_id,
         products!inner(title, price, store_id, product_images(src, is_primary)),
         templates(name)
-      `)
+      `, { count: 'exact' })
       .eq('products.store_id', selectedStore)
       .eq('status', 'completed')
       .order('updated_at', { ascending: false })
-      .limit(100)
+      .range(fromRow, toRow)
 
     setCreatives((data as any) || [])
+    setTotalCreatives(count || 0)
     setLoading(false)
   }
 
@@ -95,27 +117,22 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     const batchId = data.batchId
     setGenResult(`Queued ${data.enqueued} products. Generating…`)
 
-    // Actively DRAIN the queue from the browser: each tick processes a batch
-    // server-side, then checks progress. This works with no worker and no
-    // per-minute cron (Vercel Hobby-friendly). Keep the tab open until done.
+    // The DigitalOcean worker consumes the Redis queue and processes jobs.
+    // The browser just polls progress — no drain call needed.
     const tick = async (): Promise<void> => {
-      try {
-        await fetch('/api/generate/drain', { method: 'POST' })
-      } catch {
-        // network blip — progress check below still runs; we retry next tick
-      }
-
       const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
       const c = await pr.json()
       const done = (c.completed || 0) + (c.failed || 0)
       setGenResult(`Generating… ${done}/${c.total} done`)
       fetchCreatives()
+      fetchStats()
 
       if (c.total > 0 && done < c.total) {
-        setTimeout(tick, 1500)
+        setTimeout(tick, 2000)
       } else {
         setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
         fetchCreatives()
+        fetchStats()
         setGenerating(false)
       }
     }
@@ -182,13 +199,27 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           {genResult && (
             <p className="text-sm text-muted-foreground">{genResult}</p>
           )}
+
+          {stats && (
+            <div className="flex gap-4 mt-3 text-sm">
+              <span className="text-muted-foreground">
+                Match rule: <b className="text-foreground">{stats.matched}</b>
+              </span>
+              <span className="text-muted-foreground">
+                Generated: <b className="text-green-600">{stats.generated}</b>
+              </span>
+              <span className="text-muted-foreground">
+                Pending: <b className="text-amber-600">{stats.pending}</b>
+              </span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* Creatives grid */}
       <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">{creatives.length} creatives</p>
-        <Button variant="ghost" size="sm" onClick={fetchCreatives}>
+        <p className="text-sm text-muted-foreground">{totalCreatives} creatives</p>
+        <Button variant="ghost" size="sm" onClick={() => { fetchCreatives(); fetchStats() }}>
           <RefreshCw className="h-3.5 w-3.5 mr-2" />
           Refresh
         </Button>
@@ -254,6 +285,23 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
               </Card>
             )
           })}
+        </div>
+      )}
+
+      {totalCreatives > PER_PAGE && (
+        <div className="flex items-center justify-center gap-3 pt-2">
+          <Button variant="outline" size="sm" disabled={page === 0}
+            onClick={() => setPage(p => Math.max(0, p - 1))}>
+            Previous
+          </Button>
+          <span className="text-sm text-muted-foreground">
+            Page {page + 1} of {Math.ceil(totalCreatives / PER_PAGE)}
+          </span>
+          <Button variant="outline" size="sm"
+            disabled={(page + 1) * PER_PAGE >= totalCreatives}
+            onClick={() => setPage(p => p + 1)}>
+            Next
+          </Button>
         </div>
       )}
     </div>
