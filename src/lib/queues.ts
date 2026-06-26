@@ -49,8 +49,12 @@ export async function enqueueCatalogJob(
 
 export async function enqueueGenerationJobs(jobIds: string[]) {
   const queue = getCatalogQueue('generation')
-  if (!queue || jobIds.length === 0) return 0
+  if (!queue || jobIds.length === 0) {
+    console.warn(`[enqueueGenerationJobs] Skipped — queue=${queue ? 'ok' : 'null'} jobIds=${jobIds.length}`)
+    return 0
+  }
 
+  console.log(`[enqueueGenerationJobs] Calling addBulk with ${jobIds.length} jobs on queue "${QUEUE_NAMES.generation}"`)
   await queue.addBulk(jobIds.map(jobId => ({
     name: 'generate-creative',
     data: { jobId },
@@ -58,6 +62,7 @@ export async function enqueueGenerationJobs(jobIds: string[]) {
       jobId: `generation:${jobId}`,
     },
   })))
+  console.log(`[enqueueGenerationJobs] addBulk completed — ${jobIds.length} jobs queued`)
   return jobIds.length
 }
 

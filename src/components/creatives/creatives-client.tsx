@@ -1,12 +1,13 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2 } from 'lucide-react'
+import { Progress } from '@/components/ui/progress'
+import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
 interface Creative {
@@ -24,6 +25,15 @@ interface Creative {
   templates: { name: string }
 }
 
+interface BatchCounts {
+  pending: number
+  processing: number
+  completed: number
+  failed: number
+  cancelled: number
+  total: number
+}
+
 const FILTER_TYPES = [
   { value: 'all', label: 'All products' },
   { value: 'tag', label: 'By tag' },
@@ -36,12 +46,19 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [creatives, setCreatives] = useState<Creative[]>([])
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [filterType, setFilterType] = useState('all')
   const [filterValue, setFilterValue] = useState('')
   const [genResult, setGenResult] = useState<string | null>(null)
+  const [batchProgress, setBatchProgress] = useState<BatchCounts | null>(null)
   const [page, setPage] = useState(0)
   const [totalCreatives, setTotalCreatives] = useState(0)
   const [stats, setStats] = useState<{ matched: number; generated: number; pending: number } | null>(null)
+
+  // Holds the current batchId so Stop can cancel it
+  const currentBatchId = useRef<string | null>(null)
+  // Tracks whether polling loop should continue
+  const pollingActive = useRef(false)
 
   const PER_PAGE = 10
 
@@ -53,7 +70,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     if (selectedStore) fetchCreatives()
   }, [selectedStore, page])
 
-  // How many products match a rule, how many have a creative, how many remain.
   async function fetchStats() {
     if (!selectedStore) return
     try {
@@ -88,10 +104,12 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
   async function handleGenerate() {
     setGenerating(true)
+    setStopping(false)
     setGenResult(null)
+    setBatchProgress(null)
+    currentBatchId.current = null
+    pollingActive.current = true
 
-    // Enqueue the run — returns instantly. The DigitalOcean worker (via Redis)
-    // does the heavy compositing, so this no longer times out on large catalogs.
     const res = await fetch('/api/generate/enqueue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -105,38 +123,87 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     if (!res.ok) {
       setGenResult(data.error || 'Generation failed')
       setGenerating(false)
+      pollingActive.current = false
       return
     }
 
     if (!data.enqueued) {
       setGenResult(data.message || 'No products matched the rules.')
       setGenerating(false)
+      pollingActive.current = false
       return
     }
 
     const batchId = data.batchId
-    setGenResult(`Queued ${data.enqueued} products. Generating…`)
+    currentBatchId.current = batchId
+    setGenResult(`Queued ${data.enqueued} products — worker is processing…`)
 
-    // The DigitalOcean worker consumes the Redis queue and processes jobs.
-    // The browser just polls progress — no drain call needed.
+    // Poll progress until done or stopped
     const tick = async (): Promise<void> => {
-      const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
-      const c = await pr.json()
-      const done = (c.completed || 0) + (c.failed || 0)
-      setGenResult(`Generating… ${done}/${c.total} done`)
-      fetchCreatives()
-      fetchStats()
+      if (!pollingActive.current) return
 
-      if (c.total > 0 && done < c.total) {
-        setTimeout(tick, 2000)
-      } else {
-        setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
-        fetchCreatives()
-        fetchStats()
-        setGenerating(false)
+      try {
+        const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
+        const c: BatchCounts = await pr.json()
+        setBatchProgress(c)
+
+        const done = (c.completed || 0) + (c.failed || 0) + (c.cancelled || 0)
+        const active = c.total - done
+
+        if (c.cancelled > 0 && active === 0) {
+          setGenResult(`Stopped. ${c.completed} completed, ${c.cancelled} cancelled.`)
+          fetchCreatives()
+          fetchStats()
+          setGenerating(false)
+          pollingActive.current = false
+          return
+        }
+
+        if (c.total > 0 && done < c.total) {
+          setGenResult(`Generating… ${done}/${c.total} done`)
+          fetchCreatives()
+          fetchStats()
+          setTimeout(tick, 2000)
+        } else {
+          setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
+          fetchCreatives()
+          fetchStats()
+          setGenerating(false)
+          pollingActive.current = false
+        }
+      } catch {
+        // Network hiccup — keep polling
+        setTimeout(tick, 3000)
       }
     }
     tick()
+  }
+
+  async function handleStop() {
+    if (!currentBatchId.current || !selectedStore) return
+    setStopping(true)
+    pollingActive.current = false
+
+    try {
+      const res = await fetch('/api/generate/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId: selectedStore, batchId: currentBatchId.current }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setGenResult(`Stopping… ${data.cancelled} jobs cancelled. Already-running images will finish.`)
+      } else {
+        setGenResult(`Stop request failed: ${data.error}`)
+      }
+    } catch (err: any) {
+      setGenResult(`Stop request error: ${err.message}`)
+    }
+
+    setStopping(false)
+    setGenerating(false)
+    fetchCreatives()
+    fetchStats()
   }
 
   async function handleDelete(creativeId: string, publicId: string) {
@@ -148,6 +215,10 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   if (stores.length === 0) {
     return <p className="text-muted-foreground">No stores connected.</p>
   }
+
+  const progressPercent = batchProgress && batchProgress.total > 0
+    ? Math.round(((batchProgress.completed + batchProgress.failed + batchProgress.cancelled) / batchProgress.total) * 100)
+    : 0
 
   return (
     <div className="space-y-6">
@@ -188,13 +259,44 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
               />
             )}
 
-            <Button onClick={handleGenerate} disabled={generating || (filterType !== 'all' && !filterValue)}>
+            <Button
+              onClick={handleGenerate}
+              disabled={generating || (filterType !== 'all' && !filterValue)}
+            >
               {generating
                 ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating…</>
                 : <><Wand2 className="h-4 w-4 mr-2" />Generate creatives</>
               }
             </Button>
+
+            {generating && (
+              <Button
+                variant="outline"
+                onClick={handleStop}
+                disabled={stopping}
+                className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+              >
+                {stopping
+                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Stopping…</>
+                  : <><StopCircle className="h-4 w-4 mr-2" />Stop</>
+                }
+              </Button>
+            )}
           </div>
+
+          {/* Progress bar */}
+          {generating && batchProgress && batchProgress.total > 0 && (
+            <div className="space-y-1.5">
+              <Progress value={progressPercent} className="h-2" />
+              <div className="flex gap-4 text-xs text-muted-foreground">
+                <span>✓ <b className="text-green-600">{batchProgress.completed}</b> done</span>
+                <span>⟳ <b className="text-blue-600">{batchProgress.processing}</b> processing</span>
+                <span>◷ <b className="text-amber-600">{batchProgress.pending}</b> pending</span>
+                {batchProgress.failed > 0 && <span>✗ <b className="text-destructive">{batchProgress.failed}</b> failed</span>}
+                {batchProgress.cancelled > 0 && <span>⊘ <b className="text-muted-foreground">{batchProgress.cancelled}</b> cancelled</span>}
+              </div>
+            </div>
+          )}
 
           {genResult && (
             <p className="text-sm text-muted-foreground">{genResult}</p>
@@ -246,7 +348,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           {creatives.map(creative => {
             const product = (creative as any).products
             const template = (creative as any).templates
-            const originalImg = product?.product_images?.[0]?.src
 
             return (
               <Card key={creative.id} className="overflow-hidden group">

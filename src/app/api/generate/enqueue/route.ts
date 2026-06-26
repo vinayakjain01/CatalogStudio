@@ -76,8 +76,8 @@ export async function GET(request: NextRequest) {
     .select('status')
     .eq('batch_id', batchId)
 
-  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, total: jobs?.length || 0 }
-  for (const j of jobs || []) (counts as any)[j.status]++
+  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, total: jobs?.length || 0 }
+  for (const j of jobs || []) (counts as any)[j.status] = ((counts as any)[j.status] || 0) + 1
 
   return NextResponse.json(counts)
 }

@@ -24,8 +24,11 @@ const workers = [
       const started = Date.now()
       const jobId = String(job.data.jobId || '')
       if (!jobId) throw new Error('jobId is required')
+      console.log(`[worker:generation] Received BullMQ job bullId=${job.id} dbJobId=${jobId}`)
       const result = await processGenerationJob(jobId, admin)
-      logPerf('worker.generation.job', Date.now() - started, {
+      const elapsed = Date.now() - started
+      console.log(`[worker:generation] Finished bullId=${job.id} dbJobId=${jobId} processed=${result.processed} completed=${result.completed} failed=${result.failed} ms=${elapsed}`)
+      logPerf('worker.generation.job', elapsed, {
         bullJobId: String(job.id),
         dbJobId: jobId,
         processed: result.processed,

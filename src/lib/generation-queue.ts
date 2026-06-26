@@ -44,6 +44,9 @@ export async function enqueueGeneration(
   supabase: SupabaseClient = getAdminClient()
 ): Promise<number> {
   if (productIds.length === 0) return 0
+
+  console.log(`[enqueueGeneration] START storeId=${storeId} products=${productIds.length} batchId=${batchId ?? 'none'}`)
+
   const rows = productIds.map(pid => ({
     store_id: storeId,
     product_id: pid,
@@ -59,21 +62,31 @@ export async function enqueueGeneration(
     .select('id'),
     { rows: rows.length, storeId }
   )
-  if (error) throw new Error(error.message)
-
-  if (redisQueuesEnabled()) {
-    try {
-      await measureAsync(
-        'queue.generation.redis_enqueue',
-        () => enqueueGenerationJobs((data || []).map((row: any) => row.id)),
-        { rows: data?.length || 0, storeId }
-      )
-    } catch (err) {
-      console.error('[queue] Redis enqueue failed; DB queue remains available:', err)
-    }
+  if (error) {
+    console.error(`[enqueueGeneration] DB insert failed:`, error.message)
+    throw new Error(error.message)
   }
 
-  return data?.length ?? rows.length
+  const insertedIds = (data || []).map((row: any) => row.id)
+  console.log(`[enqueueGeneration] DB rows inserted: ${insertedIds.length} jobIds=[${insertedIds.slice(0, 3).join(',')}${insertedIds.length > 3 ? '…' : ''}]`)
+
+  if (redisQueuesEnabled()) {
+    console.log(`[enqueueGeneration] Redis enabled — pushing ${insertedIds.length} jobs to BullMQ queue`)
+    try {
+      const pushed = await measureAsync(
+        'queue.generation.redis_enqueue',
+        () => enqueueGenerationJobs(insertedIds),
+        { rows: insertedIds.length, storeId }
+      )
+      console.log(`[enqueueGeneration] Redis addBulk OK — pushed=${pushed}`)
+    } catch (err) {
+      console.error('[enqueueGeneration] Redis enqueue failed; DB queue remains available:', err)
+    }
+  } else {
+    console.warn('[enqueueGeneration] REDIS_URL not set — jobs are in DB only, BullMQ worker will NOT receive them')
+  }
+
+  return insertedIds.length > 0 ? insertedIds.length : rows.length
 }
 
 /**
@@ -119,6 +132,8 @@ export async function processGenerationJob(
   jobId: string,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<{ processed: boolean; completed: boolean; failed: boolean }> {
+  console.log(`[processGenerationJob] Claiming job jobId=${jobId}`)
+
   const { data: job, error } = await measureAsync(
     'queue.generation.claim_one',
     () => supabase
@@ -129,19 +144,32 @@ export async function processGenerationJob(
         updated_at: new Date().toISOString(),
       })
       .eq('id', jobId)
-      .eq('status', 'pending')
+      .eq('status', 'pending')   // only claim if still pending — skips cancelled rows
       .select('*')
       .maybeSingle(),
     { jobId }
   )
 
-  if (error) throw new Error(error.message)
-  if (!job) return { processed: false, completed: false, failed: false }
+  if (error) {
+    console.error(`[processGenerationJob] Claim error jobId=${jobId}:`, error.message)
+    throw new Error(error.message)
+  }
+  if (!job) {
+    // Could be cancelled, already processing, or completed — check actual status for clarity
+    const { data: check } = await supabase
+      .from('generation_jobs').select('status').eq('id', jobId).maybeSingle()
+    console.warn(`[processGenerationJob] Job not claimable jobId=${jobId} current_status=${check?.status ?? 'not_found'} — skipping`)
+    return { processed: false, completed: false, failed: false }
+  }
+
+  console.log(`[processGenerationJob] Processing jobId=${jobId} productId=${job.product_id} storeId=${job.store_id}`)
 
   try {
     await runJob(job, supabase, createJobContext())
+    console.log(`[processGenerationJob] Completed jobId=${jobId} productId=${job.product_id}`)
     return { processed: true, completed: true, failed: false }
   } catch (err: any) {
+    console.error(`[processGenerationJob] Failed jobId=${jobId} productId=${job.product_id}:`, err.message)
     await failJob(job, err.message, supabase)
     return { processed: true, completed: false, failed: true }
   }
