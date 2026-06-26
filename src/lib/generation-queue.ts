@@ -1,4 +1,6 @@
 import { createClient as createSupabaseAdmin, SupabaseClient } from '@supabase/supabase-js'
+// ws is required for Supabase Realtime on Node.js < 22 (no native WebSocket global)
+import ws from 'ws'
 import {
   getActiveTemplateRules,
   resolveTemplateFromRules,
@@ -15,13 +17,17 @@ export function getAdminClient(): SupabaseClient {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
       realtime: {
-        // Worker only needs DB access — disable Realtime to avoid
-        // WebSocket initialisation on Node.js 20 (no native WebSocket global).
         transport: undefined as any,
       },
       global: {
-        headers: { 'x-client-info': 'catalog-worker' },
+        headers: {
+          "x-client-info": "catalog-worker",
+        },
       },
     }
   )
