@@ -90,32 +90,51 @@ export async function enqueueGeneration(
 }
 
 /**
- * Claim and process up to `batchSize` jobs. Returns counts. Designed to be
- * called repeatedly by a cron tick; each call is bounded so it fits inside a
- * serverless function timeout.
- *
- * Concurrency: we process the claimed batch with limited parallelism so a few
- * slow image loads don't serialize the whole batch, while not hammering
- * Cloudinary/remote hosts.
+ * Claim and process up to `batchSize` pending jobs directly from the DB.
+ * Does NOT require any Postgres RPC function — uses a select+update pattern.
+ * Safe for concurrent callers: each job is only claimed once via status check.
  */
 export async function processBatch(
   batchSize = 10,
   concurrency = 4,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<{ claimed: number; completed: number; failed: number }> {
-  const { data: jobs, error } = await measureAsync(
-    'queue.generation.claim_batch',
-    () => supabase.rpc('claim_generation_jobs', { batch_size: batchSize }),
-    { batchSize }
-  )
-  if (error) throw new Error(error.message)
-  if (!jobs || jobs.length === 0) return { claimed: 0, completed: 0, failed: 0 }
+  // Step 1: Find pending jobs
+  const { data: pendingJobs, error: selectError } = await supabase
+    .from('generation_jobs')
+    .select('id')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(batchSize)
+
+  if (selectError) throw new Error(selectError.message)
+  if (!pendingJobs || pendingJobs.length === 0) return { claimed: 0, completed: 0, failed: 0 }
+
+  const ids = pendingJobs.map((j: any) => j.id)
+
+  // Step 2: Atomically claim them by updating status pending->processing
+  // Only rows still 'pending' will be updated (concurrent workers won't double-claim)
+  const { data: claimed, error: claimError } = await supabase
+    .from('generation_jobs')
+    .update({
+      status: 'processing',
+      locked_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', ids)
+    .eq('status', 'pending')
+    .select('*')
+
+  if (claimError) throw new Error(claimError.message)
+  if (!claimed || claimed.length === 0) return { claimed: 0, completed: 0, failed: 0 }
+
+  console.log(`[processBatch] Claimed ${claimed.length} jobs from DB`)
 
   let completed = 0
   let failed = 0
   const context = createJobContext()
 
-  await mapWithConcurrency(jobs, concurrency, async job => {
+  await mapWithConcurrency(claimed, concurrency, async job => {
     try {
       await runJob(job, supabase, context)
       completed++
@@ -125,7 +144,7 @@ export async function processBatch(
     }
   })
 
-  return { claimed: jobs.length, completed, failed }
+  return { claimed: claimed.length, completed, failed }
 }
 
 export async function processGenerationJob(
