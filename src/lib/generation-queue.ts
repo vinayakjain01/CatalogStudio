@@ -1,6 +1,7 @@
 import { createClient as createSupabaseAdmin, SupabaseClient } from '@supabase/supabase-js'
 // ws is required for Supabase Realtime on Node.js < 22 (no native WebSocket global)
-import ws from 'ws'
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ws = require('ws') as any
 import {
   getActiveTemplateRules,
   resolveTemplateFromRules,
@@ -17,17 +18,12 @@ export function getAdminClient(): SupabaseClient {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
       realtime: {
-        transport: undefined as any,
+        // Node.js 20 has no native WebSocket global — must pass ws explicitly.
+        transport: ws,
       },
       global: {
-        headers: {
-          "x-client-info": "catalog-worker",
-        },
+        headers: { 'x-client-info': 'catalog-worker' },
       },
     }
   )
