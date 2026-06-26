@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
-import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle, AlertCircle } from 'lucide-react'
+import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
 interface Creative {
@@ -49,40 +49,15 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [batchProgress, setBatchProgress] = useState<BatchCounts | null>(null)
   const [page, setPage] = useState(0)
   const [totalCreatives, setTotalCreatives] = useState(0)
-  const [stats, setStats] = useState<{ matched: number; generated: number; pending: number } | null>(null)
-  const [workerMode, setWorkerMode] = useState<'redis' | 'drain' | null>(null)
 
   const currentBatchId = useRef<string | null>(null)
   const pollingActive = useRef(false)
-  // Track last completed count to detect if worker is actually making progress
   const lastCompletedAt = useRef<{ count: number; time: number }>({ count: 0, time: Date.now() })
-  // Stats polling interval
-  const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const PER_PAGE = 10
 
-  // ── Stats polling: runs every 5s always, faster (2s) while generating ──
-  const fetchStats = useCallback(async () => {
-    if (!selectedStore) return
-    try {
-      const r = await fetch(`/api/generate/stats?storeId=${selectedStore}`)
-      if (r.ok) setStats(await r.json())
-    } catch { /* non-fatal */ }
-  }, [selectedStore])
-
   useEffect(() => {
-    if (!selectedStore) return
-    fetchStats()
-    // Poll stats every 5s so the numbers update even without user action
-    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current)
-    statsIntervalRef.current = setInterval(fetchStats, 5000)
-    return () => {
-      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current)
-    }
-  }, [selectedStore, fetchStats])
-
-  useEffect(() => {
-    if (selectedStore) { setPage(0) }
+    if (selectedStore) setPage(0)
   }, [selectedStore])
 
   useEffect(() => {
@@ -109,31 +84,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     setLoading(false)
   }
 
-  // ── Browser-drain fallback: called when REDIS_URL is not on Vercel ──
-  // Drives processing directly from the browser by calling /api/generate/drain
-  // repeatedly. Each call processes up to 10 jobs with 4-way concurrency.
-  async function runDrainLoop(batchId: string) {
-    console.log('[drain-loop] Starting browser-drain for batchId', batchId)
-    while (pollingActive.current) {
-      try {
-        const r = await fetch('/api/generate/drain', { method: 'POST' })
-        if (!r.ok) {
-          console.error('[drain-loop] drain call failed', r.status)
-          await sleep(3000)
-          continue
-        }
-        const d = await r.json()
-        console.log(`[drain-loop] drain tick: claimed=${d.claimed} completed=${d.completed} failed=${d.failed}`)
-        // If nothing was claimed, queue is empty — stop draining
-        if (d.claimed === 0) break
-      } catch (err) {
-        console.error('[drain-loop] error:', err)
-        await sleep(3000)
-      }
-    }
-    console.log('[drain-loop] Done')
-  }
-
   function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
   async function handleGenerate() {
@@ -141,7 +91,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     setStopping(false)
     setGenResult(null)
     setBatchProgress(null)
-    setWorkerMode(null)
     currentBatchId.current = null
     pollingActive.current = true
     lastCompletedAt.current = { count: 0, time: Date.now() }
@@ -171,22 +120,12 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     }
 
     const batchId: string = data.batchId
-    const redisEnabled: boolean = data.redisEnabled ?? false
     currentBatchId.current = batchId
-    setWorkerMode(redisEnabled ? 'redis' : 'drain')
+    setGenResult(`Queued ${data.enqueued} products — worker is processing…`)
 
-    if (redisEnabled) {
-      setGenResult(`Queued ${data.enqueued} products → DigitalOcean worker processing…`)
-    } else {
-      setGenResult(`Queued ${data.enqueued} products → processing via browser (REDIS_URL not set on Vercel)…`)
-      // Start drain loop in background — don't await
-      runDrainLoop(batchId)
-    }
-
-    // Progress polling loop — runs regardless of worker mode
+    // Progress polling loop
     const tick = async (): Promise<void> => {
       if (!pollingActive.current) return
-
       try {
         const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
         const c: BatchCounts = await pr.json()
@@ -194,38 +133,30 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
         const done = (c.completed || 0) + (c.failed || 0) + (c.cancelled || 0)
 
-        // Detect if progress has stalled (nothing moved for 30s) in Redis mode
-        if (redisEnabled) {
-          if (c.completed > lastCompletedAt.current.count) {
-            lastCompletedAt.current = { count: c.completed, time: Date.now() }
-          }
-          const stalledMs = Date.now() - lastCompletedAt.current.time
-          if (stalledMs > 30_000 && c.pending > 0 && c.processing === 0) {
-            setGenResult(`⚠️ Worker appears stalled (no progress for 30s). Check that REDIS_URL is set on Vercel and pm2 is running on DigitalOcean. ${done}/${c.total} done so far.`)
-          } else if (done < c.total) {
-            setGenResult(`Generating… ${done}/${c.total} done`)
-          }
-        } else {
-          if (done < c.total) setGenResult(`Generating… ${done}/${c.total} done`)
+        // Update progress message
+        if (c.completed > lastCompletedAt.current.count) {
+          lastCompletedAt.current = { count: c.completed, time: Date.now() }
         }
 
-        // Cancelled — all settled
+        // Cancelled
         if (c.cancelled > 0 && (c.pending + c.processing) === 0) {
           setGenResult(`Stopped. ${c.completed} completed, ${c.cancelled} cancelled.`)
-          fetchCreatives(); fetchStats()
-          setGenerating(false); pollingActive.current = false
+          fetchCreatives()
+          setGenerating(false)
+          pollingActive.current = false
           return
         }
 
         if (c.total > 0 && done >= c.total) {
           setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
-          fetchCreatives(); fetchStats()
-          setGenerating(false); pollingActive.current = false
+          fetchCreatives()
+          setGenerating(false)
+          pollingActive.current = false
           return
         }
 
+        setGenResult(`Generating… ${done}/${c.total} done`)
         fetchCreatives()
-        fetchStats()
         setTimeout(tick, 2000)
       } catch {
         setTimeout(tick, 3000)
@@ -238,7 +169,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     if (!currentBatchId.current || !selectedStore) return
     setStopping(true)
     pollingActive.current = false
-
     try {
       const res = await fetch('/api/generate/cancel', {
         method: 'POST',
@@ -247,15 +177,14 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       })
       const data = await res.json()
       setGenResult(res.ok
-        ? `Stopping… ${data.cancelled} jobs cancelled. Already-running images will finish.`
+        ? `Stopped. ${data.cancelled} jobs cancelled.`
         : `Stop failed: ${data.error}`)
     } catch (err: any) {
       setGenResult(`Stop error: ${err.message}`)
     }
-
     setStopping(false)
     setGenerating(false)
-    fetchCreatives(); fetchStats()
+    fetchCreatives()
   }
 
   async function handleDelete(creativeId: string, publicId: string) {
@@ -272,12 +201,11 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     ? Math.round(((batchProgress.completed + batchProgress.failed + batchProgress.cancelled) / batchProgress.total) * 100)
     : 0
 
-  const isStalled = genResult?.startsWith('⚠️')
-
   return (
     <div className="space-y-6">
       <Card>
         <CardContent className="p-4 space-y-4">
+          {/* Controls row */}
           <div className="flex flex-wrap items-center gap-3">
             {stores.length > 1 && (
               <Select value={selectedStore} onValueChange={setSelectedStore}>
@@ -330,7 +258,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
             )}
           </div>
 
-          {/* Progress bar — always shown during generation */}
+          {/* Progress bar — shown during generation */}
           {generating && batchProgress && batchProgress.total > 0 && (
             <div className="space-y-1.5">
               <Progress value={progressPercent} className="h-2" />
@@ -338,46 +266,27 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                 <span>✓ <b className="text-green-600">{batchProgress.completed}</b> done</span>
                 <span>⟳ <b className="text-blue-600">{batchProgress.processing}</b> processing</span>
                 <span>◷ <b className="text-amber-600">{batchProgress.pending}</b> pending</span>
-                {batchProgress.failed > 0 && <span>✗ <b className="text-destructive">{batchProgress.failed}</b> failed</span>}
-                {batchProgress.cancelled > 0 && <span>⊘ <b className="text-muted-foreground">{batchProgress.cancelled}</b> cancelled</span>}
-                {workerMode && (
-                  <span className="ml-auto text-xs opacity-60">
-                    {workerMode === 'redis' ? '🔴 DigitalOcean worker' : '🌐 Browser fallback'}
-                  </span>
+                {batchProgress.failed > 0 && (
+                  <span>✗ <b className="text-destructive">{batchProgress.failed}</b> failed</span>
+                )}
+                {batchProgress.cancelled > 0 && (
+                  <span>⊘ <b className="text-muted-foreground">{batchProgress.cancelled}</b> cancelled</span>
                 )}
               </div>
             </div>
           )}
 
-          {/* Status / error message */}
+          {/* Status message */}
           {genResult && (
-            <div className={`flex items-start gap-2 text-sm ${isStalled ? 'text-amber-600' : 'text-muted-foreground'}`}>
-              {isStalled && <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
-              <p>{genResult}</p>
-            </div>
-          )}
-
-          {/* Stats — always live (polled every 5s) */}
-          {stats && (
-            <div className="flex gap-4 text-sm">
-              <span className="text-muted-foreground">
-                Match rule: <b className="text-foreground">{stats.matched}</b>
-              </span>
-              <span className="text-muted-foreground">
-                Generated: <b className="text-green-600">{stats.generated}</b>
-              </span>
-              <span className="text-muted-foreground">
-                Pending: <b className="text-amber-600">{stats.pending}</b>
-              </span>
-            </div>
+            <p className="text-sm text-muted-foreground">{genResult}</p>
           )}
         </CardContent>
       </Card>
 
-      {/* Creatives grid */}
+      {/* Creatives grid header */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{totalCreatives} creatives</p>
-        <Button variant="ghost" size="sm" onClick={() => { fetchCreatives(); fetchStats() }}>
+        <Button variant="ghost" size="sm" onClick={fetchCreatives}>
           <RefreshCw className="h-3.5 w-3.5 mr-2" />Refresh
         </Button>
       </div>
@@ -436,17 +345,14 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
       {totalCreatives > PER_PAGE && (
         <div className="flex items-center justify-center gap-3 pt-2">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>
-            Previous
-          </Button>
+          <Button variant="outline" size="sm" disabled={page === 0}
+            onClick={() => setPage(p => Math.max(0, p - 1))}>Previous</Button>
           <span className="text-sm text-muted-foreground">
             Page {page + 1} of {Math.ceil(totalCreatives / PER_PAGE)}
           </span>
           <Button variant="outline" size="sm"
             disabled={(page + 1) * PER_PAGE >= totalCreatives}
-            onClick={() => setPage(p => p + 1)}>
-            Next
-          </Button>
+            onClick={() => setPage(p => p + 1)}>Next</Button>
         </div>
       )}
     </div>

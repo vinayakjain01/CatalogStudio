@@ -14,14 +14,40 @@ if (!connection) {
 
 const generationConcurrency = parseInt(process.env.WORKER_GENERATION_CONCURRENCY || '4', 10)
 const syncConcurrency = parseInt(process.env.WORKER_SYNC_CONCURRENCY || '1', 10)
-// How often to poll DB for pending jobs (ms). Catches jobs Vercel couldn't push
-// to Redis due to VPC network restrictions.
 const DB_POLL_INTERVAL_MS = parseInt(process.env.DB_POLL_INTERVAL_MS || '3000', 10)
 
 const admin = getAdminClient()
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BullMQ workers (handles jobs pushed via Redis when Vercel CAN reach Redis)
+// On startup: reset any rows stuck in 'processing' state back to 'pending'.
+// These are jobs that were claimed by a previous worker process that crashed
+// or was restarted before completing. Without this they stay stuck forever.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resetStuckJobs() {
+  const { data, error } = await admin
+    .from('generation_jobs')
+    .update({
+      status: 'pending',
+      locked_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('status', 'processing')
+    .select('id')
+
+  if (error) {
+    console.error('[worker:startup] Failed to reset stuck jobs:', error.message)
+  } else {
+    const count = data?.length ?? 0
+    if (count > 0) {
+      console.log(`[worker:startup] Reset ${count} stuck 'processing' jobs back to 'pending'`)
+    } else {
+      console.log('[worker:startup] No stuck jobs found — clean start')
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BullMQ workers (Redis path — used when Vercel can reach Valkey)
 // ─────────────────────────────────────────────────────────────────────────────
 const workers = [
   new Worker(
@@ -100,15 +126,10 @@ for (const worker of workers) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DB-poll loop — runs every DB_POLL_INTERVAL_MS regardless of Redis/BullMQ.
-//
-// WHY: Vercel is outside DigitalOcean's VPC, so it cannot push jobs into
-// Valkey/Redis directly. Jobs land in generation_jobs with status='pending'
-// but BullMQ never receives them. This loop claims and processes those rows
-// directly from the DB, making the worker fully self-sufficient.
-//
-// When Vercel CAN reach Redis (public network enabled), BullMQ handles jobs
-// faster. This loop acts as a safety net either way.
+// DB-poll loop — polls generation_jobs every 3s for pending rows.
+// This is the primary execution path because Vercel (AWS) cannot reach
+// DigitalOcean Valkey over VPC. Jobs are written to Supabase by Vercel,
+// and this loop claims and processes them directly — no Redis push needed.
 // ─────────────────────────────────────────────────────────────────────────────
 let dbPollRunning = false
 let dbPollActive = true
@@ -119,21 +140,15 @@ async function dbPollTick() {
   try {
     const result = await processBatch(generationConcurrency, generationConcurrency, admin)
     if (result.claimed > 0) {
-      console.log(`[worker:db-poll] Processed DB batch: claimed=${result.claimed} completed=${result.completed} failed=${result.failed}`)
+      console.log(`[worker:db-poll] claimed=${result.claimed} completed=${result.completed} failed=${result.failed}`)
     }
   } catch (err: any) {
-    console.error('[worker:db-poll] Error processing batch:', err.message)
+    console.error('[worker:db-poll] Error:', err.message)
   } finally {
     dbPollRunning = false
-    if (dbPollActive) {
-      setTimeout(dbPollTick, DB_POLL_INTERVAL_MS)
-    }
+    if (dbPollActive) setTimeout(dbPollTick, DB_POLL_INTERVAL_MS)
   }
 }
-
-// Start the DB poll loop
-console.log(`[worker:db-poll] Starting DB poll loop every ${DB_POLL_INTERVAL_MS}ms`)
-dbPollTick()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shutdown
@@ -141,7 +156,7 @@ dbPollTick()
 async function shutdown() {
   console.log('[worker] Shutting down…')
   dbPollActive = false
-  await Promise.all(workers.map(worker => worker.close()))
+  await Promise.all(workers.map(w => w.close()))
   await closeCatalogQueues()
   await closeRedisConnection()
   console.log('[worker] Shutdown complete')
@@ -151,9 +166,17 @@ async function shutdown() {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-console.log('[worker] catalog workers started', {
+// ─────────────────────────────────────────────────────────────────────────────
+// Boot sequence
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('[worker] catalog workers starting…', {
   generationConcurrency,
   syncConcurrency,
   dbPollIntervalMs: DB_POLL_INTERVAL_MS,
   queues: QUEUE_NAMES,
+})
+
+resetStuckJobs().then(() => {
+  console.log(`[worker:db-poll] Starting DB poll loop every ${DB_POLL_INTERVAL_MS}ms`)
+  dbPollTick()
 })
