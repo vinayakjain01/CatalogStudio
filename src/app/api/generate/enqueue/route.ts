@@ -1,14 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getAdminClient, enqueueGeneration } from '@/lib/generation-queue'
+import { isRedisEnabled } from '@/lib/redis'
 import { randomUUID } from 'crypto'
-
-// Enqueue a bulk generation run. Returns instantly; the cron worker processes
-// the jobs. This replaces the old synchronous /api/generate loop that timed out
-// on large catalogs.
-//
-//   POST /api/generate/enqueue
-//   { storeId, filter?: { type, value }, creativeType? }
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
@@ -18,7 +12,6 @@ export async function POST(request: NextRequest) {
   const { storeId, filter, creativeType } = await request.json()
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
 
-  // ownership check
   const { data: store } = await supabase
     .from('stores').select('id').eq('id', storeId).eq('user_id', user.id).single()
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })
@@ -47,6 +40,7 @@ export async function POST(request: NextRequest) {
     if (products.length < PAGE) break
     from += PAGE
   }
+
   if (productIds.length === 0) {
     return NextResponse.json({ message: 'No products matched', enqueued: 0 })
   }
@@ -57,11 +51,15 @@ export async function POST(request: NextRequest) {
     admin
   )
 
-  return NextResponse.json({ batchId, enqueued })
+  // Tell the client whether the DO worker will handle this (Redis path)
+  // or whether the client needs to drive drain calls (no-Redis fallback)
+  const redisEnabled = isRedisEnabled()
+  console.log(`[enqueue] batchId=${batchId} enqueued=${enqueued} redisEnabled=${redisEnabled}`)
+
+  return NextResponse.json({ batchId, enqueued, redisEnabled })
 }
 
-// Progress polling for a batch (Phase 3 progress tracking / Phase 7 dashboard).
-//   GET /api/generate/enqueue?batchId=...
+// Progress polling
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
