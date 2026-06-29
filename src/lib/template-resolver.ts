@@ -1,9 +1,15 @@
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
+// Node.js 20 has no native WebSocket global — must pass ws explicitly
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ws = require('ws') as any
 
 function getAdminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      realtime: { transport: ws },
+    }
   )
 }
 

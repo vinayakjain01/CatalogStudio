@@ -246,7 +246,6 @@ function getTemplateCanvas(templateId: string, supabase: SupabaseClient, context
 
 async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   const started = Date.now()
-  console.log(`[runJob] START jobId=${job.id} productId=${job.product_id}`)
   // Load product + image
   const { data: product, error: productError } = await measureAsync(
     'supabase.products.load_for_generation',
@@ -275,21 +274,16 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   )
   if (!templateId) {
     // No rule matched — mark completed-with-no-op so it doesn't retry forever.
-    console.log(`[runJob] No matching rule for jobId=${job.id} productId=${job.product_id} — skipping`)
     await supabase.from('generation_jobs')
       .update({ status: 'completed', error: 'no matching rule', updated_at: new Date().toISOString() })
       .eq('id', job.id)
     return
   }
-  console.log(`[runJob] Template resolved: ${templateId} for jobId=${job.id}`)
-
   const canvasData = await getTemplateCanvas(templateId, supabase, context)
-  console.log(`[runJob] Canvas loaded for jobId=${job.id}`)
 
   const images = (product as any).product_images || []
   const primary = images.find((i: any) => i.is_primary) || images[0]
 
-  console.log(`[runJob] Compositing image for jobId=${job.id} imageUrl=${primary?.src?.substring(0,50)}`)
   const buffer = await compositeImage(canvasData as any, {
     title: product.title,
     price: product.price,
@@ -299,13 +293,11 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     imageUrl: primary?.src || null,
   })
 
-  console.log(`[runJob] Buffer generated size=${buffer.length} for jobId=${job.id}`)
   // PNG master sanity check (0x89 0x50 'PNG')
   if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
-    throw new Error(`Invalid image buffer from compositor: length=${buffer.length} first bytes=${buffer[0]},${buffer[1]}`)
+    throw new Error('Invalid image buffer from compositor')
   }
 
-  console.log(`[runJob] Uploading to Cloudinary for jobId=${job.id}`)
   const publicId = `product_${product.id}_${templateId}_${job.creative_type}`
   const { deliveredUrl, publicId: cloudPublicId } = await measureAsync(
     'cloudinary.upload',
