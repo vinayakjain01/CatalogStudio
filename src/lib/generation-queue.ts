@@ -142,6 +142,7 @@ export async function processBatch(
       completed++
     } catch (err: any) {
       failed++
+      console.error(`[processBatch] Job failed jobId=${job.id} productId=${job.product_id}:`, err.message)
       await failJob(job, err.message, supabase)
     }
   })
