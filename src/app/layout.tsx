@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import Script from 'next/script'
 import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
 
@@ -17,16 +16,15 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         {/*
-          Shopify App Bridge — loaded from Shopify's CDN.
-          This is REQUIRED for:
-          • The "Using the latest App Bridge script" embedded app check to pass
-          • Session token authentication (replaces cookie-based auth in iframes)
-          • App Bridge UI controls (navigation, modals, etc.) to work
-          Loading strategy: beforeInteractive ensures it's available before any page JS.
+          Shopify App Bridge — MUST have data-api-key for the embedded app
+          checks to pass. Without this attribute Shopify's automated scanner
+          cannot verify that your app uses App Bridge from their CDN.
+          The data-api-key is your Shopify Client ID (public, safe to expose).
         */}
-        <Script
+        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
+        <script
           src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
-          strategy="beforeInteractive"
+          data-api-key={process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID ?? process.env.SHOPIFY_CLIENT_ID}
         />
       </head>
       <body className="antialiased">
