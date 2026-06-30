@@ -11,8 +11,12 @@
  * Provider is configurable via BG_REMOVAL_PROVIDER env var.
  * Default: 'cloudinary' (uses Cloudinary AI add-on)
  *
- * To switch providers, set BG_REMOVAL_PROVIDER=clipdrop (etc.) and
- * add the corresponding API key env var.
+ * Options: 'removebg' (best quality, recommended for fashion/apparel),
+ * 'clipdrop', 'cloudinary'.
+ *
+ * Optional fallback chain via BG_REMOVAL_FALLBACK_PROVIDERS (comma-separated,
+ * e.g. "clipdrop,cloudinary") — tried in order if the primary provider fails
+ * (out of credits, API down, etc.) so production generation never fully breaks.
  */
 
 import crypto from 'crypto'
@@ -28,10 +32,12 @@ cloudinary.config({
 
 // ─── Provider factory ─────────────────────────────────────────────────────────
 
-function getConfiguredProvider(): BackgroundRemovalProvider {
-  const name = (process.env.BG_REMOVAL_PROVIDER || 'cloudinary') as ProviderName
-
+function instantiateProvider(name: ProviderName): BackgroundRemovalProvider {
   switch (name) {
+    case 'removebg': {
+      const { RemoveBgProvider } = require('./removebg-provider')
+      return new RemoveBgProvider()
+    }
     case 'clipdrop': {
       const { ClipdropBackgroundRemovalProvider } = require('./clipdrop-provider')
       return new ClipdropBackgroundRemovalProvider()
@@ -42,6 +48,23 @@ function getConfiguredProvider(): BackgroundRemovalProvider {
       return new CloudinaryBackgroundRemovalProvider()
     }
   }
+}
+
+function getConfiguredProvider(): BackgroundRemovalProvider {
+  const name = (process.env.BG_REMOVAL_PROVIDER || 'cloudinary') as ProviderName
+  return instantiateProvider(name)
+}
+
+/**
+ * Ordered fallback chain. If BG_REMOVAL_FALLBACK_PROVIDERS is set (comma
+ * separated, e.g. "clipdrop,cloudinary"), those providers are tried in order
+ * after the primary fails — covers cases like "remove.bg ran out of credits
+ * this month" without breaking production generation.
+ */
+function getFallbackProviders(): BackgroundRemovalProvider[] {
+  const raw = process.env.BG_REMOVAL_FALLBACK_PROVIDERS
+  if (!raw) return []
+  return raw.split(',').map(s => s.trim()).filter(Boolean).map(name => instantiateProvider(name as ProviderName))
 }
 
 // ─── Cache key ────────────────────────────────────────────────────────────────
@@ -102,9 +125,31 @@ export async function getTransparentProductImage(
     clearTimeout(timer)
   }
 
-  // 3. Call provider
-  const provider = getConfiguredProvider()
-  const transparentBuffer = await provider.removeBackground(imageBuffer, sourceUrl)
+  // 3. Call provider — try primary, then fall back through
+  //    BG_REMOVAL_FALLBACK_PROVIDERS in order if it fails (e.g. out of credits).
+  const primary = getConfiguredProvider()
+  const fallbacks = getFallbackProviders()
+  const chain = [primary, ...fallbacks]
+
+  let transparentBuffer: Buffer | null = null
+  let usedProvider = primary
+  let lastError: Error | null = null
+
+  for (const candidate of chain) {
+    try {
+      console.log(`[bg-removal] Trying provider: ${candidate.name}`)
+      transparentBuffer = await candidate.removeBackground(imageBuffer, sourceUrl)
+      usedProvider = candidate
+      break
+    } catch (err: any) {
+      lastError = err
+      console.error(`[bg-removal] Provider ${candidate.name} failed: ${err.message}`)
+    }
+  }
+
+  if (!transparentBuffer) {
+    throw lastError || new Error('All background removal providers failed')
+  }
 
   // 4. Upload transparent PNG to Cloudinary (permanent storage)
   const publicId = `transparent-products/${cacheKey.slice(0, 16)}`
@@ -135,7 +180,7 @@ export async function getTransparentProductImage(
       source_url: sourceUrl,
       transparent_url: transparentUrl,
       cloudinary_id: cloudinaryId,
-      provider: provider.name,
+      provider: usedProvider.name,
       store_id: storeId,
     }, { onConflict: 'cache_key' })
 
@@ -145,7 +190,7 @@ export async function getTransparentProductImage(
     transparentUrl,
     cloudinaryId,
     fromCache: false,
-    provider: provider.name,
+    provider: usedProvider.name,
   }
 }
 
