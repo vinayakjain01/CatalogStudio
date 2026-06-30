@@ -25,7 +25,7 @@ function layerLabel(layer: Layer): string {
   }
 }
 
-export function LayerPanel() {
+export function LayerPanel({ embedded }: { embedded?: boolean } = {}) {
   const { canvasData, selectedLayerId, selectLayer, deleteLayer, duplicateLayer, moveLayerUp, moveLayerDown } =
     useBuilderStore()
 

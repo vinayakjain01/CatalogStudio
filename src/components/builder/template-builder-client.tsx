@@ -8,6 +8,7 @@ import { LayerPanel } from './layer-panel'
 import { LayerProperties } from './layer-properties'
 import { ToolBar } from './toolbar'
 import { ProductPreviewSelector } from './product-preview-selector'
+import { AiProductModePanel } from './ai-product-mode-panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -17,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Save, ArrowLeft, Loader2 } from 'lucide-react'
+import { Save, ArrowLeft, Loader2, Layers, Sparkles } from 'lucide-react'
 import { CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import Link from 'next/link'
 
@@ -33,13 +34,21 @@ interface Props {
   previewProducts?: any[]
 }
 
+type RightPanelTab = 'layers' | 'properties' | 'ai'
+
 export function TemplateBuilderClient({ template, categories, previewProducts = [] }: Props) {
   const router = useRouter()
-  const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio } = useBuilderStore()
+  const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio, selectedLayerId } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
   const [categoryId, setCategoryId] = useState(template?.category_id || 'none')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [rightTab, setRightTab] = useState<RightPanelTab>('layers')
+
+  // Auto-switch to properties panel when a layer is selected
+  useEffect(() => {
+    if (selectedLayerId) setRightTab('properties')
+  }, [selectedLayerId])
 
   useEffect(() => {
     if (template?.canvas_data) {
@@ -102,6 +111,8 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
     setSaving(false)
   }
 
+  const isAiMode = canvasData.templateMode === 'ai_product'
+
   return (
     <div className="flex flex-col h-screen -m-6">
       {/* Top bar */}
@@ -148,6 +159,14 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
               ))}
             </SelectContent>
           </Select>
+
+          {/* AI Mode indicator */}
+          {isAiMode && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 text-primary">
+              <Sparkles className="h-3 w-3" />
+              <span className="text-xs font-medium">AI Mode</span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -178,9 +197,62 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
 
         {/* Right panel */}
         <div className="w-64 border-l bg-card flex flex-col overflow-hidden flex-shrink-0">
-          <LayerProperties />
+          {/* Tab bar */}
+          <div className="flex border-b flex-shrink-0">
+            <TabButton
+              active={rightTab === 'layers'}
+              onClick={() => setRightTab('layers')}
+              icon={<Layers className="h-3.5 w-3.5" />}
+              label="Layers"
+            />
+            <TabButton
+              active={rightTab === 'properties'}
+              onClick={() => setRightTab('properties')}
+              label="Props"
+            />
+            <TabButton
+              active={rightTab === 'ai'}
+              onClick={() => setRightTab('ai')}
+              icon={<Sparkles className="h-3.5 w-3.5" />}
+              label="AI"
+              highlight={isAiMode}
+            />
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {rightTab === 'layers' && <LayerPanel embedded />}
+            {rightTab === 'properties' && <LayerProperties />}
+            {rightTab === 'ai' && <AiProductModePanel />}
+          </div>
         </div>
       </div>
     </div>
+  )
+}
+
+function TabButton({
+  active, onClick, icon, label, highlight,
+}: {
+  active: boolean
+  onClick: () => void
+  icon?: React.ReactNode
+  label: string
+  highlight?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium border-b-2 transition-colors ${
+        active
+          ? 'border-primary text-primary'
+          : 'border-transparent text-muted-foreground hover:text-foreground'
+      } ${highlight && !active ? 'text-primary/70' : ''}`}
+    >
+      {icon}
+      {label}
+      {highlight && !active && (
+        <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+      )}
+    </button>
   )
 }

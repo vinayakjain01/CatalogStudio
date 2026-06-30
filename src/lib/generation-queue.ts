@@ -9,6 +9,7 @@ import {
 } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
+import { getTransparentProductImage } from '@/lib/background-removal'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
@@ -283,6 +284,43 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
 
   const images = (product as any).product_images || []
   const primary = images.find((i: any) => i.is_primary) || images[0]
+  const imageUrl: string | null = primary?.src || null
+
+  // ── AI Product Mode: background removal ──────────────────────────────────
+  // If the template uses ai_product mode, remove the product background.
+  // This is cached per source URL so it only runs once per unique product image.
+  const templateMode: 'standard' | 'ai_product' = (canvasData as any).templateMode || 'standard'
+  let transparentImageUrl: string | null = null
+
+  if (templateMode === 'ai_product' && imageUrl) {
+    try {
+      const bgResult = await getTransparentProductImage(imageUrl, job.store_id, supabase)
+      transparentImageUrl = bgResult.transparentUrl
+      console.log(`[runJob] BG removal ${bgResult.fromCache ? 'cached' : 'fresh'} for jobId=${job.id}`)
+
+      // Track bg removal status on the job row
+      await supabase.from('generation_jobs')
+        .update({
+          bg_removal_status: bgResult.fromCache ? 'cached' : 'done',
+          transparent_url: transparentImageUrl,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', job.id)
+    } catch (bgErr: any) {
+      // BG removal failure is non-fatal: fall back to standard mode
+      console.error(`[runJob] BG removal failed for jobId=${job.id}, falling back to standard:`, bgErr.message)
+      await supabase.from('generation_jobs')
+        .update({ bg_removal_status: 'failed', updated_at: new Date().toISOString() })
+        .eq('id', job.id)
+    }
+  } else if (templateMode === 'standard') {
+    await supabase.from('generation_jobs')
+      .update({ bg_removal_status: 'skipped', updated_at: new Date().toISOString() })
+      .eq('id', job.id)
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const productLayerSettings = (canvasData as any).productLayerSettings || undefined
 
   const buffer = await compositeImage(canvasData as any, {
     title: product.title,
@@ -290,7 +328,11 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     compare_at_price: product.compare_at_price,
     vendor: product.vendor,
     product_type: product.product_type,
-    imageUrl: primary?.src || null,
+    imageUrl,
+    transparentImageUrl,
+  }, {
+    templateMode: transparentImageUrl ? 'ai_product' : 'standard',
+    productLayerSettings,
   })
 
   // PNG master sanity check (0x89 0x50 'PNG')

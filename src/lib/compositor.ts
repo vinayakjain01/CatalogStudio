@@ -1,6 +1,6 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
-import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
+import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
@@ -56,6 +56,8 @@ interface ProductData {
   vendor: string | null
   product_type: string | null
   imageUrl: string | null
+  /** Transparent PNG URL from background removal. Set when template is in ai_product mode. */
+  transparentImageUrl?: string | null
 }
 
 export interface CompositeOptions {
@@ -63,6 +65,10 @@ export interface CompositeOptions {
   targetSize?: number
   /** Internal render multiplier. Default 2. */
   supersample?: number
+  /** Template mode — 'standard' uses product image as-is; 'ai_product' floats transparent product over background */
+  templateMode?: 'standard' | 'ai_product'
+  /** Product layer settings for ai_product mode */
+  productLayerSettings?: ProductLayerSettings
 }
 
 /**
@@ -304,14 +310,92 @@ async function serverRenderBackground(
     }
   }
 }
+
+// ─── AI Product Layer Renderer ───────────────────────────────────────────────
+// Draws the transparent product PNG as a floating layer with effects.
+
+async function drawProductLayer(
+  ctx: any,
+  transparentImageUrl: string,
+  settings: ProductLayerSettings,
+  W: number,
+  H: number
+): Promise<void> {
+  const img = await loadImageSafe(transparentImageUrl)
+
+  const pad = (settings.padding / 100)
+  const x = ((settings.x / 100) + pad / 2) * W
+  const y = ((settings.y / 100) + pad / 2) * H
+  const w = ((settings.width / 100) - pad) * W
+  const h = ((settings.height / 100) - pad) * H
+
+  ctx.save()
+  ctx.globalAlpha = settings.opacity
+
+  // Apply rotation around center
+  if (settings.rotation !== 0) {
+    ctx.translate(x + w / 2, y + h / 2)
+    ctx.rotate((settings.rotation * Math.PI) / 180)
+    ctx.translate(-(x + w / 2), -(y + h / 2))
+  }
+
+  // Drop shadow
+  if (settings.shadow) {
+    ctx.shadowColor = settings.shadowColor
+    ctx.shadowBlur = settings.shadowBlur
+    ctx.shadowOffsetX = settings.shadowOffsetX
+    ctx.shadowOffsetY = settings.shadowOffsetY
+  }
+
+  // Glow (rendered as extra blurred layer beneath)
+  if (settings.glow) {
+    ctx.save()
+    ctx.shadowColor = settings.glowColor
+    ctx.shadowBlur = settings.glowBlur
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 0
+    const fit = settings.objectFit || 'contain'
+    drawFittedImage(ctx, img, x, y, w, h, fit)
+    ctx.restore()
+  }
+
+  // Draw the actual transparent product image
+  const fit = settings.objectFit || 'contain'
+  drawFittedImage(ctx, img, x, y, w, h, fit)
+
+  ctx.restore()
+}
+
+function drawFittedImage(
+  ctx: any,
+  img: any,
+  x: number, y: number,
+  w: number, h: number,
+  fit: 'contain' | 'cover' | 'fill'
+) {
+  if (fit === 'cover') {
+    const scale = Math.max(w / img.width, h / img.height)
+    const sw = img.width * scale
+    const sh = img.height * scale
+    ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
+  } else if (fit === 'contain') {
+    const scale = Math.min(w / img.width, h / img.height)
+    const sw = img.width * scale
+    const sh = img.height * scale
+    ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
+  } else {
+    ctx.drawImage(img, x, y, w, h)
+  }
+}
+
 export async function compositeImage(
   canvasData: CanvasData,
-  product: ProductData
+  product: ProductData,
+  options: CompositeOptions = {}
 ): Promise<Buffer> {
   return measureAsync('creative.render.total', async () => {
     ensureFontsRegistered()
 
-    // Use actual canvas dimensions from the template
     const W = canvasData.width || 1080
     const H = canvasData.height || 1080
 
@@ -326,148 +410,30 @@ export async function compositeImage(
     // Background
     await serverRenderBackground(ctx, canvasData, product, W, H)
 
-    const sorted = [...canvasData.layers].sort(
-      (a, b) => a.zIndex - b.zIndex
-    )
+    const templateMode = options.templateMode || 'standard'
+    const productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    for (const layer of sorted) {
-      const x = (layer.x / 100) * W
-      const y = (layer.y / 100) * H
-      const w = (layer.width / 100) * W
-      const h = (layer.height / 100) * H
+    if (templateMode === 'ai_product' && product.transparentImageUrl) {
+      // AI Product Mode: split layers around the product layer zIndex
+      const allLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+      const bgLayers = allLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
+      const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
 
-      ctx.save()
-      ctx.globalAlpha = layer.opacity
-
-      if (layer.rotation !== 0) {
-        ctx.translate(x + w / 2, y + h / 2)
-        ctx.rotate((layer.rotation * Math.PI) / 180)
-        ctx.translate(-(x + w / 2), -(y + h / 2))
+      for (const layer of bgLayers) {
+        await drawLayer(ctx, layer, product, W, H)
       }
-
-      switch (layer.type) {
-        case 'rectangle': {
-          const l = layer as RectangleLayer
-          ctx.fillStyle = l.backgroundColor
-          roundRect(ctx, x, y, w, h, l.borderRadius)
-          ctx.fill()
-          if (l.borderWidth > 0) {
-            ctx.strokeStyle = l.borderColor
-            ctx.lineWidth = l.borderWidth
-            roundRect(ctx, x, y, w, h, l.borderRadius)
-            ctx.stroke()
-          }
-          break
-        }
-
-        case 'text': {
-          const l = layer as TextLayer
-          const text = resolveVariables(l.content, product)
-          const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
-          // Scale font size proportionally to canvas width
-          const scaledFontSize = l.fontSize * (W / 1000)
-          ctx.font = `${scaledFontSize}px "${family}"`
-          ctx.fillStyle = l.color
-          ctx.textBaseline = 'top'
-          ctx.textAlign = l.textAlign as CanvasTextAlign
-
-          if (l.backgroundColor) {
-            ctx.fillStyle = l.backgroundColor
-            roundRect(ctx, x, y, w, h, l.borderRadius)
-            ctx.fill()
-            ctx.fillStyle = l.color
-          }
-
-          const paddingX = l.paddingX * (W / 1000)
-          const paddingY = l.paddingY * (H / 1000)
-          const textX = l.textAlign === 'center'
-            ? x + w / 2
-            : l.textAlign === 'right'
-              ? x + w - paddingX
-              : x + paddingX
-          ctx.fillText(text, textX, y + paddingY, w - paddingX * 2)
-          break
-        }
-
-        case 'badge': {
-          const l = layer as BadgeLayer
-          const text = resolveVariables(l.content, product)
-          const radius = l.shape === 'circle' ? Math.min(w, h) / 2 : l.borderRadius
-          ctx.fillStyle = l.backgroundColor
-          if (l.shape === 'circle') {
-            ctx.beginPath()
-            ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2)
-            ctx.fill()
-          } else {
-            roundRect(ctx, x, y, w, h, radius)
-            ctx.fill()
-          }
-          ctx.fillStyle = l.color
-          const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
-          ctx.font = `${l.fontSize * (W / 1000)}px "${family}"`
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'middle'
-          ctx.fillText(text, x + w / 2, y + h / 2, w)
-          break
-        }
-
-        case 'overlay':
-        case 'logo':
-        case 'sticker':
-        case 'image': {
-          // overlay/logo/sticker carry an uploaded `src`; image may carry the
-          // product-image token. All four draw a remote image the same way.
-          const l = layer as Layer & {
-            src: string
-            objectFit?: 'cover' | 'contain' | 'fill'
-            borderRadius?: number
-          }
-          const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
-          const fit = l.objectFit || 'contain'
-          const radius = l.borderRadius ?? 0
-          if (imgSrc) {
-            try {
-              const img = await loadImageSafe(imgSrc)
-              ctx.save()
-              if (radius > 0) {
-                roundRect(ctx, x, y, w, h, radius)
-                ctx.clip()
-              }
-              if (fit === 'cover') {
-                const scale = Math.max(w / img.width, h / img.height)
-                const sw = img.width * scale
-                const sh = img.height * scale
-                ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-              } else if (fit === 'contain') {
-                const scale = Math.min(w / img.width, h / img.height)
-                const sw = img.width * scale
-                const sh = img.height * scale
-                ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
-              } else {
-                ctx.drawImage(img, x, y, w, h)
-              }
-              ctx.restore()
-            } catch (err: any) {
-              console.error('[compositor] image load failed:', imgSrc, err?.message)
-              // Only show a grey placeholder for the product image; for
-              // overlay/logo/sticker a load failure should be silent (no ugly box).
-              if (layer.type === 'image') {
-                ctx.fillStyle = '#dddddd'
-                roundRect(ctx, x, y, w, h, radius)
-                ctx.fill()
-              }
-            }
-          }
-          break
-        }
+      await drawProductLayer(ctx, product.transparentImageUrl, productLayerSettings, W, H)
+      for (const layer of fgLayers) {
+        await drawLayer(ctx, layer, product, W, H)
       }
-
-      ctx.restore()
+    } else {
+      // Standard mode: draw all layers in z-order
+      const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+      for (const layer of sorted) {
+        await drawLayer(ctx, layer, product, W, H)
+      }
     }
 
-    // Lossless PNG master. The single lossy pass happens at Cloudinary delivery
-    // (f_auto,q_auto:good). Must stay PNG: the upload route validates the PNG
-    // signature (0x89 0x50) and the quality pipeline depends on a lossless master.
     const pngStarted = Date.now()
     const buffer = canvas.toBuffer('image/png')
     logPerf('creative.render.png_encode', Date.now() - pngStarted, {
@@ -477,6 +443,131 @@ export async function compositeImage(
     })
     return buffer
   }, { layers: canvasData.layers.length })
+}
+
+/** Draw a single layer onto the canvas context. Extracted for reuse in both modes. */
+async function drawLayer(
+  ctx: any,
+  layer: Layer,
+  product: ProductData,
+  W: number,
+  H: number
+): Promise<void> {
+  const x = (layer.x / 100) * W
+  const y = (layer.y / 100) * H
+  const w = (layer.width / 100) * W
+  const h = (layer.height / 100) * H
+
+  ctx.save()
+  ctx.globalAlpha = layer.opacity
+
+  if (layer.rotation !== 0) {
+    ctx.translate(x + w / 2, y + h / 2)
+    ctx.rotate((layer.rotation * Math.PI) / 180)
+    ctx.translate(-(x + w / 2), -(y + h / 2))
+  }
+
+  switch (layer.type) {
+    case 'rectangle': {
+      const l = layer as RectangleLayer
+      ctx.fillStyle = l.backgroundColor
+      roundRect(ctx, x, y, w, h, l.borderRadius)
+      ctx.fill()
+      if (l.borderWidth > 0) {
+        ctx.strokeStyle = l.borderColor
+        ctx.lineWidth = l.borderWidth
+        roundRect(ctx, x, y, w, h, l.borderRadius)
+        ctx.stroke()
+      }
+      break
+    }
+
+    case 'text': {
+      const l = layer as TextLayer
+      const text = resolveVariables(l.content, product)
+      const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
+      const scaledFontSize = l.fontSize * (W / 1000)
+      ctx.font = `${scaledFontSize}px "${family}"`
+      ctx.fillStyle = l.color
+      ctx.textBaseline = 'top'
+      ctx.textAlign = l.textAlign as CanvasTextAlign
+
+      if (l.backgroundColor) {
+        ctx.fillStyle = l.backgroundColor
+        roundRect(ctx, x, y, w, h, l.borderRadius)
+        ctx.fill()
+        ctx.fillStyle = l.color
+      }
+
+      const paddingX = l.paddingX * (W / 1000)
+      const paddingY = l.paddingY * (H / 1000)
+      const textX = l.textAlign === 'center'
+        ? x + w / 2
+        : l.textAlign === 'right'
+          ? x + w - paddingX
+          : x + paddingX
+      ctx.fillText(text, textX, y + paddingY, w - paddingX * 2)
+      break
+    }
+
+    case 'badge': {
+      const l = layer as BadgeLayer
+      const text = resolveVariables(l.content, product)
+      const radius = l.shape === 'circle' ? Math.min(w, h) / 2 : l.borderRadius
+      ctx.fillStyle = l.backgroundColor
+      if (l.shape === 'circle') {
+        ctx.beginPath()
+        ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2)
+        ctx.fill()
+      } else {
+        roundRect(ctx, x, y, w, h, radius)
+        ctx.fill()
+      }
+      ctx.fillStyle = l.color
+      const family = l.fontWeight === 'bold' ? 'Inter Bold' : 'Inter'
+      ctx.font = `${l.fontSize * (W / 1000)}px "${family}"`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(text, x + w / 2, y + h / 2, w)
+      break
+    }
+
+    case 'overlay':
+    case 'logo':
+    case 'sticker':
+    case 'image': {
+      const l = layer as Layer & {
+        src: string
+        objectFit?: 'cover' | 'contain' | 'fill'
+        borderRadius?: number
+      }
+      const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
+      const fit = l.objectFit || 'contain'
+      const radius = l.borderRadius ?? 0
+      if (imgSrc) {
+        try {
+          const img = await loadImageSafe(imgSrc)
+          ctx.save()
+          if (radius > 0) {
+            roundRect(ctx, x, y, w, h, radius)
+            ctx.clip()
+          }
+          drawFittedImage(ctx, img, x, y, w, h, fit as 'cover' | 'contain' | 'fill')
+          ctx.restore()
+        } catch (err: any) {
+          console.error('[compositor] image load failed:', imgSrc, err?.message)
+          if (layer.type === 'image') {
+            ctx.fillStyle = '#dddddd'
+            roundRect(ctx, x, y, w, h, radius)
+            ctx.fill()
+          }
+        }
+      }
+      break
+    }
+  }
+
+  ctx.restore()
 }
 
 function roundRect(

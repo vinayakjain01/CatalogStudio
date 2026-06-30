@@ -203,10 +203,64 @@ export const DEFAULT_BACKGROUND_SETTINGS: BackgroundSettings = {
 export interface CanvasData {
   width: number
   height: number
-  aspectRatio: AspectRatio   // NEW
+  aspectRatio: AspectRatio
   backgroundColor: string
   backgroundImageUrl: string | null
   layers: Layer[]
   // Smart background — optional; absent = backward-compat solid fill
   backgroundSettings?: BackgroundSettings
+  // AI Product Mode — optional; absent = backward-compat standard mode
+  templateMode?: TemplateMode
+  productLayerSettings?: ProductLayerSettings
+}
+// ─── AI Product Mode ─────────────────────────────────────────────────────────
+// When templateMode = 'ai_product', background removal runs on the product image.
+// The transparent product is placed as an independent floating layer.
+
+export type TemplateMode = 'standard' | 'ai_product'
+
+export interface ProductLayerSettings {
+  // Position (percentage of canvas)
+  x: number           // default 10
+  y: number           // default 10
+  width: number       // default 80
+  height: number      // default 80
+  // Transform
+  rotation: number    // degrees, default 0
+  opacity: number     // 0-1, default 1
+  // Fit
+  objectFit: 'contain' | 'cover' | 'fill'  // default 'contain'
+  // Effects
+  shadow: boolean
+  shadowColor: string     // default 'rgba(0,0,0,0.3)'
+  shadowBlur: number      // px, default 20
+  shadowOffsetX: number   // px, default 0
+  shadowOffsetY: number   // px, default 10
+  glow: boolean
+  glowColor: string       // default 'rgba(255,255,255,0.6)'
+  glowBlur: number        // px, default 15
+  // Layer order (zIndex relative to other layers)
+  zIndex: number          // default 5
+  // Padding inside bounding box
+  padding: number         // %, default 0
+}
+
+export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
+  x: 10,
+  y: 5,
+  width: 80,
+  height: 80,
+  rotation: 0,
+  opacity: 1,
+  objectFit: 'contain',
+  shadow: true,
+  shadowColor: 'rgba(0,0,0,0.25)',
+  shadowBlur: 24,
+  shadowOffsetX: 0,
+  shadowOffsetY: 12,
+  glow: false,
+  glowColor: 'rgba(255,255,255,0.5)',
+  glowBlur: 15,
+  zIndex: 5,
+  padding: 4,
 }

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
+import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, TemplateMode, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
 import { nanoid } from 'nanoid'
 
 // Shape of a preview product for live preview in the builder
@@ -36,6 +36,9 @@ interface BuilderStore {
   selectLayer: (id: string | null) => void
   reorderLayers: (layers: Layer[]) => void
 
+  setTemplateMode: (mode: TemplateMode) => void
+  setProductLayerSettings: (settings: Partial<ProductLayerSettings>) => void
+
   loadTemplate: (canvasData: CanvasData) => void
   resetDirty: () => void
 }
@@ -70,6 +73,21 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
         ...s.canvasData,
         backgroundSettings: {
           ...(s.canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS),
+          ...settings,
+        },
+      },
+      isDirty: true,
+    })),
+
+  setTemplateMode: (mode) =>
+    set(s => ({ canvasData: { ...s.canvasData, templateMode: mode }, isDirty: true })),
+
+  setProductLayerSettings: (settings) =>
+    set(s => ({
+      canvasData: {
+        ...s.canvasData,
+        productLayerSettings: {
+          ...(s.canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS),
           ...settings,
         },
       },
