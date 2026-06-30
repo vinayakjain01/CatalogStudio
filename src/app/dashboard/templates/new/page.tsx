@@ -36,6 +36,7 @@ export default async function NewTemplatePage() {
     <TemplateBuilderClient
       categories={categories ?? []}
       previewProducts={previewProducts}
+      storeId={activeStoreId}
     />
   )
 }

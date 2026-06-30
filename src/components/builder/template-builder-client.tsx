@@ -32,11 +32,12 @@ interface Props {
   }
   categories: { id: string; name: string }[]
   previewProducts?: any[]
+  storeId?: string | null
 }
 
 type RightPanelTab = 'layers' | 'properties' | 'ai'
 
-export function TemplateBuilderClient({ template, categories, previewProducts = [] }: Props) {
+export function TemplateBuilderClient({ template, categories, previewProducts = [], storeId }: Props) {
   const router = useRouter()
   const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio, selectedLayerId } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
@@ -192,7 +193,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
 
         {/* Center canvas */}
         <div className="flex-1 bg-muted/30 flex items-center justify-center overflow-auto p-8">
-          <CanvasPreview />
+          <CanvasPreview storeId={storeId} />
         </div>
 
         {/* Right panel */}

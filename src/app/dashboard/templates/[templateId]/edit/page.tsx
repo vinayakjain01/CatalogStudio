@@ -51,6 +51,7 @@ export default async function EditTemplatePage({
       template={template}
       categories={categories ?? []}
       previewProducts={previewProducts}
+      storeId={activeStoreId}
     />
   )
 }

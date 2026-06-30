@@ -4,14 +4,21 @@ import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
+import { getTransparentProductImage } from '@/lib/background-removal'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
 function getAdminClient() {
+  // Node.js 20 (and the Vercel Node runtime in some regions) has no native
+  // WebSocket global — Supabase Realtime needs it passed explicitly or the
+  // client throws "supabaseKey is required" / WebSocket errors on use.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ws = require('ws') as any
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { realtime: { transport: ws } }
   )
 }
 
@@ -75,15 +82,41 @@ export async function POST(request: NextRequest) {
 
   const images = (product as any).product_images || []
   const primaryImage = images.find((i: any) => i.is_primary) || images[0]
+  const imageUrl: string | null = primaryImage?.src || null
 
   try {
-    const buffer = await compositeImage(template.canvas_data as any, {
+    // ── AI Product Mode: background removal ────────────────────────────────
+    // Mirrors the same logic used by the bulk worker (generation-queue.ts).
+    // Cached per source image URL — re-generating the same product never
+    // re-calls the AI provider.
+    const canvasData = template.canvas_data as any
+    const templateMode: 'standard' | 'ai_product' = canvasData.templateMode || 'standard'
+    let transparentImageUrl: string | null = null
+
+    if (templateMode === 'ai_product' && imageUrl) {
+      try {
+        const bgResult = await getTransparentProductImage(imageUrl, storeId, adminSupabase)
+        transparentImageUrl = bgResult.transparentUrl
+        console.log(`[generate/single] BG removal ${bgResult.fromCache ? 'cached' : 'fresh'} for productId=${product.id}`)
+      } catch (bgErr: any) {
+        console.error(`[generate/single] BG removal failed for productId=${product.id}, falling back to standard:`, bgErr.message)
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const productLayerSettings = canvasData.productLayerSettings || undefined
+
+    const buffer = await compositeImage(canvasData, {
       title: product.title,
       price: product.price,
       compare_at_price: product.compare_at_price,
       vendor: product.vendor,
       product_type: product.product_type,
-      imageUrl: primaryImage?.src || null,
+      imageUrl,
+      transparentImageUrl,
+    }, {
+      templateMode: transparentImageUrl ? 'ai_product' : 'standard',
+      productLayerSettings,
     })
 
     if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {

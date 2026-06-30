@@ -5,9 +5,11 @@ import { useBuilderStore } from '@/stores/builder-store'
 import {
   Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
   LogoLayer, OverlayLayer, StickerLayer, resolveVariables,
-  DEFAULT_BACKGROUND_SETTINGS,
+  DEFAULT_BACKGROUND_SETTINGS, DEFAULT_PRODUCT_LAYER_SETTINGS,
 } from '@/types/template'
 import { useSmartBackground } from './smart-background'
+import { useTransparentPreview } from './use-transparent-preview'
+import { Loader2, Sparkles } from 'lucide-react'
 
 const MAX_W = 580
 const MAX_H = 680
@@ -199,7 +201,94 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
   }
 }
 
-export function CanvasPreview() {
+// ─── AI Product Layer Preview ────────────────────────────────────────────────
+// Renders the (possibly still-loading) transparent product as a floating
+// layer, mirroring the position/effects the server compositor will apply.
+// This is what gives the builder a true "what you'll get" live preview.
+
+function ProductLayerPreview({
+  imageUrl,
+  storeId,
+  enabled,
+  settings,
+  scaleX,
+}: {
+  imageUrl: string | null
+  storeId: string | null
+  enabled: boolean
+  settings: typeof DEFAULT_PRODUCT_LAYER_SETTINGS
+  scaleX: number
+}) {
+  const { transparentUrl, loading, error, retry } = useTransparentPreview(imageUrl, storeId, enabled)
+
+  if (!enabled) return null
+
+  const pad = settings.padding / 100
+  const style: React.CSSProperties = {
+    position: 'absolute',
+    left: `${settings.x + (settings.width * pad) / 2}%`,
+    top: `${settings.y + (settings.height * pad) / 2}%`,
+    width: `${settings.width * (1 - pad)}%`,
+    height: `${settings.height * (1 - pad)}%`,
+    transform: `rotate(${settings.rotation}deg)`,
+    opacity: settings.opacity,
+    zIndex: settings.zIndex + 1,
+    pointerEvents: 'none',
+  }
+
+  // Build a CSS filter approximating the server-side shadow/glow.
+  const filters: string[] = []
+  if (settings.shadow) {
+    filters.push(
+      `drop-shadow(${settings.shadowOffsetX}px ${settings.shadowOffsetY}px ${settings.shadowBlur}px ${settings.shadowColor})`
+    )
+  }
+  if (settings.glow) {
+    filters.push(`drop-shadow(0 0 ${settings.glowBlur}px ${settings.glowColor})`)
+  }
+
+  if (!imageUrl) {
+    return (
+      <div style={style} className="flex items-center justify-center bg-muted/40 rounded-lg border border-dashed">
+        <p className="text-xs text-muted-foreground px-2 text-center">Select a preview product to see the AI result</p>
+      </div>
+    )
+  }
+
+  if (loading) {
+    return (
+      <div style={style} className="flex flex-col items-center justify-center gap-2 bg-muted/40 rounded-lg">
+        <Loader2 className="h-5 w-5 animate-spin text-primary" />
+        <p className="text-xs text-muted-foreground">Removing background…</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={style} className="flex flex-col items-center justify-center gap-1.5 bg-destructive/5 rounded-lg border border-destructive/30 p-2">
+        <p className="text-xs text-destructive text-center">{error}</p>
+        <button onClick={retry} className="text-xs underline text-muted-foreground">Retry</button>
+      </div>
+    )
+  }
+
+  if (!transparentUrl) return null
+
+  return (
+    <img
+      src={transparentUrl}
+      alt="Product (background removed)"
+      draggable={false}
+      style={{
+        ...style,
+        objectFit: settings.objectFit,
+        filter: filters.length > 0 ? filters.join(' ') : undefined,
+      }}
+    />
+  )
+}
+export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const { canvasData, selectedLayerId, selectLayer, updateLayer, previewProduct } = useBuilderStore()
   const canvasRef = useRef<HTMLDivElement>(null)
   const product = previewProduct ?? SAMPLE_PRODUCT
@@ -210,12 +299,18 @@ export function CanvasPreview() {
   const displayH = Math.round(cH * scale)
   const scaleX = displayW / 1000
 
+  const isAiMode = canvasData.templateMode === 'ai_product'
+  const productLayerSettings = canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS
+
   // ── Smart background ──────────────────────────────────────────────────────
   // Find the first image or overlay layer that has a real (non-placeholder) src
   // to use as the color-sampling source.
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
   const sampleSrc = (() => {
     if (bgSettings.mode === 'solid' || bgSettings.mode === 'transparent') return null
+    // In AI mode the background should never sample the original product
+    // photo — once the background is removed there is nothing to sample.
+    if (isAiMode) return null
     // Prefer the actual preview product image if available
     if (product.imageUrl) return product.imageUrl
     // Fall back to the first image layer with a static src
@@ -241,9 +336,43 @@ export function CanvasPreview() {
     ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
     : undefined
 
+  // ── AI Product Mode: split layers around the product zIndex ───────────────
+  // Mirrors the server compositor exactly: layers below productLayerSettings.zIndex
+  // render first, then the floating transparent product, then layers above it.
+  const sortedLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+  const bgLayers = isAiMode
+    ? sortedLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
+    : sortedLayers
+  const fgLayers = isAiMode
+    ? sortedLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
+    : []
+
+  function renderLayer(layer: Layer) {
+    return (
+      <LayerRenderer
+        key={layer.id}
+        layer={layer}
+        product={product}
+        canvasEl={canvasRef.current}
+        scaleX={scaleX}
+        selected={selectedLayerId === layer.id}
+        onSelect={() => selectLayer(layer.id)}
+        onChange={(updates) => updateLayer(layer.id, updates)}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col items-center gap-3">
-      <span className="text-xs text-muted-foreground">{cW} × {cH}px</span>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">{cW} × {cH}px</span>
+        {isAiMode && (
+          <span className="flex items-center gap-1 text-xs text-primary font-medium">
+            <Sparkles className="h-3 w-3" />
+            Live AI preview
+          </span>
+        )}
+      </div>
       <div
         ref={canvasRef}
         style={{
@@ -257,20 +386,17 @@ export function CanvasPreview() {
         }}
         onMouseDown={(e) => { if (e.target === e.currentTarget) selectLayer(null) }}
       >
-        {[...canvasData.layers]
-          .sort((a, b) => a.zIndex - b.zIndex)
-          .map(layer => (
-            <LayerRenderer
-              key={layer.id}
-              layer={layer}
-              product={product}
-              canvasEl={canvasRef.current}
-              scaleX={scaleX}
-              selected={selectedLayerId === layer.id}
-              onSelect={() => selectLayer(layer.id)}
-              onChange={(updates) => updateLayer(layer.id, updates)}
-            />
-          ))}
+        {bgLayers.map(renderLayer)}
+        {isAiMode && (
+          <ProductLayerPreview
+            imageUrl={product.imageUrl}
+            storeId={storeId ?? null}
+            enabled={isAiMode}
+            settings={productLayerSettings}
+            scaleX={scaleX}
+          />
+        )}
+        {fgLayers.map(renderLayer)}
       </div>
     </div>
   )
