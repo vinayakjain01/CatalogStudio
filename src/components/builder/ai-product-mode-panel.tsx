@@ -1,7 +1,7 @@
 'use client'
 
 import { useBuilderStore } from '@/stores/builder-store'
-import { DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
+import { DEFAULT_PRODUCT_LAYER_SETTINGS, DEFAULT_BACKGROUND_SETTINGS } from '@/types/template'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
@@ -12,19 +12,41 @@ import {
   RotateCcw,
   Maximize2,
   Info,
+  Palette,
 } from 'lucide-react'
+
+const QUICK_BACKGROUNDS = [
+  { label: 'White', color: '#ffffff' },
+  { label: 'Light Grey', color: '#f1f1f1' },
+  { label: 'Warm Beige', color: '#f0e8de' },
+  { label: 'Soft Pink', color: '#fbe9eb' },
+  { label: 'Sage', color: '#e7ebe2' },
+  { label: 'Charcoal', color: '#1f1f1f' },
+  { label: 'Navy', color: '#1a2438' },
+  { label: 'Black', color: '#000000' },
+]
 
 export function AiProductModePanel() {
   const {
     canvasData,
     setTemplateMode,
     setProductLayerSettings,
+    setBackgroundColor,
+    setBackgroundSettings,
     previewProduct,
   } = useBuilderStore()
 
   const mode = canvasData.templateMode || 'standard'
   const settings = canvasData.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
+  const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
   const isAiMode = mode === 'ai_product'
+
+  function applyQuickBackground(color: string) {
+    // Quick presets always use a flat solid fill — the clean, predictable
+    // "studio backdrop" look that works for every product photo.
+    setBackgroundSettings({ mode: 'solid' })
+    setBackgroundColor(color)
+  }
 
   return (
     <div className="space-y-4 p-4">
@@ -68,6 +90,56 @@ export function AiProductModePanel() {
             <p className="text-xs leading-snug">
               Background is removed during generation. The transparent product floats above your template design. Make your template background first, then adjust position here.
             </p>
+          </div>
+
+          <Separator />
+
+          {/* Background presets */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-medium">Background</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Pick a clean studio backdrop for the floating product.
+            </p>
+            <div className="grid grid-cols-4 gap-2">
+              {QUICK_BACKGROUNDS.map(bg => (
+                <button
+                  key={bg.color}
+                  onClick={() => applyQuickBackground(bg.color)}
+                  title={bg.label}
+                >
+                  <span
+                    className={`block w-9 h-9 rounded-lg border-2 transition-all ${
+                      bgSettings.mode === 'solid' && canvasData.backgroundColor === bg.color
+                        ? 'border-primary scale-105'
+                        : 'border-border hover:border-muted-foreground/40'
+                    }`}
+                    style={{ background: bg.color }}
+                  />
+                  <span className="block text-[10px] text-muted-foreground leading-none text-center mt-1">{bg.label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Custom color */}
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="color"
+                value={canvasData.backgroundColor}
+                onChange={e => applyQuickBackground(e.target.value)}
+                className="w-8 h-8 rounded border border-border cursor-pointer"
+              />
+              <span className="text-xs text-muted-foreground">Custom color</span>
+            </div>
+
+            {/* Note about blur-extend/smart modes */}
+            {(bgSettings.mode === 'blur-extend' || bgSettings.mode === 'smart') && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Smart/blur backgrounds sample the original photo — since that photo's background is removed in AI mode, pick a solid color above for a clean result.
+              </p>
+            )}
           </div>
 
           <Separator />
@@ -194,6 +266,13 @@ export function AiProductModePanel() {
                 </button>
               ))}
             </div>
+            <p className="text-xs text-muted-foreground">
+              {settings.objectFit === 'cover'
+                ? 'Cover crops the product to fill the box — parts may get cut off.'
+                : settings.objectFit === 'fill'
+                  ? 'Fill stretches the product to match the box exactly.'
+                  : 'Contain shows the whole product without cropping (recommended).'}
+            </p>
           </div>
 
           <Separator />
@@ -219,14 +298,14 @@ export function AiProductModePanel() {
                   <SliderField
                     label="Blur"
                     value={settings.shadowBlur}
-                    min={0} max={60}
+                    min={0} max={36}
                     onChange={v => setProductLayerSettings({ shadowBlur: v })}
                     unit="px"
                   />
                   <SliderField
                     label="Offset Y"
                     value={settings.shadowOffsetY}
-                    min={-30} max={60}
+                    min={-20} max={30}
                     onChange={v => setProductLayerSettings({ shadowOffsetY: v })}
                     unit="px"
                   />

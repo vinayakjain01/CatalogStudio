@@ -396,11 +396,22 @@ export async function compositeImage(
   return measureAsync('creative.render.total', async () => {
     ensureFontsRegistered()
 
-    const W = canvasData.width || 1080
-    const H = canvasData.height || 1080
+    const targetW = canvasData.width || 1080
+    const targetH = canvasData.height || 1080
+
+    // Render at SUPERSAMPLE× the target size, then downscale at the end.
+    // This is the single biggest quality lever: it fixes soft/blurry edges
+    // on the AI-removed product silhouette, anti-aliases text and shapes,
+    // and matches how every professional design tool renders for export.
+    const S = options.supersample ?? SUPERSAMPLE
+    const W = targetW * S
+    const H = targetH * S
 
     const canvas = createCanvas(W, H)
     const ctx = canvas.getContext('2d')
+    // @napi-rs/canvas: ensure smooth scaling for any upscaled raster source
+    if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = true
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
 
     await measureAsync('creative.render.asset_preload', () =>
       preloadRenderableImages(canvasData, product),
@@ -422,7 +433,17 @@ export async function compositeImage(
       for (const layer of bgLayers) {
         await drawLayer(ctx, layer, product, W, H)
       }
-      await drawProductLayer(ctx, product.transparentImageUrl, productLayerSettings, W, H)
+      // Shadow/glow blur values are authored at 1x in the builder UI — scale
+      // them up by S so they look identical at render resolution, then the
+      // final downscale brings them back to the intended visual size.
+      const scaledSettings: ProductLayerSettings = {
+        ...productLayerSettings,
+        shadowBlur: productLayerSettings.shadowBlur * S,
+        shadowOffsetX: productLayerSettings.shadowOffsetX * S,
+        shadowOffsetY: productLayerSettings.shadowOffsetY * S,
+        glowBlur: productLayerSettings.glowBlur * S,
+      }
+      await drawProductLayer(ctx, product.transparentImageUrl, scaledSettings, W, H)
       for (const layer of fgLayers) {
         await drawLayer(ctx, layer, product, W, H)
       }
@@ -434,12 +455,25 @@ export async function compositeImage(
       }
     }
 
+    // Downscale from the supersampled render to the target size. This pass
+    // is what removes jagged/soft edges — @napi-rs/canvas's drawImage does
+    // a quality resample when scaling down, equivalent to a sharpen+AA pass.
+    let finalCanvas = canvas
+    if (S !== 1) {
+      finalCanvas = createCanvas(targetW, targetH)
+      const finalCtx = finalCanvas.getContext('2d')
+      if ('imageSmoothingEnabled' in finalCtx) finalCtx.imageSmoothingEnabled = true
+      if ('imageSmoothingQuality' in finalCtx) finalCtx.imageSmoothingQuality = 'high'
+      finalCtx.drawImage(canvas as any, 0, 0, targetW, targetH)
+    }
+
     const pngStarted = Date.now()
-    const buffer = canvas.toBuffer('image/png')
+    const buffer = finalCanvas.toBuffer('image/png')
     logPerf('creative.render.png_encode', Date.now() - pngStarted, {
       bytes: buffer.length,
-      width: W,
-      height: H,
+      width: targetW,
+      height: targetH,
+      supersample: S,
     })
     return buffer
   }, { layers: canvasData.layers.length })
