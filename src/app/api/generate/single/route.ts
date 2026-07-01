@@ -117,6 +117,8 @@ export async function POST(request: NextRequest) {
     }, {
       templateMode: transparentImageUrl ? 'ai_product' : 'standard',
       productLayerSettings,
+      storeId,
+      supabase: adminSupabase,
     })
 
     if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {

@@ -4,6 +4,7 @@ import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, B
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
+import { getExtendedImage, needsExtend } from '@/lib/image-extend'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
@@ -69,6 +70,10 @@ export interface CompositeOptions {
   templateMode?: 'standard' | 'ai_product'
   /** Product layer settings for ai_product mode */
   productLayerSettings?: ProductLayerSettings
+  /** Store ID — required for AI Extend caching (image layers with objectFit='ai_extend') */
+  storeId?: string
+  /** Supabase admin client — required for AI Extend caching */
+  supabase?: any
 }
 
 /**
@@ -424,6 +429,15 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     const productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
+    // Layer-drawing options passed to every drawLayer call — enables
+    // ai_extend inside image layers to call the extend service.
+    const layerOpts = {
+      storeId: options.storeId,
+      supabase: options.supabase,
+      targetW: targetW,  // 1x dimensions (not supersampled) for extend cache key
+      targetH: targetH,
+    }
+
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
       // AI Product Mode: split layers around the product layer zIndex
       const allLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
@@ -431,7 +445,7 @@ export async function compositeImage(
       const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
 
       for (const layer of bgLayers) {
-        await drawLayer(ctx, layer, product, W, H)
+        await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
       // Shadow/glow blur values are authored at 1x in the builder UI — scale
       // them up by S so they look identical at render resolution, then the
@@ -445,13 +459,13 @@ export async function compositeImage(
       }
       await drawProductLayer(ctx, product.transparentImageUrl, scaledSettings, W, H)
       for (const layer of fgLayers) {
-        await drawLayer(ctx, layer, product, W, H)
+        await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     } else {
       // Standard mode: draw all layers in z-order
       const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
       for (const layer of sorted) {
-        await drawLayer(ctx, layer, product, W, H)
+        await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     }
 
@@ -485,7 +499,8 @@ async function drawLayer(
   layer: Layer,
   product: ProductData,
   W: number,
-  H: number
+  H: number,
+  options?: { storeId?: string; supabase?: any; targetW?: number; targetH?: number }
 ): Promise<void> {
   const x = (layer.x / 100) * W
   const y = (layer.y / 100) * H
@@ -572,24 +587,60 @@ async function drawLayer(
     case 'image': {
       const l = layer as Layer & {
         src: string
-        objectFit?: 'cover' | 'contain' | 'fill'
+        objectFit?: 'cover' | 'contain' | 'fill' | 'ai_extend'
         borderRadius?: number
       }
       const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
       const fit = l.objectFit || 'contain'
       const radius = l.borderRadius ?? 0
+
       if (imgSrc) {
+        // ── AI Extend: use Cloudinary Generative Fill ──────────────────────
+        // When objectFit='ai_extend' and we have a product image layer,
+        // the extend service returns an already-full-canvas image so we
+        // draw it cover-style (should fill exactly with no empty space).
+        let resolvedSrc = imgSrc
+        if (fit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
+          const targetW = options.targetW ?? W
+          const targetH = options.targetH ?? H
+          // Check if extend is actually needed (skip if image already fills canvas)
+          const imgForCheck = await loadImageSafe(imgSrc).catch(() => null)
+          const actualNeedsExtend = imgForCheck
+            ? needsExtend(imgForCheck.width, imgForCheck.height, targetW, targetH)
+            : true
+
+          if (actualNeedsExtend) {
+            try {
+              const extendResult = await getExtendedImage(
+                imgSrc,
+                targetW,
+                targetH,
+                options.storeId,
+                options.supabase
+              )
+              resolvedSrc = extendResult.extendedUrl
+              console.log(`[compositor] AI extend ${extendResult.fromCache ? 'cached' : 'fresh'} for ${imgSrc.slice(0, 50)}`)
+            } catch (extErr: any) {
+              console.error('[compositor] AI extend failed, falling back to contain:', extErr.message)
+              // Graceful fallback: show image with contain (no empty black bars,
+              // just letterbox) rather than breaking the whole creative
+            }
+          }
+        }
+
         try {
-          const img = await loadImageSafe(imgSrc)
+          const img = await loadImageSafe(resolvedSrc)
           ctx.save()
           if (radius > 0) {
             roundRect(ctx, x, y, w, h, radius)
             ctx.clip()
           }
-          drawFittedImage(ctx, img, x, y, w, h, fit as 'cover' | 'contain' | 'fill')
+          // ai_extend result already fills exactly, so draw it as 'cover'
+          const drawFit = fit === 'ai_extend' ? 'cover' : fit as 'cover' | 'contain' | 'fill'
+          drawFittedImage(ctx, img, x, y, w, h, drawFit)
           ctx.restore()
         } catch (err: any) {
-          console.error('[compositor] image load failed:', imgSrc, err?.message)
+          console.error('[compositor] image load failed:', resolvedSrc, err?.message)
           if (layer.type === 'image') {
             ctx.fillStyle = '#dddddd'
             roundRect(ctx, x, y, w, h, radius)

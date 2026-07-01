@@ -333,6 +333,8 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   }, {
     templateMode: transparentImageUrl ? 'ai_product' : 'standard',
     productLayerSettings,
+    storeId: job.store_id,
+    supabase,
   })
 
   // PNG master sanity check (0x89 0x50 'PNG')

@@ -9,7 +9,8 @@ import {
 } from '@/types/template'
 import { useSmartBackground } from './smart-background'
 import { useTransparentPreview } from './use-transparent-preview'
-import { Loader2, Sparkles } from 'lucide-react'
+import { useExtendPreview } from './use-extend-preview'
+import { Loader2, Sparkles, Wand2 } from 'lucide-react'
 
 const MAX_W = 580
 const MAX_H = 680
@@ -26,6 +27,96 @@ const SAMPLE_PRODUCT = {
 type DragKind =
   | { mode: 'move' }
   | { mode: 'resize'; corner: 'nw' | 'ne' | 'sw' | 'se' }
+
+// ─── AI Extend Image Layer Preview ───────────────────────────────────────────
+// Separate component so it can use hooks (rules of hooks: no hooks in callbacks
+// or switch cases). Shows live generative-fill preview when objectFit='ai_extend'.
+
+function AiExtendImageLayer({
+  imageUrl,
+  storeId,
+  targetWidth,
+  targetHeight,
+}: {
+  imageUrl: string | null
+  storeId: string | null
+  targetWidth: number
+  targetHeight: number
+}) {
+  const { extendedUrl, loading, error, retry } = useExtendPreview(
+    imageUrl,
+    targetWidth,
+    targetHeight,
+    storeId,
+    Boolean(imageUrl && storeId)
+  )
+
+  if (loading) {
+    return (
+      <div style={{
+        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 6,
+        background: 'rgba(0,0,0,0.04)',
+      }}>
+        <Loader2 style={{ width: 18, height: 18, color: 'var(--primary)', animation: 'spin 1s linear infinite' }} />
+        <span style={{ fontSize: 10, color: '#6b7280' }}>AI filling canvas…</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{
+        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 4, padding: 8,
+        background: 'rgba(239,68,68,0.05)',
+      }}>
+        <Wand2 style={{ width: 14, height: 14, color: '#ef4444' }} />
+        <span style={{ fontSize: 10, color: '#ef4444', textAlign: 'center' }}>{error}</span>
+        <button
+          onClick={retry}
+          style={{ fontSize: 10, color: '#6b7280', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  if (extendedUrl) {
+    return (
+      <img
+        src={extendedUrl}
+        alt=""
+        draggable={false}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
+      />
+    )
+  }
+
+  // While waiting for first load, show original at half opacity
+  if (imageUrl) {
+    return (
+      <img
+        src={imageUrl}
+        alt=""
+        draggable={false}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', opacity: 0.5 }}
+      />
+    )
+  }
+
+  return (
+    <div style={{
+      width: '100%', height: '100%', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#9ca3af',
+    }}>
+      AI Extend
+    </div>
+  )
+}
+
+// ─── Layer Renderer ───────────────────────────────────────────────────────────
 
 function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, onChange }: {
   layer: Layer
@@ -143,13 +234,43 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
       const l = layer as ImageLayer
       const isProductImage = l.src === '{{product_image}}'
       const realSrc = isProductImage ? product.imageUrl : l.src
+
+      // AI Extend mode: use the dedicated component which has its own hook
+      if (l.objectFit === 'ai_extend' && isProductImage) {
+        // Read storeId stored on the canvas DOM element
+        const storeId = (canvasEl as any)?.__storeId ?? null
+        const canvasW = canvasEl?.offsetWidth ?? 1080
+        const canvasH = canvasEl?.offsetHeight ?? 1080
+        const targetW = Math.round((layer.width / 100) * canvasW)
+        const targetH = Math.round((layer.height / 100) * canvasH)
+        return wrap(
+          <AiExtendImageLayer
+            imageUrl={product.imageUrl}
+            storeId={storeId}
+            targetWidth={targetW}
+            targetHeight={targetH}
+          />,
+          { borderRadius: l.borderRadius, overflow: 'hidden' }
+        )
+      }
+
       return wrap(
         realSrc ? (
-          <img src={realSrc} alt="" draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: l.objectFit, pointerEvents: 'none' }} />
+          <img
+            src={realSrc}
+            alt=""
+            draggable={false}
+            style={{
+              width: '100%', height: '100%',
+              objectFit: l.objectFit === 'ai_extend' ? 'contain' : l.objectFit,
+              pointerEvents: 'none',
+            }}
+          />
         ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
+          <div style={{
+            width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
+          }}>
             Product Image
           </div>
         ),
@@ -174,8 +295,10 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
           <img src={l.src} alt="" draggable={false}
             style={{ width: '100%', height: '100%', objectFit: l.objectFit, pointerEvents: 'none' }} />
         ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
+          <div style={{
+            width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
+          }}>
             {layer.type === 'sticker' ? 'Sticker' : 'Logo'}
           </div>
         ),
@@ -202,9 +325,6 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
 }
 
 // ─── AI Product Layer Preview ────────────────────────────────────────────────
-// Renders the (possibly still-loading) transparent product as a floating
-// layer, mirroring the position/effects the server compositor will apply.
-// This is what gives the builder a true "what you'll get" live preview.
 
 function ProductLayerPreview({
   imageUrl,
@@ -236,12 +356,9 @@ function ProductLayerPreview({
     pointerEvents: 'none',
   }
 
-  // Build a CSS filter approximating the server-side shadow/glow.
   const filters: string[] = []
   if (settings.shadow) {
-    filters.push(
-      `drop-shadow(${settings.shadowOffsetX}px ${settings.shadowOffsetY}px ${settings.shadowBlur}px ${settings.shadowColor})`
-    )
+    filters.push(`drop-shadow(${settings.shadowOffsetX}px ${settings.shadowOffsetY}px ${settings.shadowBlur}px ${settings.shadowColor})`)
   }
   if (settings.glow) {
     filters.push(`drop-shadow(0 0 ${settings.glowBlur}px ${settings.glowColor})`)
@@ -288,6 +405,9 @@ function ProductLayerPreview({
     />
   )
 }
+
+// ─── Canvas Preview ───────────────────────────────────────────────────────────
+
 export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const { canvasData, selectedLayerId, selectLayer, updateLayer, previewProduct } = useBuilderStore()
   const canvasRef = useRef<HTMLDivElement>(null)
@@ -302,18 +422,11 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const isAiMode = canvasData.templateMode === 'ai_product'
   const productLayerSettings = canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS
 
-  // ── Smart background ──────────────────────────────────────────────────────
-  // Find the first image or overlay layer that has a real (non-placeholder) src
-  // to use as the color-sampling source.
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
   const sampleSrc = (() => {
     if (bgSettings.mode === 'solid' || bgSettings.mode === 'transparent') return null
-    // In AI mode the background should never sample the original product
-    // photo — once the background is removed there is nothing to sample.
     if (isAiMode) return null
-    // Prefer the actual preview product image if available
     if (product.imageUrl) return product.imageUrl
-    // Fall back to the first image layer with a static src
     const imgLayer = canvasData.layers.find(
       l => (l.type === 'image' || l.type === 'overlay') &&
         (l as any).src &&
@@ -331,14 +444,10 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
     solidColor: canvasData.backgroundColor,
   })
 
-  // For transparent mode, use a checkerboard pattern to indicate alpha
   const transparentBg = bgSettings.mode === 'transparent'
     ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
     : undefined
 
-  // ── AI Product Mode: split layers around the product zIndex ───────────────
-  // Mirrors the server compositor exactly: layers below productLayerSettings.zIndex
-  // render first, then the floating transparent product, then layers above it.
   const sortedLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
   const bgLayers = isAiMode
     ? sortedLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
@@ -374,12 +483,15 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         )}
       </div>
       <div
-        ref={canvasRef}
+        ref={(el) => {
+          (canvasRef as any).current = el
+          if (el) (el as any).__storeId = storeId ?? null
+        }}
         style={{
           width: displayW, height: displayH,
           backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
           backgroundImage: backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined)),
-          backgroundSize: backgroundImageCss ? 'cover' : 'cover',
+          backgroundSize: 'cover',
           backgroundPosition: 'center',
           position: 'relative', overflow: 'hidden', flexShrink: 0,
           boxShadow: '0 4px 32px rgba(0,0,0,0.12)', borderRadius: 6, userSelect: 'none',

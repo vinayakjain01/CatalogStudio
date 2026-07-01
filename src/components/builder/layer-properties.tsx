@@ -484,9 +484,16 @@ function LayerPanel() {
                   <SelectItem value="cover">Cover (fills, may crop)</SelectItem>
                   <SelectItem value="contain">Contain (full image, may letterbox)</SelectItem>
                   <SelectItem value="fill">Stretch (fills, distorts)</SelectItem>
+                  <SelectItem value="ai_extend">✨ AI Extend (fills canvas with AI)</SelectItem>
                 </SelectContent>
               </Select>
             </FieldRow>
+
+            {l.objectFit === 'ai_extend' && (
+              <div className="px-2 py-1.5 rounded-md bg-primary/5 border border-primary/20 text-xs text-primary/80 leading-snug">
+                AI will generate natural background to fill empty canvas regions. The original product image is never modified.
+              </div>
+            )}
 
             <FieldRow label="Border radius">
               <NumInput value={l.borderRadius} onChange={v => upd({ borderRadius: v })} min={0} max={500} />

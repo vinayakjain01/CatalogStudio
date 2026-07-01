@@ -29,7 +29,7 @@ export interface TextLayer extends BaseLayer {
 export interface ImageLayer extends BaseLayer {
   type: 'image'
   src: string             // '{{product_image}}' or a static URL
-  objectFit: 'cover' | 'contain' | 'fill'
+  objectFit: 'cover' | 'contain' | 'fill' | 'ai_extend'
   borderRadius: number
 }
 
