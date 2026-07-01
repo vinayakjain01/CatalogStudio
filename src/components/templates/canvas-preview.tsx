@@ -106,7 +106,7 @@ function LayerRenderer({ layer, selected, canvasW, canvasH, previewProduct, onSe
               style={{
                 width: '100%',
                 height: '100%',
-                objectFit: l.objectFit,
+                objectFit: l.objectFit === 'ai_extend' ? 'contain' : l.objectFit,
                 display: 'block',
               }}
             />
