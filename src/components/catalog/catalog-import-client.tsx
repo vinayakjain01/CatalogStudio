@@ -16,6 +16,30 @@ import {
 
 type Step = 'source' | 'upload' | 'preview' | 'importing' | 'done'
 
+/**
+ * Parses a fetch Response as JSON, but degrades gracefully when the body
+ * isn't JSON at all — e.g. Vercel's platform rejects oversized request
+ * bodies (~4.5MB) before our route handler ever runs, and returns a plain
+ * text "Request Entity Too Large" response instead. Without this, callers
+ * crash on JSON.parse with a confusing "Unexpected token" error that hides
+ * what actually went wrong.
+ */
+async function readJsonResponse(res: Response): Promise<any> {
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    if (res.status === 413 || /request entity too large/i.test(text)) {
+      throw new Error(
+        'File is too large to upload directly (limit ~4.5MB). Use the "Google Sheets / Drive" option and paste a sharing link instead — that path has no upload size limit.'
+      )
+    }
+    throw new Error(
+      `Server returned an unexpected response (HTTP ${res.status}). ${text.slice(0, 200)}`
+    )
+  }
+}
+
 interface ColumnMapRow {
   rawColumn: string
   detected: string | null
@@ -93,7 +117,7 @@ export function CatalogImportClient({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: catalogName }),
       })
-      const storeData = await storeRes.json()
+      const storeData = await readJsonResponse(storeRes)
       if (!storeRes.ok) throw new Error(storeData.error)
       setStoreId(storeData.storeId)
 
@@ -115,7 +139,7 @@ export function CatalogImportClient({
         })
       }
 
-      const previewData = await previewRes.json()
+      const previewData = await readJsonResponse(previewRes)
       if (!previewRes.ok) throw new Error(previewData.error)
 
       setPreview(previewData)
@@ -164,7 +188,7 @@ export function CatalogImportClient({
         })
       }
 
-      const data = await res.json()
+      const data = await readJsonResponse(res)
       if (!res.ok) throw new Error(data.error)
 
       setImportId(data.importId)
