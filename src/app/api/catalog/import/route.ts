@@ -18,6 +18,7 @@ import { parseLineSheet } from '@/lib/catalog-import/parser'
 import { processImport } from '@/lib/catalog-import/processor'
 import { fetchFromUrl } from '@/lib/catalog-import/google-fetcher'
 import { autoMapColumns, serializeColumnMap } from '@/lib/catalog-import/column-mapper'
+import { extractEmbeddedImages, toRowImageMap } from '@/lib/catalog-import/image-extractor'
 
 export const maxDuration = 300  // 5 min for large files
 
@@ -81,6 +82,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Parse error: ${err.message}` }, { status: 422 })
   }
 
+  // ── Pull out any images pasted/inserted directly into cells ───────────────
+  // (only meaningful for .xlsx — CSV can't carry image bytes at all, and
+  // Google Sheet URLs are now fetched as .xlsx specifically for this reason)
+  const isXlsx = filename.toLowerCase().endsWith('.xlsx') ||
+    contentType.includes('spreadsheetml')
+  const embeddedImages = isXlsx
+    ? toRowImageMap(await extractEmbeddedImages(fileBuffer, sheet.sheetName).catch(err => {
+        console.warn(`[import] Embedded image extraction failed: ${err.message}`)
+        return []
+      }))
+    : new Map()
+
   // ── Preview mode: return headers + sample + column map ────────────────────
   if (isPreview) {
     const detectedMap = autoMapColumns(sheet.headers)
@@ -90,6 +103,7 @@ export async function POST(request: NextRequest) {
       totalRows: sheet.rows.length,
       sheetName: sheet.sheetName,
       detectedColumnMap: serializeColumnMap(detectedMap),
+      embeddedImagesFound: embeddedImages.size,
     })
   }
 
@@ -123,6 +137,7 @@ export async function POST(request: NextRequest) {
       importId: importRecord.id,
       columnMapOverride,
       downloadImages: true,
+      embeddedImages,
     }, admin)
 
     return NextResponse.json({

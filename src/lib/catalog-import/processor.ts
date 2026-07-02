@@ -20,6 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { autoMapColumns, applyColumnMap, serializeColumnMap } from './column-mapper'
 import type { ParsedSheet } from './parser'
 import { downloadImage, uploadImageToCloudinary } from './image-resolver'
+import type { ExtractedImage } from './image-extractor'
 
 export interface ImportOptions {
   storeId: string
@@ -27,6 +28,8 @@ export interface ImportOptions {
   importId: string
   columnMapOverride?: Record<string, string | null>
   downloadImages?: boolean
+  /** row index (0-based, same indexing as sheet.rows) -> pasted/embedded image, if any */
+  embeddedImages?: Map<number, ExtractedImage>
 }
 
 export interface ImportResult {
@@ -40,7 +43,7 @@ export async function processImport(
   options: ImportOptions,
   supabase: SupabaseClient
 ): Promise<ImportResult> {
-  const { storeId, userId, importId, columnMapOverride, downloadImages = true } = options
+  const { storeId, userId, importId, columnMapOverride, downloadImages = true, embeddedImages } = options
 
   let columnMap = autoMapColumns(sheet.headers)
   if (columnMapOverride) {
@@ -94,6 +97,26 @@ export async function processImport(
         } catch (imgErr: any) {
           console.warn(`[import] Image failed row ${i}: ${imgErr.message}`)
           // Keep original URL as fallback if download fails
+        }
+      } else if (!finalImageUrl && downloadImages && embeddedImages?.has(i)) {
+        // No URL in the sheet for this row — but a photo was pasted/inserted
+        // directly into the cell. Upload that image buffer straight to
+        // Cloudinary instead of skipping the row's image entirely.
+        const embedded = embeddedImages.get(i)!
+        try {
+          const imageHash = crypto
+            .createHash('sha256')
+            .update(embedded.buffer)
+            .digest('hex')
+            .slice(0, 16)
+
+          const { url } = await uploadImageToCloudinary(
+            embedded.buffer,
+            `catalog-imports/${storeId}/${imageHash}`
+          )
+          finalImageUrl = url
+        } catch (imgErr: any) {
+          console.warn(`[import] Embedded image failed row ${i}: ${imgErr.message}`)
         }
       }
 

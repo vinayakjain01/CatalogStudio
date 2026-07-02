@@ -39,8 +39,21 @@ function extractDriveFileId(url: string): string | null {
 }
 
 /**
- * Fetch a Google Sheets file as CSV.
+ * Fetch a Google Sheets file as XLSX.
  * Works for publicly shared sheets (anyone with link can view).
+ *
+ * NOTE: we deliberately export as XLSX rather than CSV. CSV is text-only
+ * and silently drops any images pasted/inserted into cells (Google itself
+ * does not expose a stable source URL for those images — see
+ * https://support.google.com/docs/thread/23809445). XLSX export embeds the
+ * actual image bytes in the file (xl/media/...) with position metadata, so
+ * `extractEmbeddedImages()` in image-extractor.ts can recover them.
+ *
+ * Caveat: Google's XLSX export includes ALL tabs, not just the one
+ * identified by `gid` (unlike the old CSV export). parseLineSheet() already
+ * falls back to "first non-empty sheet", which covers the common
+ * single-tab-with-data case. If a sheet has multiple populated tabs, the
+ * wrong one could be picked — worth a follow-up if that comes up.
  */
 export async function fetchGoogleSheet(url: string): Promise<FetchedFile> {
   const sheetId = extractGoogleSheetsId(url)
@@ -48,12 +61,8 @@ export async function fetchGoogleSheet(url: string): Promise<FetchedFile> {
     throw new Error(`Invalid Google Sheets URL: ${url}`)
   }
 
-  // Parse gid (tab ID) from URL if present
-  const gidMatch = url.match(/[#&?]gid=(\d+)/)
-  const gid = gidMatch ? gidMatch[1] : '0'
-
   // Google's export endpoint — works for publicly shared sheets
-  const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`
+  const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`
 
   const res = await fetch(exportUrl, {
     headers: { 'User-Agent': 'CatalogStudio/1.0' },
@@ -73,8 +82,8 @@ export async function fetchGoogleSheet(url: string): Promise<FetchedFile> {
 
   return {
     buffer,
-    filename: `google-sheet-${sheetId}.csv`,
-    mimeType: 'text/csv',
+    filename: `google-sheet-${sheetId}.xlsx`,
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   }
 }
 
