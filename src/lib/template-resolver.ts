@@ -67,6 +67,12 @@ export function resolveTemplateFromRules(
 
     if (rule_type === 'default') return rule.template_id
 
+    // catalog_import: applies to all products from a specific import
+    // rule_value = import_id. product must have import_id set.
+    if (rule_type === 'catalog_import') {
+      if ((product as any).import_id === rule_value) return rule.template_id
+    }
+
     if (rule_type === 'tag') {
       const tagLower = rule_value.toLowerCase()
       const match = product.tags.some(t => {

@@ -252,7 +252,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     'supabase.products.load_for_generation',
     () => supabase
       .from('products')
-      .select(`id, title, vendor, product_type, tags, price, compare_at_price,
+      .select(`id, title, vendor, product_type, tags, price, compare_at_price, import_id,
         product_images(src, is_primary)`)
       .eq('id', job.product_id)
       .single(),

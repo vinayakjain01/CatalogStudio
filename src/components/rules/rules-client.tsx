@@ -14,6 +14,7 @@ const RULE_TYPES = [
   { value: 'product_type', label: 'Product Type' },
   { value: 'discount', label: 'Discount %' },
   { value: 'default', label: 'Default (all products)' },
+  { value: 'catalog_import', label: '📁 Entire Line Sheet Import' },
 ]
 
 const OPERATORS: Record<string, { value: string; label: string }[]> = {
