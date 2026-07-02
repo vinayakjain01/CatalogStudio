@@ -22,6 +22,12 @@ import { extractEmbeddedImages, toRowImageMap } from '@/lib/catalog-import/image
 
 export const maxDuration = 300  // 5 min for large files
 
+// Tell Next.js to allow up to 50MB request bodies for this specific route.
+// Vercel's serverless functions hard-cap at ~4.5MB, but the UI already
+// routes files > 4MB through Cloudinary direct upload, so in practice
+// this only needs to handle small-to-medium files (~1–4MB range).
+export const dynamic = 'force-dynamic'
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

@@ -18,6 +18,16 @@ import type { NextConfig } from "next"
 const nextConfig: NextConfig = {
   serverExternalPackages: ['@napi-rs/canvas'],
 
+  // Increase the body parser limit for the catalog import route.
+  // Default is 1MB which blocks any real Excel file.
+  // Vercel serverless functions hard-cap at ~4.5MB regardless of this setting,
+  // so large files (>4MB) use the direct-to-Cloudinary upload path in the UI.
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '10mb',
+    },
+  },
+
   async headers() {
     return [
       {
