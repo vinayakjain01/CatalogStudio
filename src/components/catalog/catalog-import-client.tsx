@@ -40,6 +40,45 @@ async function readJsonResponse(res: Response): Promise<any> {
   }
 }
 
+// Stay comfortably under Vercel's ~4.5MB serverless function body limit.
+// Files at or above this go straight to Cloudinary from the browser instead
+// of through our own /api/catalog/import route.
+const DIRECT_UPLOAD_THRESHOLD_BYTES = 4 * 1024 * 1024
+
+/**
+ * Uploads a file directly from the browser to Cloudinary, skipping our own
+ * server entirely for the transfer — this is what lets large xlsx files
+ * (with embedded product photos) get past Vercel's request body limit.
+ * Returns the resulting public URL, which /api/catalog/import can then
+ * fetch server-side exactly like a Google Sheets / Drive link.
+ */
+async function uploadFileDirectToCloudinary(file: File, storeId: string): Promise<string> {
+  const sigRes = await fetch('/api/catalog/upload-signature', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ storeId, filename: file.name }),
+  })
+  const sig = await readJsonResponse(sigRes)
+  if (!sigRes.ok) throw new Error(sig.error || 'Could not prepare upload')
+
+  const form = new FormData()
+  form.append('file', file)
+  form.append('api_key', sig.apiKey)
+  form.append('timestamp', String(sig.timestamp))
+  form.append('public_id', sig.publicId)
+  form.append('signature', sig.signature)
+
+  const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/raw/upload`, {
+    method: 'POST',
+    body: form,
+  })
+  const uploadData = await uploadRes.json().catch(() => null)
+  if (!uploadRes.ok || !uploadData?.secure_url) {
+    throw new Error(uploadData?.error?.message || 'Upload to storage failed')
+  }
+  return uploadData.secure_url as string
+}
+
 interface ColumnMapRow {
   rawColumn: string
   detected: string | null
@@ -70,6 +109,7 @@ export function CatalogImportClient({
   const [urlInput, setUrlInput] = useState('')
   const [catalogName, setCatalogName] = useState('')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [directUploadUrl, setDirectUploadUrl] = useState<string | null>(null)
   const [storeId, setStoreId] = useState<string | null>(null)
   const [importId, setImportId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -124,13 +164,27 @@ export function CatalogImportClient({
       // 2. Preview parse
       let previewRes: Response
       if (sourceType === 'file' && selectedFile) {
-        const form = new FormData()
-        form.append('file', selectedFile)
-        form.append('store_id', storeData.storeId)
-        previewRes = await fetch('/api/catalog/import?preview=true', {
-          method: 'POST',
-          body: form,
-        })
+        if (selectedFile.size >= DIRECT_UPLOAD_THRESHOLD_BYTES) {
+          // Large file (e.g. xlsx with embedded photos) — upload straight to
+          // Cloudinary from the browser, then hand the URL to our API just
+          // like a Google Sheets link, instead of streaming the whole file
+          // through our own serverless function (which has a ~4.5MB cap).
+          const url = await uploadFileDirectToCloudinary(selectedFile, storeData.storeId)
+          setDirectUploadUrl(url)
+          previewRes = await fetch('/api/catalog/import?preview=true', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, store_id: storeData.storeId }),
+          })
+        } else {
+          const form = new FormData()
+          form.append('file', selectedFile)
+          form.append('store_id', storeData.storeId)
+          previewRes = await fetch('/api/catalog/import?preview=true', {
+            method: 'POST',
+            body: form,
+          })
+        }
       } else {
         previewRes = await fetch('/api/catalog/import?preview=true', {
           method: 'POST',
@@ -175,11 +229,20 @@ export function CatalogImportClient({
     try {
       let res: Response
       if (sourceType === 'file' && selectedFile) {
-        const form = new FormData()
-        form.append('file', selectedFile)
-        form.append('store_id', storeId)
-        form.append('column_map', JSON.stringify(finalMap))
-        res = await fetch('/api/catalog/import', { method: 'POST', body: form })
+        if (directUploadUrl) {
+          // Already uploaded during preview — reuse it, don't transfer again.
+          res = await fetch('/api/catalog/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: directUploadUrl, store_id: storeId, column_map: finalMap }),
+          })
+        } else {
+          const form = new FormData()
+          form.append('file', selectedFile)
+          form.append('store_id', storeId)
+          form.append('column_map', JSON.stringify(finalMap))
+          res = await fetch('/api/catalog/import', { method: 'POST', body: form })
+        }
       } else {
         res = await fetch('/api/catalog/import', {
           method: 'POST',
@@ -293,7 +356,10 @@ export function CatalogImportClient({
                   type="file"
                   accept=".xlsx,.xls,.csv"
                   className="hidden"
-                  onChange={e => setSelectedFile(e.target.files?.[0] || null)}
+                  onChange={e => {
+                    setSelectedFile(e.target.files?.[0] || null)
+                    setDirectUploadUrl(null)
+                  }}
                 />
                 <div
                   onClick={() => fileInputRef.current?.click()}
@@ -526,6 +592,7 @@ export function CatalogImportClient({
                 onClick={() => {
                   setStep('source')
                   setSelectedFile(null)
+                  setDirectUploadUrl(null)
                   setUrlInput('')
                   setCatalogName('')
                   setPreview(null)

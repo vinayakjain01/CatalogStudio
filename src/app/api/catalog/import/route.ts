@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
 
   let fileBuffer: Buffer
   let filename = 'upload'
+  let fetchedMimeType = ''
   let storeId: string | null = null
   let columnMapOverride: Record<string, string | null> | undefined
 
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer()
     fileBuffer = Buffer.from(arrayBuffer)
     filename = file.name
+    fetchedMimeType = file.type || ''
   } else {
     const body = await request.json()
     storeId = body.store_id
@@ -57,6 +59,7 @@ export async function POST(request: NextRequest) {
       const fetched = await fetchFromUrl(body.url)
       fileBuffer = fetched.buffer
       filename = fetched.filename
+      fetchedMimeType = fetched.mimeType || ''
     } else {
       return NextResponse.json({ error: 'Either file or url required' }, { status: 400 })
     }
