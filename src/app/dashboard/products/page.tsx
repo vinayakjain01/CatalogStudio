@@ -50,7 +50,7 @@ export default async function ProductsPage({
     .select(`
       id, title, vendor, product_type, tags, price, compare_at_price,
       inventory_quantity, status, updated_at,
-      product_images!inner(src, is_primary)
+      product_images(src, is_primary)
     `)
     .eq('store_id', activeStoreId)
     .eq('product_images.is_primary', true)
