@@ -5,61 +5,65 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Progress } from '@/components/ui/progress'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import {
-  Upload, Link, FileSpreadsheet, CheckCircle2, XCircle,
-  Loader2, Download, AlertCircle, ChevronRight,
+  Upload, Link2, FileSpreadsheet, CheckCircle2, AlertCircle,
+  Loader2, Download, ChevronRight, FolderOpen, Sparkles, XCircle,
 } from 'lucide-react'
 
-type Step = 'source' | 'upload' | 'preview' | 'importing' | 'done'
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-/**
- * Parses a fetch Response as JSON, but degrades gracefully when the body
- * isn't JSON at all — e.g. Vercel's platform rejects oversized request
- * bodies (~4.5MB) before our route handler ever runs, and returns a plain
- * text "Request Entity Too Large" response instead. Without this, callers
- * crash on JSON.parse with a confusing "Unexpected token" error that hides
- * what actually went wrong.
- */
-async function readJsonResponse(res: Response): Promise<any> {
-  const text = await res.text()
-  try {
-    return JSON.parse(text)
-  } catch {
-    if (res.status === 413 || /request entity too large/i.test(text)) {
-      throw new Error(
-        'File is too large to upload directly (limit ~4.5MB). Use the "Google Sheets / Drive" option and paste a sharing link instead — that path has no upload size limit.'
-      )
-    }
-    throw new Error(
-      `Server returned an unexpected response (HTTP ${res.status}). ${text.slice(0, 200)}`
-    )
-  }
+type Step = 'sheet' | 'columns' | 'drive' | 'importing' | 'done'
+
+interface ColumnMapRow { rawColumn: string; detected: string | null; userOverride: string | null }
+
+interface DriveFile {
+  fileId: string; filename: string; normalizedName: string
+  downloadUrl: string; driveViewUrl: string
 }
 
-// Stay comfortably under Vercel's ~4.5MB serverless function body limit.
-// Files at or above this go straight to Cloudinary from the browser instead
-// of through our own /api/catalog/import route.
-const DIRECT_UPLOAD_THRESHOLD_BYTES = 4 * 1024 * 1024
+interface DrivePreview {
+  totalImages: number; matched: number; unmatched: number
+  matchedSample: { sku: string; filename: string; previewUrl: string }[]
+  unmatchedSkuSample: string[]
+  files: DriveFile[]   // passed to map-images to skip re-scan
+}
 
-/**
- * Uploads a file directly from the browser to Cloudinary, skipping our own
- * server entirely for the transfer — this is what lets large xlsx files
- * (with embedded product photos) get past Vercel's request body limit.
- * Returns the resulting public URL, which /api/catalog/import can then
- * fetch server-side exactly like a Google Sheets / Drive link.
- */
-async function uploadFileDirectToCloudinary(file: File, storeId: string): Promise<string> {
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const CANONICAL_FIELDS = [
+  { value: 'skip',               label: '— Skip this column —' },
+  { value: 'sku',                label: '🔑 SKU / Product Code  ← needed for image matching' },
+  { value: 'title',              label: 'Product Name / Title' },
+  { value: 'price',              label: 'Price' },
+  { value: 'compare_at_price',   label: 'Compare At Price' },
+  { value: 'image_url',          label: 'Image URL (if in sheet)' },
+  { value: 'vendor',             label: 'Vendor / Brand' },
+  { value: 'product_type',       label: 'Product Type / Category' },
+  { value: 'tags',               label: 'Tags' },
+  { value: 'inventory_quantity', label: 'Inventory / Quantity' },
+]
+
+const LARGE_FILE_BYTES = 4 * 1024 * 1024  // 4 MB
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function readJson(res: Response) {
+  if (res.status === 413) return { error: 'File too large (>4MB). Use Google Sheets link instead.' }
+  const text = await res.text()
+  try { return JSON.parse(text) } catch { return { error: text || 'Server error' } }
+}
+
+async function uploadToCloudinary(file: File, storeId: string): Promise<string> {
   const sigRes = await fetch('/api/catalog/upload-signature', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ storeId, filename: file.name }),
   })
-  const sig = await readJsonResponse(sigRes)
-  if (!sigRes.ok) throw new Error(sig.error || 'Could not prepare upload')
+  const sig = await readJson(sigRes)
+  if (!sigRes.ok) throw new Error(sig.error)
 
   const form = new FormData()
   form.append('file', file)
@@ -68,160 +72,105 @@ async function uploadFileDirectToCloudinary(file: File, storeId: string): Promis
   form.append('public_id', sig.publicId)
   form.append('signature', sig.signature)
 
-  const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/raw/upload`, {
-    method: 'POST',
-    body: form,
+  const up = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/raw/upload`, {
+    method: 'POST', body: form,
   })
-  const uploadData = await uploadRes.json().catch(() => null)
-  if (!uploadRes.ok || !uploadData?.secure_url) {
-    throw new Error(uploadData?.error?.message || 'Upload to storage failed')
-  }
-  return uploadData.secure_url as string
+  const d = await up.json().catch(() => null)
+  if (!up.ok || !d?.secure_url) throw new Error(d?.error?.message || 'Upload failed')
+  return d.secure_url
 }
 
-interface ColumnMapRow {
-  rawColumn: string
-  detected: string | null
-  userOverride: string | null
-}
+// ─── Component ────────────────────────────────────────────────────────────────
 
-const CANONICAL_FIELDS = [
-  { value: 'skip', label: '— Skip this column —' },
-  { value: 'sku', label: 'SKU / Product Code' },
-  { value: 'title', label: 'Product Name / Title' },
-  { value: 'description', label: 'Description' },
-  { value: 'price', label: 'Price' },
-  { value: 'compare_at_price', label: 'Compare At Price' },
-  { value: 'image_url', label: 'Image URL' },
-  { value: 'vendor', label: 'Vendor / Brand' },
-  { value: 'product_type', label: 'Product Type / Category' },
-  { value: 'tags', label: 'Tags' },
-  { value: 'inventory_quantity', label: 'Inventory / Quantity' },
-]
-
-export function CatalogImportClient({
-  existingCatalogs,
-}: {
+export function CatalogImportClient({ existingCatalogs }: {
   existingCatalogs: { id: string; shop_name: string; created_at: string }[]
 }) {
-  const [step, setStep] = useState<Step>('source')
-  const [sourceType, setSourceType] = useState<'file' | 'url'>('file')
-  const [urlInput, setUrlInput] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const [step, setStep]               = useState<Step>('sheet')
   const [catalogName, setCatalogName] = useState('')
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [directUploadUrl, setDirectUploadUrl] = useState<string | null>(null)
-  const [storeId, setStoreId] = useState<string | null>(null)
-  const [importId, setImportId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [sourceType, setSourceType]   = useState<'file' | 'url'>('file')
+  const [selectedFile, setFile]       = useState<File | null>(null)
+  const [urlInput, setUrl]            = useState('')
+  const [storeId, setStoreId]         = useState<string | null>(null)
+  const [importId, setImportId]       = useState<string | null>(null)
+  const [error, setError]             = useState<string | null>(null)
+  const [loading, setLoading]         = useState(false)
+  const [loadingMsg, setMsg]          = useState('')
 
-  // Preview state
-  const [preview, setPreview] = useState<{
-    headers: string[]
-    sampleRows: Record<string, unknown>[]
-    totalRows: number
-    detectedColumnMap: Record<string, string | null>
-  } | null>(null)
-  const [columnMap, setColumnMap] = useState<ColumnMapRow[]>([])
+  const [preview, setPreview]         = useState<{ headers: string[]; sampleRows: Record<string,unknown>[]; totalRows: number; detectedColumnMap: Record<string,string|null> } | null>(null)
+  const [colMap, setColMap]           = useState<ColumnMapRow[]>([])
 
-  // Import result
-  const [importResult, setImportResult] = useState<{
-    imported: number
-    failed: number
-    errors: { row: number; reason: string }[]
-  } | null>(null)
+  const [folderUrl, setFolderUrl]     = useState('')
+  const [drivePreview, setDrivePreview] = useState<DrivePreview | null>(null)
 
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [result, setResult]           = useState<{ imported: number; matched: number; skipped: number; errors: { sku?: string; reason: string }[] } | null>(null)
 
-  async function handlePreview() {
-    if (!catalogName.trim()) {
-      setError('Please enter a catalog name')
-      return
-    }
-    if (sourceType === 'file' && !selectedFile) {
-      setError('Please select a file')
-      return
-    }
-    if (sourceType === 'url' && !urlInput.trim()) {
-      setError('Please enter a URL')
-      return
-    }
+  // ── 1. Parse line sheet ──────────────────────────────────────────────────
+  async function handleParseSheet() {
+    if (!catalogName.trim()) { setError('Enter a catalog name'); return }
+    if (sourceType === 'file' && !selectedFile) { setError('Select a file'); return }
+    if (sourceType === 'url' && !urlInput.trim()) { setError('Enter a URL'); return }
 
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null); setMsg('Creating catalog…')
 
     try {
-      // 1. Create line-sheet store
-      const storeRes = await fetch('/api/catalog/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      // Create line-sheet store
+      const sRes = await fetch('/api/catalog/status', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: catalogName }),
       })
-      const storeData = await readJsonResponse(storeRes)
-      if (!storeRes.ok) throw new Error(storeData.error)
-      setStoreId(storeData.storeId)
+      const sData = await readJson(sRes)
+      if (!sRes.ok) throw new Error(sData.error)
+      setStoreId(sData.storeId)
 
-      // 2. Preview parse
-      let previewRes: Response
+      // Preview parse
+      setMsg('Reading line sheet…')
+      let pRes: Response
       if (sourceType === 'file' && selectedFile) {
-        if (selectedFile.size >= DIRECT_UPLOAD_THRESHOLD_BYTES) {
-          // Large file (e.g. xlsx with embedded photos) — upload straight to
-          // Cloudinary from the browser, then hand the URL to our API just
-          // like a Google Sheets link, instead of streaming the whole file
-          // through our own serverless function (which has a ~4.5MB cap).
-          const url = await uploadFileDirectToCloudinary(selectedFile, storeData.storeId)
-          setDirectUploadUrl(url)
-          previewRes = await fetch('/api/catalog/import?preview=true', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, store_id: storeData.storeId }),
-          })
+        let body: BodyInit
+        let headers: Record<string, string> = {}
+        if (selectedFile.size >= LARGE_FILE_BYTES) {
+          setMsg('File large — uploading to storage first…')
+          const url = await uploadToCloudinary(selectedFile, sData.storeId)
+          body = JSON.stringify({ url, store_id: sData.storeId })
+          headers = { 'Content-Type': 'application/json' }
         } else {
           const form = new FormData()
           form.append('file', selectedFile)
-          form.append('store_id', storeData.storeId)
-          previewRes = await fetch('/api/catalog/import?preview=true', {
-            method: 'POST',
-            body: form,
-          })
+          form.append('store_id', sData.storeId)
+          body = form
         }
+        pRes = await fetch('/api/catalog/import?preview=true', { method: 'POST', body, headers: headers as any })
       } else {
-        previewRes = await fetch('/api/catalog/import?preview=true', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: urlInput.trim(), store_id: storeData.storeId }),
+        pRes = await fetch('/api/catalog/import?preview=true', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: urlInput.trim(), store_id: sData.storeId }),
         })
       }
 
-      const previewData = await readJsonResponse(previewRes)
-      if (!previewRes.ok) throw new Error(previewData.error)
+      const pData = await readJson(pRes)
+      if (!pRes.ok) throw new Error(pData.error)
 
-      setPreview(previewData)
-      // Build column map rows from detected map
-      setColumnMap(
-        previewData.headers.map((h: string) => ({
-          rawColumn: h,
-          detected: previewData.detectedColumnMap[h] || null,
-          userOverride: null,
-        }))
-      )
-      setStep('preview')
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+      setPreview(pData)
+      setColMap(pData.headers.map((h: string) => ({
+        rawColumn: h,
+        detected: pData.detectedColumnMap[h] || null,
+        userOverride: null,
+      })))
+      setStep('columns')
+    } catch (e: any) { setError(e.message) }
+    finally { setLoading(false); setMsg('') }
   }
 
-  async function handleImport() {
+  // ── 2. Import products from sheet ────────────────────────────────────────
+  async function handleImportProducts() {
     if (!storeId || !preview) return
-    setLoading(true)
-    setError(null)
-    setStep('importing')
+    setLoading(true); setError(null)
+    setMsg(`Importing ${preview.totalRows} products…`)
 
-    // Build final column map from user overrides
     const finalMap: Record<string, string | null> = {}
-    for (const row of columnMap) {
+    for (const row of colMap) {
       const val = row.userOverride ?? row.detected
       finalMap[row.rawColumn] = val === 'skip' ? null : val
     }
@@ -229,12 +178,12 @@ export function CatalogImportClient({
     try {
       let res: Response
       if (sourceType === 'file' && selectedFile) {
-        if (directUploadUrl) {
-          // Already uploaded during preview — reuse it, don't transfer again.
+        if (selectedFile.size >= LARGE_FILE_BYTES) {
+          setMsg('Uploading file…')
+          const url = await uploadToCloudinary(selectedFile, storeId)
           res = await fetch('/api/catalog/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: directUploadUrl, store_id: storeId, column_map: finalMap }),
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, store_id: storeId, column_map: finalMap }),
           })
         } else {
           const form = new FormData()
@@ -245,60 +194,118 @@ export function CatalogImportClient({
         }
       } else {
         res = await fetch('/api/catalog/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: urlInput.trim(), store_id: storeId, column_map: finalMap }),
         })
       }
 
-      const data = await readJsonResponse(res)
+      const data = await readJson(res)
       if (!res.ok) throw new Error(data.error)
 
       setImportId(data.importId)
-      setImportResult({ imported: data.imported, failed: data.failed, errors: data.errors || [] })
+      setStep('drive')
+    } catch (e: any) { setError(e.message) }
+    finally { setLoading(false); setMsg('') }
+  }
+
+  // ── 3. Scan Drive folder + preview matches ───────────────────────────────
+  async function handleScanFolder() {
+    if (!folderUrl.trim()) { setError('Enter a Google Drive folder link'); return }
+    if (!storeId || !importId) return
+    setLoading(true); setError(null); setMsg('Scanning Google Drive folder…')
+    setDrivePreview(null)
+
+    try {
+      // Get SKUs of imported products
+      const skuRes = await fetch(`/api/catalog/products?storeId=${storeId}&importId=${importId}`)
+      const skuData = skuRes.ok ? await skuRes.json() : { products: [] }
+      const skus: string[] = (skuData.products || []).map((p: any) => p.sku).filter(Boolean)
+
+      const folderRes = await fetch('/api/catalog/drive-folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderUrl: folderUrl.trim(), skus }),
+      })
+      const folderData = await readJson(folderRes)
+      if (!folderRes.ok) throw new Error(folderData.error)
+
+      setDrivePreview({
+        totalImages: folderData.totalImages,
+        matched: folderData.matched,
+        unmatched: folderData.unmatched,
+        matchedSample: folderData.matchedSample || [],
+        unmatchedSkuSample: folderData.unmatchedSkuSample || [],
+        files: folderData.files || [],
+      })
+    } catch (e: any) { setError(e.message) }
+    finally { setLoading(false); setMsg('') }
+  }
+
+  // ── 4. Download + upload images ──────────────────────────────────────────
+  async function handleMapImages() {
+    if (!storeId || !importId || !drivePreview) return
+    setLoading(true); setError(null)
+    setStep('importing')
+    setMsg(`Downloading ${drivePreview.matched} images from Drive and uploading to Cloudinary…`)
+
+    try {
+      const res = await fetch('/api/catalog/map-images', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          importId, storeId,
+          files: drivePreview.files,  // reuse already-scanned list, no double-fetch
+        }),
+      })
+      const data = await readJson(res)
+      if (!res.ok) throw new Error(data.error)
+
+      setResult({
+        imported: data.total || 0,
+        matched: data.matched || 0,
+        skipped: data.skipped || 0,
+        errors: data.errors || [],
+      })
       setStep('done')
-    } catch (err: any) {
-      setError(err.message)
-      setStep('preview')
-    } finally {
-      setLoading(false)
+    } catch (e: any) {
+      setError(e.message)
+      setStep('drive')
     }
+    finally { setLoading(false); setMsg('') }
   }
 
-  function downloadExport(format: 'xlsx' | 'csv') {
-    if (!importId) return
-    window.open(`/api/catalog/export?importId=${importId}&format=${format}`, '_blank')
+  function skipImages() {
+    setResult({ imported: preview?.totalRows || 0, matched: 0, skipped: preview?.totalRows || 0, errors: [] })
+    setStep('done')
   }
 
+  function reset() {
+    setStep('sheet'); setFile(null); setUrl(''); setCatalogName('')
+    setPreview(null); setColMap([]); setResult(null); setImportId(null); setStoreId(null)
+    setError(null); setDrivePreview(null); setFolderUrl('')
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="max-w-3xl space-y-6">
-      {/* Existing catalogs */}
-      {existingCatalogs.length > 0 && step === 'source' && (
+    <div className="max-w-2xl space-y-5">
+
+      {/* Previous imports */}
+      {existingCatalogs.length > 0 && step === 'sheet' && (
         <Card>
           <CardContent className="p-4">
             <p className="text-sm font-medium mb-3">Previous imports</p>
             <div className="space-y-2">
               {existingCatalogs.slice(0, 5).map(c => (
-                <div key={c.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/40">
+                <div key={c.id} className="flex items-center justify-between p-2.5 rounded-md bg-muted/40">
                   <div className="flex items-center gap-2">
                     <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
                     <span className="text-sm">{c.shop_name}</span>
                   </div>
                   <div className="flex gap-2">
-                    <Button
-                      variant="outline" size="sm" className="h-7 text-xs"
-                      onClick={() => window.open(`/dashboard/products?storeId=${c.id}`, '_self')}
-                    >
+                    <Button variant="outline" size="sm" className="h-7 text-xs"
+                      onClick={() => window.location.href = '/dashboard/products'}>
                       View products
                     </Button>
-                    <Button
-                      variant="outline" size="sm" className="h-7 text-xs"
-                      onClick={() => {
-                        setStoreId(c.id)
-                        setImportId(c.id)
-                        setStep('done')
-                      }}
-                    >
+                    <Button variant="outline" size="sm" className="h-7 text-xs"
+                      onClick={() => window.open(`/api/catalog/export?importId=${c.id}&format=xlsx`, '_blank')}>
                       <Download className="h-3 w-3 mr-1" />Export
                     </Button>
                   </div>
@@ -309,149 +316,96 @@ export function CatalogImportClient({
         </Card>
       )}
 
-      {/* Step: Source selection */}
-      {(step === 'source' || step === 'upload') && (
+      {/* ── STEP 1: Sheet upload ──────────────────────────────────────────── */}
+      {step === 'sheet' && (
         <Card>
           <CardContent className="p-6 space-y-5">
-            <div>
-              <p className="text-sm font-medium mb-2">Catalog name</p>
-              <Input
-                placeholder="e.g. Spring 2025 Collection"
-                value={catalogName}
-                onChange={e => setCatalogName(e.target.value)}
-                className="max-w-sm"
-              />
+            <div className="space-y-1.5">
+              <p className="text-sm font-semibold">Catalog name</p>
+              <Input placeholder="e.g. GND Summer 2025"
+                value={catalogName} onChange={e => setCatalogName(e.target.value)} />
             </div>
 
             <div>
-              <p className="text-sm font-medium mb-3">Import source</p>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={() => setSourceType('file')}
-                  className={`p-4 rounded-lg border-2 text-left transition-all ${
-                    sourceType === 'file' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/40'
-                  }`}
-                >
-                  <Upload className="h-5 w-5 mb-2 text-primary" />
-                  <p className="text-sm font-medium">Upload file</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Excel (.xlsx, .xls) or CSV</p>
-                </button>
-                <button
-                  onClick={() => setSourceType('url')}
-                  className={`p-4 rounded-lg border-2 text-left transition-all ${
-                    sourceType === 'url' ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/40'
-                  }`}
-                >
-                  <Link className="h-5 w-5 mb-2 text-primary" />
-                  <p className="text-sm font-medium">Google Sheets / Drive</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Paste a sharing link</p>
-                </button>
+              <p className="text-sm font-semibold mb-2.5">Line sheet source</p>
+              <div className="grid grid-cols-2 gap-2.5">
+                {(['file', 'url'] as const).map(t => (
+                  <button key={t} onClick={() => setSourceType(t)}
+                    className={`p-4 rounded-lg border-2 text-left transition-all ${sourceType === t ? 'border-primary bg-primary/5' : 'border-border hover:border-muted-foreground/30'}`}>
+                    {t === 'file'
+                      ? <><Upload className="h-4 w-4 mb-2 text-primary" /><p className="text-xs font-semibold">Upload file</p><p className="text-xs text-muted-foreground">.xlsx, .xls, .csv</p></>
+                      : <><Link2 className="h-4 w-4 mb-2 text-primary" /><p className="text-xs font-semibold">Google Sheets</p><p className="text-xs text-muted-foreground">Paste sharing link</p></>}
+                  </button>
+                ))}
               </div>
             </div>
 
             {sourceType === 'file' && (
-              <div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={e => {
-                    setSelectedFile(e.target.files?.[0] || null)
-                    setDirectUploadUrl(null)
-                  }}
-                />
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
-                >
-                  {selectedFile ? (
-                    <div className="flex items-center justify-center gap-2">
-                      <FileSpreadsheet className="h-5 w-5 text-primary" />
-                      <span className="text-sm font-medium">{selectedFile.name}</span>
-                      <span className="text-xs text-muted-foreground">
-                        ({(selectedFile.size / 1024).toFixed(0)} KB)
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground opacity-50" />
-                      <p className="text-sm font-medium">Click to select file</p>
-                      <p className="text-xs text-muted-foreground mt-1">.xlsx, .xls, or .csv</p>
-                    </>
-                  )}
+              <>
+                <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                  onChange={e => setFile(e.target.files?.[0] || null)} />
+                <div onClick={() => fileRef.current?.click()}
+                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/40 transition-colors">
+                  {selectedFile
+                    ? <div className="flex items-center justify-center gap-2">
+                        <FileSpreadsheet className="h-5 w-5 text-primary" />
+                        <span className="text-sm font-medium">{selectedFile.name}</span>
+                        <span className="text-xs text-muted-foreground">({(selectedFile.size/1024).toFixed(0)} KB)</span>
+                      </div>
+                    : <><Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground opacity-40" />
+                        <p className="text-sm">Click to select file</p><p className="text-xs text-muted-foreground mt-0.5">.xlsx, .xls, or .csv</p></>}
                 </div>
-              </div>
+              </>
             )}
 
             {sourceType === 'url' && (
               <div>
-                <Input
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
-                  value={urlInput}
-                  onChange={e => setUrlInput(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Make sure the file is shared as "Anyone with the link can view"
-                </p>
+                <Input placeholder="https://docs.google.com/spreadsheets/d/..."
+                  value={urlInput} onChange={e => setUrl(e.target.value)} />
+                <p className="text-xs text-muted-foreground mt-1">Share as "Anyone with the link can view"</p>
               </div>
             )}
 
-            {error && (
-              <div className="flex items-center gap-2 text-sm text-destructive">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                {error}
-              </div>
-            )}
-
-            <Button onClick={handlePreview} disabled={loading} className="w-full sm:w-auto">
-              {loading
-                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Parsing file…</>
-                : <>Preview & map columns <ChevronRight className="h-4 w-4 ml-1" /></>
-              }
+            {error && <Err msg={error} />}
+            <Button onClick={handleParseSheet} disabled={loading} className="w-full">
+              {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{loadingMsg}</>
+                       : <>Read line sheet <ChevronRight className="h-4 w-4 ml-1.5" /></>}
             </Button>
           </CardContent>
         </Card>
       )}
 
-      {/* Step: Column mapping preview */}
-      {step === 'preview' && preview && (
+      {/* ── STEP 2: Column mapping ────────────────────────────────────────── */}
+      {step === 'columns' && preview && (
         <div className="space-y-4">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-medium">Column mapping</p>
-                <Badge variant="outline">{preview.totalRows} rows detected</Badge>
+                <p className="text-sm font-semibold">Map columns</p>
+                <Badge variant="outline">{preview.totalRows} products</Badge>
               </div>
-              <p className="text-xs text-muted-foreground mb-4">
-                Review how your columns are mapped. Green = auto-detected. You can override any mapping.
+              <p className="text-xs text-muted-foreground mb-3">
+                Make sure <strong>SKU / Product Code</strong> is mapped — it's used to match images from Google Drive.
               </p>
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {columnMap.map((row, i) => (
-                  <div key={row.rawColumn} className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-mono truncate text-foreground">{row.rawColumn}</p>
-                    </div>
-                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <div className="w-52 shrink-0">
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {colMap.map((row, i) => (
+                  <div key={row.rawColumn} className="flex items-center gap-2.5">
+                    <p className="flex-1 text-xs font-mono truncate text-muted-foreground">{row.rawColumn}</p>
+                    <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <div className="w-56 shrink-0">
                       <Select
                         value={row.userOverride ?? row.detected ?? 'skip'}
-                        onValueChange={val => {
-                          setColumnMap(prev => prev.map((r, idx) =>
-                            idx === i ? { ...r, userOverride: val === row.detected ? null : val } : r
-                          ))
-                        }}
+                        onValueChange={v => setColMap(prev => prev.map((r,idx) =>
+                          idx === i ? { ...r, userOverride: v === r.detected ? null : v } : r))}
                       >
                         <SelectTrigger className={`h-7 text-xs ${
                           (row.userOverride ?? row.detected) && (row.userOverride ?? row.detected) !== 'skip'
-                            ? 'border-green-500/50 bg-green-500/5 text-green-700 dark:text-green-400'
-                            : ''
-                        }`}>
+                            ? 'border-green-500/60 bg-green-500/5 text-green-700 dark:text-green-400' : ''}`}>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           {CANONICAL_FIELDS.map(f => (
-                            <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>
+                            <SelectItem key={f.value} value={f.value} className="text-xs">{f.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -465,24 +419,20 @@ export function CatalogImportClient({
           {/* Sample data preview */}
           {preview.sampleRows.length > 0 && (
             <Card>
-              <CardContent className="p-4">
-                <p className="text-xs font-medium mb-2 text-muted-foreground">SAMPLE DATA (first 3 rows)</p>
+              <CardContent className="p-3">
+                <p className="text-xs font-medium text-muted-foreground mb-2">SAMPLE (first 3 rows)</p>
                 <div className="overflow-x-auto">
                   <table className="text-xs w-full">
-                    <thead>
-                      <tr className="border-b">
-                        {preview.headers.slice(0, 6).map(h => (
-                          <th key={h} className="pb-1.5 pr-4 text-left font-medium text-muted-foreground">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
+                    <thead><tr className="border-b">
+                      {preview.headers.slice(0,4).map(h => (
+                        <th key={h} className="pb-1.5 pr-4 text-left font-medium text-muted-foreground max-w-24 truncate">{h}</th>
+                      ))}
+                    </tr></thead>
                     <tbody>
                       {preview.sampleRows.map((row, i) => (
                         <tr key={i} className="border-b last:border-0">
-                          {preview.headers.slice(0, 6).map(h => (
-                            <td key={h} className="py-1.5 pr-4 text-muted-foreground truncate max-w-32">
-                              {String(row[h] || '')}
-                            </td>
+                          {preview.headers.slice(0,4).map(h => (
+                            <td key={h} className="py-1.5 pr-4 text-muted-foreground max-w-24 truncate">{String(row[h] || '')}</td>
                           ))}
                         </tr>
                       ))}
@@ -493,121 +443,194 @@ export function CatalogImportClient({
             </Card>
           )}
 
-          {error && (
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {error}
-            </div>
-          )}
-
+          {error && <Err msg={error} />}
           <div className="flex gap-3">
-            <Button variant="outline" onClick={() => setStep('source')}>
-              Back
-            </Button>
-            <Button onClick={handleImport} disabled={loading}>
-              {loading
-                ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Importing…</>
-                : <>Import {preview.totalRows} products</>
-              }
+            <Button variant="outline" onClick={() => { setStep('sheet'); setError(null) }}>Back</Button>
+            <Button onClick={handleImportProducts} disabled={loading}>
+              {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{loadingMsg}</>
+                       : `Import ${preview.totalRows} products →`}
             </Button>
           </div>
         </div>
       )}
 
-      {/* Step: Importing progress */}
+      {/* ── STEP 3: Google Drive folder ───────────────────────────────────── */}
+      {step === 'drive' && (
+        <div className="space-y-4">
+          <Card>
+            <CardContent className="p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                  <FolderOpen className="h-4.5 w-4.5 text-primary" />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm">Link product images from Google Drive</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Paste your Drive folder link. Images should be named after SKU codes —
+                    e.g. <code className="bg-muted px-1 py-0.5 rounded">GND-1043.jpg</code> matches SKU <code className="bg-muted px-1 py-0.5 rounded">GND/1043</code>.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <Input
+                  placeholder="https://drive.google.com/drive/folders/..."
+                  value={folderUrl}
+                  onChange={e => { setFolderUrl(e.target.value); setDrivePreview(null); setError(null) }}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Folder must be shared as "Anyone with the link can view"
+                </p>
+              </div>
+
+              {/* Drive scan results */}
+              {drivePreview && (
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+                  <div className="flex items-center gap-4 text-sm flex-wrap">
+                    <span className="text-muted-foreground">{drivePreview.totalImages} images in folder</span>
+                    <span className="flex items-center gap-1 text-green-600 font-medium">
+                      <CheckCircle2 className="h-3.5 w-3.5" />{drivePreview.matched} matched
+                    </span>
+                    {drivePreview.unmatched > 0 && (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <AlertCircle className="h-3.5 w-3.5" />{drivePreview.unmatched} unmatched SKUs
+                      </span>
+                    )}
+                  </div>
+
+                  {drivePreview.matchedSample.length > 0 && (
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-2">Matched pairs (preview):</p>
+                      <div className="space-y-1.5">
+                        {drivePreview.matchedSample.slice(0,5).map((m, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />
+                            <code className="bg-muted px-1.5 rounded text-muted-foreground">{m.sku}</code>
+                            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                            <span className="text-foreground font-medium">{m.filename}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {drivePreview.unmatchedSkuSample.length > 0 && (
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1.5">Unmatched SKUs (no image found):</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {drivePreview.unmatchedSkuSample.slice(0,6).map((s, i) => (
+                          <code key={i} className="bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded text-xs border border-amber-200 dark:border-amber-800">{s}</code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {error && <Err msg={error} />}
+
+              <div className="flex gap-2.5 flex-wrap">
+                {!drivePreview ? (
+                  <Button onClick={handleScanFolder} disabled={loading || !folderUrl.trim()}>
+                    {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{loadingMsg}</>
+                             : <><FolderOpen className="h-4 w-4 mr-1.5" />Scan folder &amp; preview matches</>}
+                  </Button>
+                ) : drivePreview.matched > 0 ? (
+                  <Button onClick={handleMapImages} disabled={loading}>
+                    <Sparkles className="h-4 w-4 mr-1.5" />
+                    Import {drivePreview.matched} images
+                  </Button>
+                ) : (
+                  <Button variant="outline" onClick={() => setDrivePreview(null)}>Try a different folder</Button>
+                )}
+                {drivePreview && (
+                  <Button variant="outline" onClick={() => { setDrivePreview(null); setFolderUrl('') }}>
+                    Rescan
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={skipImages} className="text-muted-foreground">
+                  Skip — add images later
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Importing ─────────────────────────────────────────────────────── */}
       {step === 'importing' && (
         <Card>
-          <CardContent className="p-8 flex flex-col items-center gap-4">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            <p className="font-medium">Importing products…</p>
-            <p className="text-sm text-muted-foreground text-center">
-              Downloading images and creating product records. This may take a minute for large catalogs.
-            </p>
-            <Progress value={undefined} className="w-full h-1.5 animate-pulse" />
+          <CardContent className="p-8 flex flex-col items-center gap-4 text-center">
+            <Loader2 className="h-9 w-9 animate-spin text-primary" />
+            <div>
+              <p className="font-semibold">Importing images…</p>
+              <p className="text-sm text-muted-foreground mt-1">{loadingMsg}</p>
+            </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Step: Done */}
-      {step === 'done' && importResult && (
+      {/* ── Done ─────────────────────────────────────────────────────────── */}
+      {step === 'done' && result && (
         <Card>
           <CardContent className="p-6 space-y-4">
-            <div className="flex items-center gap-3">
-              {importResult.failed === 0 ? (
-                <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0" />
-              ) : (
-                <AlertCircle className="h-6 w-6 text-amber-500 shrink-0" />
-              )}
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="h-5 w-5 text-green-500 shrink-0 mt-0.5" />
               <div>
-                <p className="font-medium">Import complete</p>
+                <p className="font-semibold">Import complete</p>
                 <p className="text-sm text-muted-foreground">
-                  {importResult.imported} products imported successfully
-                  {importResult.failed > 0 ? `, ${importResult.failed} failed` : ''}
+                  {result.imported} products imported
+                  {result.matched > 0 && ` · ${result.matched} images matched & uploaded`}
+                  {result.skipped > 0 && ` · ${result.skipped} products without image`}
                 </p>
               </div>
             </div>
 
-            {importResult.errors.length > 0 && (
-              <div className="bg-destructive/5 rounded-lg p-3 space-y-1 max-h-40 overflow-y-auto">
-                {importResult.errors.slice(0, 10).map((e, i) => (
+            {result.errors.filter(e => !e.reason.includes('No matching image')).length > 0 && (
+              <div className="bg-destructive/5 rounded-md p-3 max-h-32 overflow-y-auto space-y-1">
+                {result.errors.filter(e => !e.reason.includes('No matching image')).slice(0,10).map((e,i) => (
                   <p key={i} className="text-xs text-destructive">
-                    Row {e.row}: {e.reason}
+                    {e.sku ? `SKU ${e.sku}: ` : ''}{e.reason}
                   </p>
                 ))}
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.location.href = `/dashboard/products`}
-              >
-                <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" />
-                View products
+            <div className="p-3 bg-blue-50 dark:bg-blue-950/30 rounded-md text-xs text-blue-700 dark:text-blue-300">
+              <strong>Next step:</strong> Go to Templates → create a template → Rules Engine → select "📁 Entire Line Sheet Import" → pick this catalog → Generate.
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm"
+                onClick={() => window.location.href = '/dashboard/products'}>
+                <FileSpreadsheet className="h-3.5 w-3.5 mr-1.5" />View products
               </Button>
               {importId && (
                 <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => downloadExport('xlsx')}
-                  >
-                    <Download className="h-3.5 w-3.5 mr-1.5" />
-                    Download Excel with creatives
+                  <Button variant="outline" size="sm"
+                    onClick={() => window.open(`/api/catalog/export?importId=${importId}&format=xlsx`, '_blank')}>
+                    <Download className="h-3.5 w-3.5 mr-1.5" />Download Excel
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => downloadExport('csv')}
-                  >
-                    <Download className="h-3.5 w-3.5 mr-1.5" />
-                    Download CSV
+                  <Button variant="outline" size="sm"
+                    onClick={() => window.open(`/api/catalog/export?importId=${importId}&format=csv`, '_blank')}>
+                    <Download className="h-3.5 w-3.5 mr-1.5" />Download CSV
                   </Button>
                 </>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setStep('source')
-                  setSelectedFile(null)
-                  setDirectUploadUrl(null)
-                  setUrlInput('')
-                  setCatalogName('')
-                  setPreview(null)
-                  setImportResult(null)
-                  setImportId(null)
-                  setStoreId(null)
-                  setError(null)
-                }}
-              >
-                Import another
-              </Button>
+              <Button variant="ghost" size="sm" onClick={reset}>Import another</Button>
             </div>
           </CardContent>
         </Card>
       )}
+    </div>
+  )
+}
+
+function Err({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/5 rounded-md p-2.5">
+      <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
+      <span>{msg}</span>
     </div>
   )
 }
