@@ -4,11 +4,14 @@
  * Downloads images from a Google Drive folder, uploads to Cloudinary,
  * and links them to the imported products.
  *
- * Body: { importId: string, storeId: string, folderUrl: string }
+ * Matching: SKU tokens appear inside filename tokens.
+ *   SKU "DVPS001" matches "DVPS001 - PURPLE.jpg", "DVPS001 - OCEAN.jpg"
+ *   → all matching files are uploaded as product_images for that product
  *
- * Uses composite matching (SKU + color when available) so variants of
- * the same style number with different colors get the correct image.
- * Supports multiple images per product (front/back/detail shots).
+ * Only queries columns that actually exist in the DB schema (id, sku, title).
+ * Does NOT require color/match_key columns.
+ *
+ * Body: { importId: string, storeId: string, folderUrl: string }
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
@@ -40,12 +43,16 @@ export async function POST(request: NextRequest) {
 
   const admin = getAdminClient()
 
-  const { data: products } = await admin
+  // Only select columns that exist in the current schema
+  const { data: products, error: productsError } = await admin
     .from('products')
-    .select('id, sku, color, title')
+    .select('id, sku, title')
     .eq('store_id', storeId)
     .eq('import_id', importId)
 
+  if (productsError) {
+    return NextResponse.json({ error: `DB error: ${productsError.message}` }, { status: 500 })
+  }
   if (!products?.length) {
     return NextResponse.json({ error: 'No products found for this import' }, { status: 404 })
   }
@@ -65,14 +72,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Drive folder error: ${err.message}` }, { status: 422 })
   }
 
-  // Build composite identifiers (sku + color)
-  const identifiers = products.map((p: any) => {
-    return [p.sku, p.color].filter(Boolean).map((s: string) => normalizeName(s)).join(' ').trim()
-  }) as string[]
+  // Build normalized SKU identifiers
+  const identifiers = (products as any[]).map(p => normalizeName(p.sku || ''))
 
-  const productByIdx = products  // same index as identifiers array
-
-  // One-to-many matching: each product can have multiple images
+  // One-to-many: DVPS001 matches DVPS001-PURPLE.jpg AND DVPS001-OCEAN.jpg
   const matched = matchIdentifiersToMultipleFiles(identifiers, driveFiles)
 
   const results = {
@@ -81,21 +84,17 @@ export async function POST(request: NextRequest) {
     imagesUploaded: 0,
     imagesFailed: 0,
     productsUnmatched: 0,
-    errors: [] as { sku?: string; color?: string; reason: string }[],
+    errors: [] as { sku?: string; reason: string }[],
   }
 
   for (let i = 0; i < identifiers.length; i++) {
     const identifier = identifiers[i]
-    const product = productByIdx[i]
+    const product = (products as any[])[i]
     const matchedFiles = matched.get(identifier) ?? []
 
     if (matchedFiles.length === 0) {
       results.productsUnmatched++
-      results.errors.push({
-        sku: product.sku,
-        color: product.color,
-        reason: 'No matching image in Drive folder',
-      })
+      results.errors.push({ sku: product.sku, reason: 'No matching image in Drive folder' })
       continue
     }
 
@@ -115,7 +114,7 @@ export async function POST(request: NextRequest) {
           `catalog-imports/${storeId}/${imageHash}`
         )
 
-        // Upsert product_images — one row per image angle
+        // Create product_images row (one per angle/view)
         await admin.from('product_images').upsert({
           product_id: product.id,
           src: cloudinaryUrl,
@@ -130,14 +129,15 @@ export async function POST(request: NextRequest) {
       } catch (err: any) {
         results.imagesFailed++
         results.errors.push({
-          sku: product.sku, color: product.color,
+          sku: product.sku,
           reason: `File "${driveFile.filename}": ${err.message}`,
         })
-        // Continue — a failed image never stops the rest
+        // Never stop the import for a single image failure
       }
     }
 
     if (anySucceeded && firstImageUrl) {
+      // Write primary image URL directly on the products row too
       await admin.from('products').update({
         image_url: firstImageUrl,
         updated_at: new Date().toISOString(),
