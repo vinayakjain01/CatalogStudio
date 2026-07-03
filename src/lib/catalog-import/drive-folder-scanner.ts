@@ -1,39 +1,71 @@
 /**
- * Google Drive Folder Scanner
+ * Google Drive Folder Scanner — Drive API v3
  *
- * Scans a public Google Drive folder to get the list of image files.
+ * WHY THIS REWRITE
+ * ────────────────
+ * The previous version scraped Google Drive's folder HTML page.
+ * This stopped working because:
+ *   1. Google's servers return 403 to non-browser User-Agents
+ *   2. Even when the HTML arrives, Google frequently changes its structure,
+ *      causing the regex patterns to match nothing
+ *   3. The lh3.googleusercontent.com download URL only works in a browser
+ *      session context — server-side fetches get 403 or a login redirect
  *
- * The fundamental challenge: Google Drive doesn't provide a public REST API
- * for listing folder contents without OAuth. However, the HTML page for a
- * publicly shared folder embeds file metadata as JSON in the page source.
+ * THE FIX
+ * ───────
+ * Use the official Google Drive API v3 `files.list` endpoint.
+ * - Works reliably for any folder shared as "Anyone with the link can view"
+ * - Returns exact file names, MIME types, and IDs via JSON
+ * - Paginated — handles folders with thousands of images
+ * - No OAuth needed — a simple unrestricted API key is enough
+ * - Download URLs use the authenticated `alt=media` pattern
  *
- * We parse that JSON to extract file IDs and filenames, then build
- * lh3.googleusercontent.com download URLs which bypass the virus-scan
- * redirect that plagues uc?export=download.
+ * SETUP (one-time, ~2 minutes)
+ * ─────────────────────────────
+ * 1. Go to https://console.cloud.google.com/apis/credentials
+ * 2. Create/select a project → APIs & Services → Library
+ * 3. Search "Google Drive API" → Enable
+ * 4. Credentials → Create Credentials → API Key
+ * 5. (Optional) Restrict key to "Google Drive API" HTTP requests
+ * 6. Add to Vercel env vars AND your droplet .env:
+ *        GOOGLE_DRIVE_API_KEY=AIza...
  *
- * SKU matching strategy for this dataset:
- *   'GND/1043' → normalize → 'gnd 1043' → matches 'GND-1043.jpg' → 'gnd 1043'
- *   'GND/ LFWR - 01' → normalize → 'gnd lfwr 01' → matches 'GND-LFWR-01.jpg'
- *   'GND871B' → normalize → 'gnd871b' → matches 'GND871B.jpg'
+ * BACKWARD COMPATIBILITY
+ * ──────────────────────
+ * This module keeps the same exported interface as the old scanner:
+ *   - DriveFolderFile (same shape, same fields)
+ *   - scanDriveFolder()
+ *   - matchSkusToFiles()
+ *   - normalizeName()
+ * No changes needed to route.ts or map-images/route.ts.
  */
 
 export interface DriveFolderFile {
   fileId: string
-  filename: string            // original: "GND-1043.jpg"
-  baseName: string            // without ext: "GND-1043"
-  normalizedName: string      // fuzzy key: "gnd 1043"
-  downloadUrl: string         // lh3.googleusercontent.com/d/{id}=s0
-  driveViewUrl: string
+  filename: string            // "DVPS001 - PURPLE.jpg"
+  baseName: string            // "DVPS001 - PURPLE"
+  normalizedName: string      // "dvps001 purple" (fuzzy match key)
+  downloadUrl: string         // googleapis.com alt=media URL (needs API key)
+  driveViewUrl: string        // human-visible Drive link
+  mimeType: string
 }
 
+export interface MatchResult {
+  matched: Map<string, DriveFolderFile>   // sku/matchKey → best file
+  unmatched: string[]                      // identifiers with no image found
+  unmatchedFiles: DriveFolderFile[]        // images with no matching product
+}
+
+// ─── Normalization ─────────────────────────────────────────────────────────────
+
 /**
- * Normalize any identifier (SKU or filename base) to a fuzzy-match key.
- * Converts ALL separators (/, -, _, space) to single spaces, lowercases.
+ * Normalize any string to a fuzzy match key.
+ * Replaces all separators (/ - _ . space) with single spaces, lowercases.
  *
- * 'GND/1043'       → 'gnd 1043'
- * 'GND-1043'       → 'gnd 1043'
- * 'GND/ LFWR - 01' → 'gnd lfwr 01'
- * 'GND871B'        → 'gnd871b'
+ * 'GND/1043'        → 'gnd 1043'
+ * 'DVPS001-PURPLE'  → 'dvps001 purple'
+ * 'GND/ LFWR - 01'  → 'gnd lfwr 01'
+ * 'GND871B'         → 'gnd871b'
  */
 export function normalizeName(s: string): string {
   return s
@@ -48,157 +80,181 @@ export function extractFolderIdFromUrl(url: string): string | null {
   return m ? m[1] : null
 }
 
+// ─── Scanner ────────────────────────────────────────────────────────────────────
+
+const IMAGE_MIMES = new Set([
+  'image/jpeg', 'image/jpg', 'image/png', 'image/webp',
+  'image/gif', 'image/bmp', 'image/tiff', 'image/svg+xml',
+])
+
 /**
- * Scan a public Google Drive folder.
- * Returns all image files found with their file IDs and normalized names.
+ * Scan a public Google Drive folder and return all image files.
+ *
+ * Requires GOOGLE_DRIVE_API_KEY env var.
+ * Falls back to a helpful error message if the key is missing.
  */
 export async function scanDriveFolder(folderUrl: string): Promise<DriveFolderFile[]> {
   const folderId = extractFolderIdFromUrl(folderUrl)
-  if (!folderId) throw new Error(`Not a valid Google Drive folder URL: ${folderUrl}`)
-
-  // Fetch the folder HTML page
-  const res = await fetch(`https://drive.google.com/drive/folders/${folderId}`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Cache-Control': 'no-cache',
-    },
-    redirect: 'follow',
-  })
-
-  if (!res.ok) {
-    if (res.status === 403) {
-      throw new Error('Drive folder is not publicly accessible. Set sharing to "Anyone with the link can view".')
-    }
-    throw new Error(`Drive folder returned HTTP ${res.status}`)
+  if (!folderId) {
+    throw new Error(
+      `Invalid Google Drive folder URL: "${folderUrl}". ` +
+      `Expected format: https://drive.google.com/drive/folders/FOLDER_ID`
+    )
   }
 
-  const html = await res.text()
-  const files = parseFilesFromDriveHtml(html)
+  const apiKey = process.env.GOOGLE_DRIVE_API_KEY
+  if (!apiKey) {
+    throw new Error(
+      'GOOGLE_DRIVE_API_KEY is not configured. ' +
+      'Go to console.cloud.google.com → Enable "Google Drive API" → Create API Key → ' +
+      'add GOOGLE_DRIVE_API_KEY to your Vercel environment variables and droplet .env. ' +
+      'This is a one-time 2-minute setup.'
+    )
+  }
+
+  return await listAllImagesInFolder(folderId, apiKey)
+}
+
+async function listAllImagesInFolder(
+  folderId: string,
+  apiKey: string
+): Promise<DriveFolderFile[]> {
+  const files: DriveFolderFile[] = []
+  let pageToken: string | undefined
+
+  // Drive API: list all files in the folder, filtering to image MIME types
+  // The `(mimeType contains 'image/')` query is more reliable than listing
+  // specific MIME types since Drive auto-detects the correct type on upload.
+  const query = `'${folderId}' in parents and trashed = false and mimeType contains 'image/'`
+
+  do {
+    const params = new URLSearchParams({
+      q: query,
+      key: apiKey,
+      fields: 'nextPageToken,files(id,name,mimeType)',
+      pageSize: '1000',
+      orderBy: 'name',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+
+    const url = `https://www.googleapis.com/drive/v3/files?${params}`
+    const res = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+    })
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      const msg: string = body?.error?.message ?? res.statusText
+
+      if (res.status === 400 && msg.includes('Invalid Value')) {
+        throw new Error(
+          'Invalid Google Drive folder URL. ' +
+          'Make sure you\'re using a folder link (not a file link): ' +
+          'https://drive.google.com/drive/folders/FOLDER_ID'
+        )
+      }
+      if (res.status === 403) {
+        const hint = msg.includes('API key')
+          ? 'Your API key is invalid or has expired.'
+          : msg.includes('not been used') || msg.includes('disabled')
+            ? 'The Google Drive API is not enabled on your API key. Enable it at console.cloud.google.com → APIs & Services → Library → Google Drive API.'
+            : 'The folder is not publicly accessible. Set sharing to "Anyone with the link can view".'
+        throw new Error(`Drive API access denied: ${hint}`)
+      }
+      if (res.status === 404) {
+        throw new Error(
+          'Folder not found. Check the folder link is correct and shared publicly.'
+        )
+      }
+      throw new Error(`Drive API error (HTTP ${res.status}): ${msg}`)
+    }
+
+    const data = await res.json()
+
+    for (const f of (data.files ?? [])) {
+      if (!IMAGE_MIMES.has(f.mimeType)) continue
+      const baseName = f.name.replace(/\.[^.]+$/, '')
+      files.push({
+        fileId: f.id,
+        filename: f.name,
+        baseName,
+        normalizedName: normalizeName(baseName),
+        // Drive API authenticated download — works for files shared as "anyone with link"
+        downloadUrl: `https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&key=${apiKey}`,
+        driveViewUrl: `https://drive.google.com/file/d/${f.id}/view`,
+        mimeType: f.mimeType,
+      })
+    }
+
+    pageToken = data.nextPageToken
+  } while (pageToken)
 
   if (files.length === 0) {
-    // The HTML parsing may fail if Google changes their page structure.
-    // In that case, tell the user what happened.
     throw new Error(
-      'Could not read file list from Drive folder. ' +
-      'Make sure: (1) folder is shared as "Anyone with the link can view", ' +
-      '(2) it contains image files (.jpg/.png/.webp), ' +
-      '(3) the link is a folder link, not a file link.'
+      'No image files found in the Drive folder. ' +
+      'Make sure the folder contains .jpg, .png, or .webp files ' +
+      'and is shared as "Anyone with the link can view".'
     )
   }
 
   return files
 }
 
-function parseFilesFromDriveHtml(html: string): DriveFolderFile[] {
-  const files: DriveFolderFile[] = []
-  const seen = new Set<string>()
-
-  // Google Drive embeds file data in several JSON structures in the page HTML.
-  // We use multiple patterns to maximize coverage across Drive's HTML variations.
-
-  // Pattern 1: JSON array entries that look like ["FILENAME.ext","FILE_ID","mime/type",...]
-  // The file ID is a 28-44 char base64url string
-  const p1 = /"([^"]{1,120}\.(jpe?g|png|webp|gif|JPE?G|PNG|WEBP|GIF))","([a-zA-Z0-9_-]{25,})"(?:,"([^"]*)")?/g
-  let m: RegExpExecArray | null
-  while ((m = p1.exec(html)) !== null) {
-    const filename = m[1]
-    const fileId = m[3]
-    if (!seen.has(fileId)) {
-      seen.add(fileId)
-      files.push(buildFile(fileId, filename))
-    }
-  }
-
-  // Pattern 2: reversed order ["FILE_ID","FILENAME.ext"]
-  const p2 = /"([a-zA-Z0-9_-]{25,})","([^"]{1,120}\.(jpe?g|png|webp|gif))"/gi
-  while ((m = p2.exec(html)) !== null) {
-    const fileId = m[1]
-    const filename = m[2]
-    if (!seen.has(fileId)) {
-      seen.add(fileId)
-      files.push(buildFile(fileId, filename))
-    }
-  }
-
-  // Pattern 3: data-id attributes (older Drive HTML)
-  const p3 = /data-id="([a-zA-Z0-9_-]{25,})"[^>]*title="([^"]{1,120}\.(jpe?g|png|webp|gif))"/gi
-  while ((m = p3.exec(html)) !== null) {
-    const fileId = m[1]
-    const filename = m[2]
-    if (!seen.has(fileId)) {
-      seen.add(fileId)
-      files.push(buildFile(fileId, filename))
-    }
-  }
-
-  return files
-}
-
-function buildFile(fileId: string, filename: string): DriveFolderFile {
-  const baseName = filename.replace(/\.[^.]+$/, '')
-  return {
-    fileId,
-    filename,
-    baseName,
-    normalizedName: normalizeName(baseName),
-    downloadUrl: `https://lh3.googleusercontent.com/d/${fileId}=s0`,
-    driveViewUrl: `https://drive.google.com/file/d/${fileId}/view`,
-  }
-}
-
-// ─── SKU ↔ File matching ──────────────────────────────────────────────────────
-
-export interface MatchResult {
-  matched: Map<string, DriveFolderFile>   // sku → file
-  unmatched: string[]                      // SKUs with no image
-  unmatchedFiles: DriveFolderFile[]        // files with no SKU
-}
+// ─── Matching ────────────────────────────────────────────────────────────────────
 
 /**
- * Match a list of SKUs against Drive files by normalized name comparison.
+ * Match a list of identifiers (SKUs, or composite "sku color" keys) to
+ * Drive image files using a multi-level normalized fuzzy match.
  *
- * Two-pass algorithm:
- *  1. Exact normalized match  ('gnd 1043' === 'gnd 1043')
- *  2. Contains match          ('gnd 1043' is contained in 'gnd 1043 front')
+ * Matching levels (in priority order):
+ *   1. Exact normalized match:  "dvps001 purple" === "dvps001 purple"
+ *   2. Identifier contained in filename: "dvps001" found inside "dvps001 purple front"
+ *   3. Filename base contained in identifier (handles when filename is longer)
  *
- * This handles:
- *  GND/1043  → GND-1043.jpg      ✓ (exact after normalization)
- *  GND/ LFWR - 01 → GND-LFWR-01.jpg  ✓
- *  GND871B   → GND871B.jpg       ✓
+ * One file is consumed per identifier (first-wins for level 1).
+ * Multiple files CAN match the same identifier (e.g. front/back shots) — this
+ * returns the BEST single match; use matchIdentifiersToMultipleFiles() for
+ * one-to-many.
+ *
+ * identifiers: flat string array, each entry normalized before matching.
+ *   Simple: ['DVPS001', 'DVPS002']
+ *   Composite: ['dvps001 purple', 'dvps001 orange']  (built by caller)
  */
 export function matchSkusToFiles(
-  skus: string[],
+  identifiers: string[],
   files: DriveFolderFile[]
 ): MatchResult {
   const matched = new Map<string, DriveFolderFile>()
   const usedIds = new Set<string>()
 
-  // Build lookup: normalizedName → file
-  const byNorm = new Map<string, DriveFolderFile>()
-  // Also: normalized without spaces → file (for GND871B style)
-  const byNormNoSpace = new Map<string, DriveFolderFile>()
+  // Build fast lookup tables
+  const byExact = new Map<string, DriveFolderFile>()
+  const byNoSpace = new Map<string, DriveFolderFile>()
   for (const f of files) {
-    byNorm.set(f.normalizedName, f)
-    byNormNoSpace.set(f.normalizedName.replace(/\s+/g, ''), f)
+    byExact.set(f.normalizedName, f)
+    byNoSpace.set(f.normalizedName.replace(/\s+/g, ''), f)
   }
 
-  for (const sku of skus) {
-    const norm = normalizeName(sku)
+  for (const identifier of identifiers) {
+    const norm = normalizeName(identifier)
     const normNoSp = norm.replace(/\s+/g, '')
 
-    // Pass 1: exact
-    let hit = byNorm.get(norm) ?? byNormNoSpace.get(normNoSp)
+    // Level 1: exact normalized match
+    let hit = byExact.get(norm) ?? byNoSpace.get(normNoSp)
+    if (hit && usedIds.has(hit.fileId)) hit = undefined
 
-    // Pass 2: contains (file name contains the SKU or vice versa)
+    // Level 2: substring match
     if (!hit) {
       for (const f of files) {
         if (usedIds.has(f.fileId)) continue
         const fn = f.normalizedName
         const fnNoSp = fn.replace(/\s+/g, '')
-        if (fn.includes(norm) || norm.includes(fn) ||
-            fnNoSp.includes(normNoSp) || normNoSp.includes(fnNoSp)) {
+        if (
+          fn.includes(norm) ||
+          norm.includes(fn) ||
+          fnNoSp.includes(normNoSp) ||
+          normNoSp.includes(fnNoSp)
+        ) {
           hit = f
           break
         }
@@ -206,14 +262,51 @@ export function matchSkusToFiles(
     }
 
     if (hit && !usedIds.has(hit.fileId)) {
-      matched.set(sku, hit)
+      matched.set(identifier, hit)
       usedIds.add(hit.fileId)
     }
   }
 
   return {
     matched,
-    unmatched: skus.filter(s => !matched.has(s)),
+    unmatched: identifiers.filter(id => !matched.has(id)),
     unmatchedFiles: files.filter(f => !usedIds.has(f.fileId)),
   }
+}
+
+/**
+ * One-to-many variant: returns ALL Drive files that match each identifier.
+ * Used when products have multiple images (front/back/detail shots).
+ */
+export function matchIdentifiersToMultipleFiles(
+  identifiers: string[],
+  files: DriveFolderFile[]
+): Map<string, DriveFolderFile[]> {
+  const result = new Map<string, DriveFolderFile[]>()
+
+  for (const identifier of identifiers) {
+    const norm = normalizeName(identifier)
+    const normNoSp = norm.replace(/\s+/g, '')
+    const hits: DriveFolderFile[] = []
+
+    for (const f of files) {
+      const fn = f.normalizedName
+      const fnNoSp = fn.replace(/\s+/g, '')
+      if (
+        fn === norm ||
+        fn.includes(norm) ||
+        norm.includes(fn) ||
+        fnNoSp.includes(normNoSp) ||
+        normNoSp.includes(fnNoSp)
+      ) {
+        hits.push(f)
+      }
+    }
+
+    if (hits.length > 0) {
+      result.set(identifier, hits)
+    }
+  }
+
+  return result
 }

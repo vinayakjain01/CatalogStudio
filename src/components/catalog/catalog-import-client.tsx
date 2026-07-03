@@ -19,16 +19,13 @@ type Step = 'sheet' | 'columns' | 'drive' | 'importing' | 'done'
 
 interface ColumnMapRow { rawColumn: string; detected: string | null; userOverride: string | null }
 
-interface DriveFile {
-  fileId: string; filename: string; normalizedName: string
-  downloadUrl: string; driveViewUrl: string
-}
-
 interface DrivePreview {
-  totalImages: number; matched: number; unmatched: number
-  matchedSample: { sku: string; filename: string; previewUrl: string }[]
-  unmatchedSkuSample: string[]
-  files: DriveFile[]   // passed to map-images to skip re-scan
+  totalImages: number
+  matchedProducts: number
+  totalMatchedImages: number
+  unmatchedProducts: number
+  matchedSample: { sku: string; color?: string | null; title?: string; imageCount: number; filenames: string[] }[]
+  unmatchedSample: { sku: string; color?: string | null }[]
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -209,6 +206,7 @@ export function CatalogImportClient({ existingCatalogs }: {
   }
 
   // ── 3. Scan Drive folder + preview matches ───────────────────────────────
+  // ── 3. Scan Drive folder + preview matches ───────────────────────────────
   async function handleScanFolder() {
     if (!folderUrl.trim()) { setError('Enter a Google Drive folder link'); return }
     if (!storeId || !importId) return
@@ -216,25 +214,22 @@ export function CatalogImportClient({ existingCatalogs }: {
     setDrivePreview(null)
 
     try {
-      // Get SKUs of imported products
-      const skuRes = await fetch(`/api/catalog/products?storeId=${storeId}&importId=${importId}`)
-      const skuData = skuRes.ok ? await skuRes.json() : { products: [] }
-      const skus: string[] = (skuData.products || []).map((p: any) => p.sku).filter(Boolean)
-
+      // Drive API matching is done server-side — the route fetches
+      // products from the DB and builds composite sku+color keys itself.
       const folderRes = await fetch('/api/catalog/drive-folder', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folderUrl: folderUrl.trim(), skus }),
+        body: JSON.stringify({ folderUrl: folderUrl.trim(), storeId, importId }),
       })
       const folderData = await readJson(folderRes)
       if (!folderRes.ok) throw new Error(folderData.error)
 
       setDrivePreview({
         totalImages: folderData.totalImages,
-        matched: folderData.matched,
-        unmatched: folderData.unmatched,
+        matchedProducts: folderData.matchedProducts,
+        totalMatchedImages: folderData.totalMatchedImages,
+        unmatchedProducts: folderData.unmatchedProducts,
         matchedSample: folderData.matchedSample || [],
-        unmatchedSkuSample: folderData.unmatchedSkuSample || [],
-        files: folderData.files || [],
+        unmatchedSample: folderData.unmatchedSample || [],
       })
     } catch (e: any) { setError(e.message) }
     finally { setLoading(false); setMsg('') }
@@ -245,23 +240,20 @@ export function CatalogImportClient({ existingCatalogs }: {
     if (!storeId || !importId || !drivePreview) return
     setLoading(true); setError(null)
     setStep('importing')
-    setMsg(`Downloading ${drivePreview.matched} images from Drive and uploading to Cloudinary…`)
+    setMsg(`Downloading ${drivePreview.totalMatchedImages} images from Drive and uploading to Cloudinary…`)
 
     try {
       const res = await fetch('/api/catalog/map-images', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          importId, storeId,
-          files: drivePreview.files,  // reuse already-scanned list, no double-fetch
-        }),
+        body: JSON.stringify({ importId, storeId, folderUrl: folderUrl.trim() }),
       })
       const data = await readJson(res)
       if (!res.ok) throw new Error(data.error)
 
       setResult({
-        imported: data.total || 0,
-        matched: data.matched || 0,
-        skipped: data.skipped || 0,
+        imported: data.totalProducts || 0,
+        matched: data.productsMatched || 0,
+        skipped: data.productsUnmatched || 0,
         errors: data.errors || [],
       })
       setStep('done')
@@ -489,37 +481,43 @@ export function CatalogImportClient({ existingCatalogs }: {
                   <div className="flex items-center gap-4 text-sm flex-wrap">
                     <span className="text-muted-foreground">{drivePreview.totalImages} images in folder</span>
                     <span className="flex items-center gap-1 text-green-600 font-medium">
-                      <CheckCircle2 className="h-3.5 w-3.5" />{drivePreview.matched} matched
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {drivePreview.matchedProducts} products matched ({drivePreview.totalMatchedImages} images)
                     </span>
-                    {drivePreview.unmatched > 0 && (
+                    {drivePreview.unmatchedProducts > 0 && (
                       <span className="flex items-center gap-1 text-amber-600">
-                        <AlertCircle className="h-3.5 w-3.5" />{drivePreview.unmatched} unmatched SKUs
+                        <AlertCircle className="h-3.5 w-3.5" />{drivePreview.unmatchedProducts} products with no image
                       </span>
                     )}
                   </div>
 
                   {drivePreview.matchedSample.length > 0 && (
                     <div>
-                      <p className="text-xs text-muted-foreground mb-2">Matched pairs (preview):</p>
+                      <p className="text-xs text-muted-foreground mb-2">Sample matches:</p>
                       <div className="space-y-1.5">
                         {drivePreview.matchedSample.slice(0,5).map((m, i) => (
-                          <div key={i} className="flex items-center gap-2 text-xs">
+                          <div key={i} className="flex items-center gap-2 text-xs flex-wrap">
                             <CheckCircle2 className="h-3 w-3 text-green-500 shrink-0" />
-                            <code className="bg-muted px-1.5 rounded text-muted-foreground">{m.sku}</code>
+                            <code className="bg-muted px-1.5 rounded text-muted-foreground">{m.sku}{m.color ? ` / ${m.color}` : ''}</code>
                             <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                            <span className="text-foreground font-medium">{m.filename}</span>
+                            <span className="text-foreground font-medium">{m.imageCount} image{m.imageCount !== 1 ? 's' : ''}</span>
+                            <span className="text-muted-foreground truncate max-w-52 text-[11px]">
+                              ({m.filenames.slice(0,2).join(', ')}{m.filenames.length > 2 ? `…+${m.filenames.length-2}` : ''})
+                            </span>
                           </div>
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {drivePreview.unmatchedSkuSample.length > 0 && (
+                  {drivePreview.unmatchedSample.length > 0 && (
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1.5">Unmatched SKUs (no image found):</p>
+                      <p className="text-xs text-muted-foreground mb-1.5">Products with no matching image:</p>
                       <div className="flex flex-wrap gap-1.5">
-                        {drivePreview.unmatchedSkuSample.slice(0,6).map((s, i) => (
-                          <code key={i} className="bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded text-xs border border-amber-200 dark:border-amber-800">{s}</code>
+                        {drivePreview.unmatchedSample.slice(0,6).map((s, i) => (
+                          <code key={i} className="bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-1.5 py-0.5 rounded text-xs border border-amber-200 dark:border-amber-800">
+                            {s.sku}{s.color ? ` / ${s.color}` : ''}
+                          </code>
                         ))}
                       </div>
                     </div>
@@ -535,10 +533,10 @@ export function CatalogImportClient({ existingCatalogs }: {
                     {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />{loadingMsg}</>
                              : <><FolderOpen className="h-4 w-4 mr-1.5" />Scan folder &amp; preview matches</>}
                   </Button>
-                ) : drivePreview.matched > 0 ? (
+                ) : drivePreview.matchedProducts > 0 ? (
                   <Button onClick={handleMapImages} disabled={loading}>
                     <Sparkles className="h-4 w-4 mr-1.5" />
-                    Import {drivePreview.matched} images
+                    Import {drivePreview.totalMatchedImages} images
                   </Button>
                 ) : (
                   <Button variant="outline" onClick={() => setDrivePreview(null)}>Try a different folder</Button>

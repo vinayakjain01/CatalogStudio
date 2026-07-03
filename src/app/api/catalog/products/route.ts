@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
 
   const admin = getAdminClient()
   let query = admin.from('products')
-    .select('id, sku, title, image_url, price')
+    .select('id, sku, color, match_key, title, image_url, price')
     .eq('store_id', storeId)
     .order('title', { ascending: true })
 

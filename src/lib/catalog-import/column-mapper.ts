@@ -25,6 +25,7 @@ export type CanonicalField =
   | 'tags'
   | 'inventory_quantity'
   | 'status'
+  | 'color'
 
 // Ordered by priority — first match wins for each canonical field
 const FIELD_SYNONYMS: Record<CanonicalField, string[]> = {
@@ -61,6 +62,10 @@ const FIELD_SYNONYMS: Record<CanonicalField, string[]> = {
   vendor: [
     'vendor', 'brand', 'brand name', 'manufacturer', 'supplier',
     'company', 'maker', 'producer',
+  ],
+  color: [
+    'colour', 'color', 'colour name', 'color name', 'shade', 'colorway',
+    'colourway',
   ],
   product_type: [
     'product type', 'type', 'category', 'product category', 'sub category',
