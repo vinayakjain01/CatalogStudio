@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Megaphone, FileSpreadsheet } from 'lucide-react'
+import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Megaphone, FileSpreadsheet, FolderOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { StoreSwitcher } from '@/components/dashboard/store-switcher'
@@ -22,6 +22,7 @@ const navItems = [
   { href: '/dashboard/rules', label: 'Rules Engine', icon: Zap },
   { href: '/dashboard/creatives', label: 'Creatives', icon: ImageIcon },
   { href: '/dashboard/catalog', label: 'Line Sheet', icon: FileSpreadsheet },
+  { href: '/dashboard/catalog/images', label: 'Drive Images', icon: FolderOpen },
   { href: '/dashboard/meta', label: 'Meta', icon: Megaphone },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]
