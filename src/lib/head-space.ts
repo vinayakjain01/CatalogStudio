@@ -138,39 +138,58 @@ export function calculateHeadSpacePlacement(
 ): HeadSpacePlacement {
   const { headSpacePx, leftMarginPx, rightMarginPx, bottomMarginPx, autoCenterHorizontally } = config
 
-  const contentW = bounds.right - bounds.left   // visible product width (px in original image)
-  const contentH = bounds.bottom - bounds.top   // visible product height
+  const contentW = bounds.right  - bounds.left   // visible product width in original image px
+  const contentH = bounds.bottom - bounds.top    // visible product height
 
   const availableW = canvasW - leftMarginPx - rightMarginPx
   const availableH = canvasH - headSpacePx - bottomMarginPx
 
-  // Guard against degenerate values
   if (contentW <= 0 || contentH <= 0 || availableW <= 0 || availableH <= 0) {
     return { imgX: 0, imgY: 0, renderedW: canvasW, renderedH: canvasH, scale: canvasW / bounds.imageWidth }
   }
 
-  // Scale so visible content FITS inside the available area (no cropping)
-  const scaleToFitW = availableW / contentW
-  const scaleToFitH = availableH / contentH
-  const scale = Math.min(scaleToFitW, scaleToFitH)
+  const scaleToFitW = availableW / contentW    // scale so product fits width
+  const scaleToFitH = availableH / contentH    // scale so product fits height
 
-  // Full image rendered dimensions
-  const renderedW = bounds.imageWidth * scale
+  let scale: number
+  if (bounds.hasTransparency) {
+    // ── Transparent product (after bg removal) ─────────────────────────────
+    // Use CONTAIN: fit the visible product inside the available area.
+    // We know exactly where the product starts/ends, so this gives perfect
+    // "head at headSpacePx" alignment with no overflow or cropping.
+    scale = Math.min(scaleToFitW, scaleToFitH)
+  } else {
+    // ── Opaque product photo (standard JPEG) ───────────────────────────────
+    // Use FILL WIDTH: scale the image so it fills the available width.
+    // The image top is placed at headSpacePx — for tall portrait photos the
+    // feet may overflow below the canvas (they're cropped), which is the
+    // correct visual behavior: every product fills the canvas with its top
+    // at the same Y position, looking consistent across bulk generation.
+    // We cap at 1.0 to avoid upscaling low-res images.
+    scale = Math.min(scaleToFitW, 1.0)
+
+    // If the product is very wide (landscape photo), scale down to fit height too
+    // so we don't lose the head above the canvas top.
+    const renderedHPreview = bounds.imageHeight * scale
+    const imgYPreview = headSpacePx - bounds.top * scale
+    if (imgYPreview < 0) {
+      // Head would be above canvas — fall back to contain so head stays visible
+      scale = Math.min(scaleToFitW, scaleToFitH)
+    }
+  }
+
+  const renderedW = bounds.imageWidth  * scale
   const renderedH = bounds.imageHeight * scale
 
-  // ── Vertical placement ─────────────────────────────────────────────────────
-  // We want:  imgY + bounds.top * scale  =  headSpacePx
+  // Vertical: top of visible content = headSpacePx
   const imgY = headSpacePx - bounds.top * scale
 
-  // ── Horizontal placement ───────────────────────────────────────────────────
+  // Horizontal: center visible content in available width
   let imgX: number
   if (autoCenterHorizontally) {
-    // Center the VISIBLE CONTENT (not the full image) in the available width:
-    //   imgX + (bounds.left + contentW/2) * scale  =  leftMarginPx + availableW/2
     const contentCenterOnCanvas = leftMarginPx + availableW / 2
     imgX = contentCenterOnCanvas - (bounds.left + contentW / 2) * scale
   } else {
-    // Align the left edge of visible content to leftMarginPx
     imgX = leftMarginPx - bounds.left * scale
   }
 

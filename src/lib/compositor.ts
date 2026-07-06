@@ -469,10 +469,17 @@ export async function compositeImage(
             padding:   0,
           }
           headSpaceLayerOverrides = new Map()
-          // Apply to ALL product image layers in the template
+          // Detect ALL layer types that can render a product image:
+          // 'image' | 'overlay' | 'logo' | 'sticker' all fall through to
+          // the same image-rendering code path in drawLayer.
+          const PRODUCT_IMAGE_TYPES = new Set(['image', 'overlay', 'logo', 'sticker'])
           for (const layer of canvasData.layers) {
             const imgLayer = layer as any
-            if (imgLayer.type === 'image' && imgLayer.src === '{{product_image}}') {
+            if (
+              PRODUCT_IMAGE_TYPES.has(imgLayer.type) &&
+              imgLayer.src === '{{product_image}}' &&
+              imgLayer.objectFit !== 'ai_extend'  // don't override AI extend layers
+            ) {
               headSpaceLayerOverrides.set(layer.id, layerOverride)
             }
           }
