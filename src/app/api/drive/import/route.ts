@@ -212,13 +212,20 @@ export async function POST(request: NextRequest) {
 
         if (!product) throw new Error('Failed to create product')
 
-        // Create product_images row (needed by the generation worker)
-        await admin.from('product_images').upsert({
+        // Create product_images row — DELETE existing first to ensure clean state,
+        // then insert fresh. This avoids needing a unique constraint on product_id+position
+        // and guarantees the product thumbnail always appears in the products list.
+        await admin.from('product_images')
+          .delete()
+          .eq('product_id', product.id)
+          .eq('position', 1)
+
+        await admin.from('product_images').insert({
           product_id: product.id,
           src: cloudinaryUrl,
           is_primary: true,
           position: 1,
-        }, { onConflict: 'product_id,position' })
+        })
 
         // Track import row
         if (importId) {

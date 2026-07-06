@@ -174,6 +174,8 @@ function detectImageType(buffer: Buffer): string | null {
 
 /**
  * Upload a downloaded image buffer to Cloudinary.
+ * Automatically resizes images that exceed Cloudinary's 10MB upload limit
+ * by using Cloudinary's eager transformation to downscale during upload.
  */
 export async function uploadImageToCloudinary(
   buffer: Buffer,
@@ -187,6 +189,11 @@ export async function uploadImageToCloudinary(
     api_secret: process.env.CLOUDINARY_API_SECRET,
   })
 
+  // Cloudinary free/starter plan caps uploads at 10MB.
+  // If the buffer is larger, we ask Cloudinary to cap dimensions at 2000px
+  // on the longest side during the upload itself — this avoids needing sharp.
+  const isLarge = buffer.length > 9 * 1024 * 1024  // > 9MB
+
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
@@ -196,6 +203,11 @@ export async function uploadImageToCloudinary(
         resource_type: 'image',
         format: 'jpg',
         quality: 'auto:good',
+        // For large files: limit max dimension to 2000px so the upload stays
+        // under the 10MB limit. The original ratio is always preserved.
+        ...(isLarge ? {
+          transformation: [{ width: 2000, height: 2000, crop: 'limit' }],
+        } : {}),
       },
       (error, result) => {
         if (error || !result) return reject(error || new Error('Upload failed'))
