@@ -22,7 +22,7 @@ const navItems = [
   { href: '/dashboard/rules', label: 'Rules Engine', icon: Zap },
   { href: '/dashboard/creatives', label: 'Creatives', icon: ImageIcon },
   { href: '/dashboard/catalog', label: 'Line Sheet', icon: FileSpreadsheet },
-  { href: '/dashboard/catalog/images', label: 'Drive Images', icon: FolderOpen },
+  { href: '/dashboard/drive', label: 'Drive Import', icon: FolderOpen },
   { href: '/dashboard/meta', label: 'Meta', icon: Megaphone },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]
