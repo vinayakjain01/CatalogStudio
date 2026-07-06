@@ -425,13 +425,21 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    // ── Head Space: consistent product alignment across bulk generation ──────
-    // When enabled, we detect the visible-pixel bounding box of the transparent
-    // product PNG (or full image if no transparency) and calculate exact placement
-    // so EVERY creative has the same canvas-top → product-top distance.
-    // This block runs ONLY when headSpaceSettings.enabled = true, so ALL existing
-    // templates that don't set this field continue to work exactly as before.
+    // ── Head Space: consistent product alignment ──────────────────────────
+    // Works in BOTH standard mode (product image layer) and ai_product mode.
+    //
+    // Standard mode: finds the '{{product_image}}' layer and overrides its
+    //   x/y/width/height with the head-space-calculated placement.
+    // AI Product mode: overrides productLayerSettings as before.
+    //
+    // For transparent PNGs (after bg removal) → detects visible pixel bounds.
+    // For opaque JPEGs (standard photos) → uses full image bounds, giving
+    //   consistent top margin + centered fit within safe margins.
+    //
+    // Non-fatal: any failure falls back to normal placement silently.
     const hs = options.headSpaceSettings
+    let headSpaceLayerOverrides: Map<string, Partial<{ x: number; y: number; width: number; height: number; objectFit: string; padding: number }>> | null = null
+
     if (hs?.enabled) {
       const imageToAnalyze = product.transparentImageUrl || product.imageUrl
       if (imageToAnalyze) {
@@ -444,11 +452,31 @@ export async function compositeImage(
             bottomMarginPx:         hs.bottomMarginPx,
             autoCenterHorizontally: hs.autoCenterHorizontally,
           })
+
+          // For AI product mode: override the floating product layer settings
           productLayerSettings = placementToProductLayerSettings(
             placement, targetW, targetH, productLayerSettings
           )
+
+          // For standard mode: record overrides for the {{product_image}} layer
+          // We key by layer id; we'll match any image layer with src={{product_image}}
+          const layerOverride = {
+            x:         (placement.imgX      / targetW) * 100,
+            y:         (placement.imgY      / targetH) * 100,
+            width:     (placement.renderedW / targetW) * 100,
+            height:    (placement.renderedH / targetH) * 100,
+            objectFit: 'fill' as const,
+            padding:   0,
+          }
+          headSpaceLayerOverrides = new Map()
+          // Apply to ALL product image layers in the template
+          for (const layer of canvasData.layers) {
+            const imgLayer = layer as any
+            if (imgLayer.type === 'image' && imgLayer.src === '{{product_image}}') {
+              headSpaceLayerOverrides.set(layer.id, layerOverride)
+            }
+          }
         } catch (err: any) {
-          // Non-fatal — fall back to normal placement so generation never breaks
           console.warn('[compositor] head space fallback:', err.message)
         }
       }
@@ -462,6 +490,7 @@ export async function compositeImage(
       supabase: options.supabase,
       targetW: targetW,  // 1x dimensions (not supersampled) for extend cache key
       targetH: targetH,
+      headSpaceOverrides: headSpaceLayerOverrides,  // null when head space disabled
     }
 
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
@@ -526,12 +555,16 @@ async function drawLayer(
   product: ProductData,
   W: number,
   H: number,
-  options?: { storeId?: string; supabase?: any; targetW?: number; targetH?: number }
+  options?: { storeId?: string; supabase?: any; targetW?: number; targetH?: number; headSpaceOverrides?: Map<string, any> | null }
 ): Promise<void> {
-  const x = (layer.x / 100) * W
-  const y = (layer.y / 100) * H
-  const w = (layer.width / 100) * W
-  const h = (layer.height / 100) * H
+  // Apply head space position override for product image layers
+  const headSpaceOverride = options?.headSpaceOverrides?.get(layer.id)
+  const effectiveLayer = headSpaceOverride ? { ...layer, ...headSpaceOverride } : layer
+
+  const x = (effectiveLayer.x / 100) * W
+  const y = (effectiveLayer.y / 100) * H
+  const w = (effectiveLayer.width / 100) * W
+  const h = (effectiveLayer.height / 100) * H
 
   ctx.save()
   ctx.globalAlpha = layer.opacity
@@ -611,14 +644,14 @@ async function drawLayer(
     case 'logo':
     case 'sticker':
     case 'image': {
-      const l = layer as Layer & {
+      const l = effectiveLayer as Layer & {
         src: string
         objectFit?: 'cover' | 'contain' | 'fill' | 'ai_extend'
         borderRadius?: number
       }
       const imgSrc = l.src === '{{product_image}}' ? product.imageUrl : l.src
       const fit = l.objectFit || 'contain'
-      const radius = l.borderRadius ?? 0
+      const radius = (l as any).borderRadius ?? 0
 
       if (imgSrc) {
         // ── AI Extend: use Cloudinary Generative Fill ──────────────────────

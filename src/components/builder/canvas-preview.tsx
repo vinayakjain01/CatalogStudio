@@ -509,7 +509,112 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
           />
         )}
         {fgLayers.map(renderLayer)}
+
+        {/* Head Space guide overlay — visible only when head space is enabled */}
+        {canvasData.headSpaceSettings?.enabled && (
+          <HeadSpaceGuide
+            settings={canvasData.headSpaceSettings}
+            displayW={displayW}
+            displayH={displayH}
+          />
+        )}
       </div>
+    </div>
+  )
+}
+// ─── Head Space Guide Overlay ─────────────────────────────────────────────────
+// Rendered on top of the canvas preview when head space is enabled.
+// Shows dashed guide lines for head space and margins so the user can see
+// exactly how the alignment will work before generating.
+
+import type { HeadSpaceSettings } from '@/types/template'
+
+function HeadSpaceGuide({
+  settings,
+  displayW,
+  displayH,
+}: {
+  settings: HeadSpaceSettings
+  displayW: number
+  displayH: number
+}) {
+  const { headSpacePx, leftMarginPx, rightMarginPx, bottomMarginPx } = settings
+
+  // Scale from canvas logical pixels to display pixels
+  // displayW maps to canvasData.width (typically 1080)
+  // We need the ratio — get it from the container size
+  const scaleFromProps = displayW / 1080  // assuming 1080px canvas
+
+  const headTopPx    = headSpacePx   * scaleFromProps
+  const leftPx       = leftMarginPx  * scaleFromProps
+  const rightPx      = rightMarginPx * scaleFromProps
+  const bottomPx     = bottomMarginPx * scaleFromProps
+
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none"
+      style={{ zIndex: 9999 }}
+    >
+      {/* Head space band — top area */}
+      <div
+        className="absolute top-0 left-0 right-0"
+        style={{
+          height: headTopPx,
+          background: 'rgba(99, 102, 241, 0.12)',
+          borderBottom: '1.5px dashed rgba(99, 102, 241, 0.7)',
+        }}
+      >
+        <span
+          className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[8px] font-mono font-semibold whitespace-nowrap"
+          style={{ color: 'rgba(99, 102, 241, 0.9)', textShadow: '0 0 4px white' }}
+        >
+          {headSpacePx}px head space
+        </span>
+      </div>
+
+      {/* Left margin */}
+      <div
+        className="absolute top-0 bottom-0 left-0"
+        style={{
+          width: leftPx,
+          background: 'rgba(99, 102, 241, 0.06)',
+          borderRight: '1px dashed rgba(99, 102, 241, 0.4)',
+        }}
+      />
+
+      {/* Right margin */}
+      <div
+        className="absolute top-0 bottom-0 right-0"
+        style={{
+          width: rightPx,
+          background: 'rgba(99, 102, 241, 0.06)',
+          borderLeft: '1px dashed rgba(99, 102, 241, 0.4)',
+        }}
+      />
+
+      {/* Bottom margin */}
+      <div
+        className="absolute bottom-0 left-0 right-0"
+        style={{
+          height: bottomPx,
+          background: 'rgba(99, 102, 241, 0.06)',
+          borderTop: '1px dashed rgba(99, 102, 241, 0.4)',
+        }}
+      />
+
+      {/* Product area safe-zone corner dots */}
+      {[
+        { top: headTopPx, left: leftPx },
+        { top: headTopPx, right: rightPx },
+        { bottom: bottomPx, left: leftPx },
+        { bottom: bottomPx, right: rightPx },
+      ].map((pos, i) => (
+        <div
+          key={i}
+          className="absolute w-1.5 h-1.5 rounded-full"
+          style={{ ...pos, background: 'rgba(99, 102, 241, 0.8)' }}
+        />
+      ))}
     </div>
   )
 }
