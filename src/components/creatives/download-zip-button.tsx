@@ -22,15 +22,31 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
     setProgress(0)
 
     try {
-      // 1. Fetch all generated creative URLs for this store
+      // 1. Get all products for this store, then find their generated images.
+      //    generated_images has no store_id column — it links to store via product_id.
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
 
+      // Step A: load product IDs + names for this store
+      const { data: storeProducts, error: prodErr } = await supabase
+        .from('products')
+        .select('id, title, sku')
+        .eq('store_id', storeId)
+
+      if (prodErr) throw new Error(prodErr.message)
+      if (!storeProducts?.length) throw new Error('No products found for this store.')
+
+      const productIdToName = new Map(
+        storeProducts.map(p => [p.id, p.sku || p.title || p.id])
+      )
+      const productIds = storeProducts.map(p => p.id)
+
+      // Step B: get generated images for those products
       const { data: creatives, error: dbErr } = await supabase
         .from('generated_images')
-        .select('id, generated_url, products:product_id(title, sku)')
-        .eq('store_id', storeId)
-        .eq('status', 'done')
+        .select('id, generated_url, product_id')
+        .in('product_id', productIds)
+        .eq('status', 'completed')
         .not('generated_url', 'is', null)
         .order('updated_at', { ascending: false })
 
@@ -56,11 +72,9 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
           const blob = await response.blob()
 
-          // Build a clean filename: SKU or title + index
-          const product = (creative.products as any)
-          const baseName = product?.sku || product?.title || `creative-${i + 1}`
-          // Sanitize filename
-          const safeName = baseName.replace(/[^a-zA-Z0-9\-_ .]/g, '_').slice(0, 60)
+          // Build a clean filename from the product SKU/title
+          const productName = productIdToName.get(creative.product_id) ?? `creative-${i + 1}`
+          const safeName = productName.replace(/[^a-zA-Z0-9\-_ .]/g, '_').slice(0, 60)
           const ext = blob.type.includes('png') ? 'png' : 'jpg'
           const filename = `${safeName}.${ext}`
 
