@@ -1,10 +1,11 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
-import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
+import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS, HeadSpaceSettings } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
+import { detectProductBounds, calculateHeadSpacePlacement, placementToProductLayerSettings } from '@/lib/head-space'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
@@ -62,18 +63,13 @@ interface ProductData {
 }
 
 export interface CompositeOptions {
-  /** Final delivered dimension in px (square). Default 1080. */
   targetSize?: number
-  /** Internal render multiplier. Default 2. */
   supersample?: number
-  /** Template mode — 'standard' uses product image as-is; 'ai_product' floats transparent product over background */
   templateMode?: 'standard' | 'ai_product'
-  /** Product layer settings for ai_product mode */
   productLayerSettings?: ProductLayerSettings
-  /** Store ID — required for AI Extend caching (image layers with objectFit='ai_extend') */
   storeId?: string
-  /** Supabase admin client — required for AI Extend caching */
   supabase?: any
+  headSpaceSettings?: HeadSpaceSettings
 }
 
 /**
@@ -427,7 +423,37 @@ export async function compositeImage(
     await serverRenderBackground(ctx, canvasData, product, W, H)
 
     const templateMode = options.templateMode || 'standard'
-    const productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
+    let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
+
+    // ── Head Space: consistent product alignment across bulk generation ──────
+    // When enabled, we detect the visible-pixel bounding box of the transparent
+    // product PNG (or full image if no transparency) and calculate exact placement
+    // so EVERY creative has the same canvas-top → product-top distance.
+    // This block runs ONLY when headSpaceSettings.enabled = true, so ALL existing
+    // templates that don't set this field continue to work exactly as before.
+    const hs = options.headSpaceSettings
+    if (hs?.enabled) {
+      const imageToAnalyze = product.transparentImageUrl || product.imageUrl
+      if (imageToAnalyze) {
+        try {
+          const bounds = await detectProductBounds(imageToAnalyze)
+          const placement = calculateHeadSpacePlacement(bounds, targetW, targetH, {
+            headSpacePx:            hs.headSpacePx,
+            leftMarginPx:           hs.leftMarginPx,
+            rightMarginPx:          hs.rightMarginPx,
+            bottomMarginPx:         hs.bottomMarginPx,
+            autoCenterHorizontally: hs.autoCenterHorizontally,
+          })
+          productLayerSettings = placementToProductLayerSettings(
+            placement, targetW, targetH, productLayerSettings
+          )
+        } catch (err: any) {
+          // Non-fatal — fall back to normal placement so generation never breaks
+          console.warn('[compositor] head space fallback:', err.message)
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Layer-drawing options passed to every drawLayer call — enables
     // ai_extend inside image layers to call the extend service.

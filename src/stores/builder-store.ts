@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, TemplateMode, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
+import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, TemplateMode, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS, HeadSpaceSettings, DEFAULT_HEAD_SPACE_SETTINGS } from '@/types/template'
 import { nanoid } from 'nanoid'
 
 // Shape of a preview product for live preview in the builder
@@ -38,6 +38,7 @@ interface BuilderStore {
 
   setTemplateMode: (mode: TemplateMode) => void
   setProductLayerSettings: (settings: Partial<ProductLayerSettings>) => void
+  setHeadSpaceSettings: (settings: Partial<HeadSpaceSettings>) => void
 
   loadTemplate: (canvasData: CanvasData) => void
   resetDirty: () => void
@@ -88,6 +89,18 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
         ...s.canvasData,
         productLayerSettings: {
           ...(s.canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS),
+          ...settings,
+        },
+      },
+      isDirty: true,
+    })),
+
+  setHeadSpaceSettings: (settings) =>
+    set(s => ({
+      canvasData: {
+        ...s.canvasData,
+        headSpaceSettings: {
+          ...(s.canvasData.headSpaceSettings ?? DEFAULT_HEAD_SPACE_SETTINGS),
           ...settings,
         },
       },

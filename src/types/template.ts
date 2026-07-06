@@ -207,11 +207,10 @@ export interface CanvasData {
   backgroundColor: string
   backgroundImageUrl: string | null
   layers: Layer[]
-  // Smart background — optional; absent = backward-compat solid fill
   backgroundSettings?: BackgroundSettings
-  // AI Product Mode — optional; absent = backward-compat standard mode
   templateMode?: TemplateMode
   productLayerSettings?: ProductLayerSettings
+  headSpaceSettings?: HeadSpaceSettings  // absent = disabled (backward compat)
 }
 // ─── AI Product Mode ─────────────────────────────────────────────────────────
 // When templateMode = 'ai_product', background removal runs on the product image.
@@ -263,4 +262,29 @@ export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
   glowBlur: 15,
   zIndex: 5,
   padding: 4,
+}
+// ─── Head Space ───────────────────────────────────────────────────────────────
+// Ensures every generated creative has the same visual top margin,
+// regardless of the product image shape or whitespace.
+// Stored in CanvasData alongside productLayerSettings.
+// Default: disabled — full backward compatibility with existing templates.
+
+export interface HeadSpaceSettings {
+  enabled: boolean
+  headSpacePx: number              // distance from canvas top to product top (px)
+  leftMarginPx: number             // horizontal safe-area inside canvas
+  rightMarginPx: number
+  bottomMarginPx: number
+  autoCenterHorizontally: boolean  // center visible content, not full image rect
+  alignment: 'top'                 // reserved for future: 'center' | 'bottom'
+}
+
+export const DEFAULT_HEAD_SPACE_SETTINGS: HeadSpaceSettings = {
+  enabled: false,       // OFF by default — never breaks existing templates
+  headSpacePx: 120,
+  leftMarginPx: 40,
+  rightMarginPx: 40,
+  bottomMarginPx: 40,
+  autoCenterHorizontally: true,
+  alignment: 'top',
 }
