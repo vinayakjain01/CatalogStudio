@@ -1,12 +1,16 @@
 /**
  * GET /api/catalog/export?importId=...&format=xlsx|csv
- * Downloads the output line sheet with generated creatives appended.
+ *
+ * Downloads an Excel/CSV file containing all products from a Drive import,
+ * with the generated creative URLs appended as extra columns.
+ *
+ * Self-contained — no dependency on catalog-import lib files.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/generation-queue'
-import { generateOutputFile } from '@/lib/catalog-import/output-generator'
+import * as XLSX from 'xlsx'
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -21,7 +25,7 @@ export async function GET(request: NextRequest) {
   // Verify ownership
   const { data: importRecord } = await supabase
     .from('catalog_imports')
-    .select('id, user_id')
+    .select('id, user_id, filename')
     .eq('id', importId)
     .single()
 
@@ -31,18 +35,67 @@ export async function GET(request: NextRequest) {
 
   const admin = getAdminClient()
 
-  try {
-    const output = await generateOutputFile({ importId, format, supabase: admin })
+  // Load products with their generated images
+  const { data: products } = await admin
+    .from('products')
+    .select(`
+      id, title, sku, price, product_type, image_url,
+      generated_images(generated_url, status, updated_at, templates:template_id(name))
+    `)
+    .eq('import_id', importId)
+    .order('title', { ascending: true })
 
-    return new NextResponse(output.buffer as unknown as BodyInit, {
-      status: 200,
+  if (!products?.length) {
+    return NextResponse.json({ error: 'No products found for this import' }, { status: 404 })
+  }
+
+  // Build rows
+  const rows = (products as any[]).map(p => {
+    const creatives = p.generated_images || []
+    const latest = creatives.sort((a: any, b: any) =>
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    )[0]
+
+    return {
+      'Name': p.title || '',
+      'SKU': p.sku || '',
+      'Price': p.price || 0,
+      'Category': p.product_type || '',
+      'Original Image URL': p.image_url || '',
+      'Generated Creative URL': latest?.generated_url || '',
+      'Template Used': latest?.templates?.name || '',
+      'Generation Status': latest?.status || 'pending',
+      'Generated At': latest?.updated_at ? new Date(latest.updated_at).toISOString() : '',
+    }
+  })
+
+  const baseFilename = (importRecord.filename || 'catalog')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 50)
+
+  if (format === 'csv') {
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const csv = XLSX.utils.sheet_to_csv(ws)
+    const buf = Buffer.from(csv, 'utf-8')
+    return new NextResponse(buf as unknown as BodyInit, {
       headers: {
-        'Content-Type': output.mimeType,
-        'Content-Disposition': `attachment; filename="${output.filename}"`,
-        'Content-Length': String(output.buffer.length),
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="${baseFilename}_with_creatives.csv"`,
+        'Content-Length': String(buf.length),
       },
     })
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
   }
+
+  const ws = XLSX.utils.json_to_sheet(rows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Products & Creatives')
+  const buf = Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }))
+
+  return new NextResponse(buf as unknown as BodyInit, {
+    headers: {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${baseFilename}_with_creatives.xlsx"`,
+      'Content-Length': String(buf.length),
+    },
+  })
 }

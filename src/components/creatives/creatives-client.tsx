@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import { DownloadZipButton } from './download-zip-button'
 
 interface Creative {
   id: string
@@ -286,9 +287,14 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       {/* Creatives grid header */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{totalCreatives} creatives</p>
-        <Button variant="ghost" size="sm" onClick={fetchCreatives}>
-          <RefreshCw className="h-3.5 w-3.5 mr-2" />Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {selectedStore && totalCreatives > 0 && (
+            <DownloadZipButton storeId={selectedStore} />
+          )}
+          <Button variant="ghost" size="sm" onClick={fetchCreatives}>
+            <RefreshCw className="h-3.5 w-3.5 mr-2" />Refresh
+          </Button>
+        </div>
       </div>
 
       {loading && (
