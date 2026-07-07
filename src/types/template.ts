@@ -210,7 +210,6 @@ export interface CanvasData {
   backgroundSettings?: BackgroundSettings
   templateMode?: TemplateMode
   productLayerSettings?: ProductLayerSettings
-  headSpaceSettings?: HeadSpaceSettings  // absent = disabled (backward compat)
 }
 
 // ─── AI Product Mode ─────────────────────────────────────────────────────────
@@ -263,61 +262,4 @@ export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
   glowBlur: 15,
   zIndex: 5,
   padding: 4,
-}
-
-// ─── Head Space ───────────────────────────────────────────────────────────────
-// Ensures every generated creative has the same visual top margin,
-// regardless of the product image shape or whitespace.
-// Stored in CanvasData alongside productLayerSettings.
-// Default: disabled — full backward compatibility with existing templates.
-//
-// NEW in v2: autoZoom + allowAiExtend + protectFullProduct
-//   autoZoom         — instead of shrink-to-fit, zoom the product UP so the head
-//                      touches the guide line exactly. This is what premium fashion
-//                      brands do: Zara, H&M, Myntra, Ajio.
-//   allowAiExtend    — when zoom causes feet/accessories to overflow the canvas,
-//                      instead of cropping, expand the canvas with AI-generated
-//                      background fill (calls existing getExtendedImage pipeline).
-//   protectFullProduct — never allow ANY part of the product to be outside the
-//                      final export boundary, even if it conflicts with the guide.
-//                      Safety valve: if zoom + extend still can't fit, fall back.
-
-export interface HeadSpaceSettings {
-  enabled: boolean
-  headSpacePx: number              // distance from canvas top to product top (px)
-  leftMarginPx: number             // horizontal safe-area inside canvas
-  rightMarginPx: number
-  bottomMarginPx: number
-  autoCenterHorizontally: boolean  // center visible content, not full image rect
-  alignment: 'top'                 // reserved for future: 'center' | 'bottom'
-
-  // ── v2 additions ─────────────────────────────────────────────────────────
-  // Smart Auto Zoom: scale product UP so head touches the guide.
-  // When false (legacy), the old contain-scale behaviour applies.
-  autoZoom: boolean
-
-  // AI Extend on overflow: when zoom pushes feet/accessories outside canvas,
-  // call the AI extend pipeline to generate extra background instead of cropping.
-  allowAiExtend: boolean
-
-  // Never crop any pixel of the product.
-  // If zoom factor would still overflow after extend headroom, reduce zoom.
-  protectFullProduct: boolean
-
-  // Show guide line overlay in the builder preview (cosmetic only, not stored at render)
-  showGuide: boolean
-}
-
-export const DEFAULT_HEAD_SPACE_SETTINGS: HeadSpaceSettings = {
-  enabled: false,       // OFF by default — never breaks existing templates
-  headSpacePx: 120,
-  leftMarginPx: 40,
-  rightMarginPx: 40,
-  bottomMarginPx: 40,
-  autoCenterHorizontally: true,
-  alignment: 'top',
-  autoZoom: true,
-  allowAiExtend: true,
-  protectFullProduct: true,
-  showGuide: true,
 }

@@ -105,8 +105,6 @@ export async function POST(request: NextRequest) {
     // ─────────────────────────────────────────────────────────────────────────
 
     const productLayerSettings = canvasData.productLayerSettings || undefined
-    const headSpaceSettings    = canvasData.headSpaceSettings    || undefined
-
     const buffer = await compositeImage(canvasData, {
       title: product.title,
       price: product.price,
@@ -118,7 +116,6 @@ export async function POST(request: NextRequest) {
     }, {
       templateMode: transparentImageUrl ? 'ai_product' : 'standard',
       productLayerSettings,
-      headSpaceSettings,
       storeId,
       supabase: adminSupabase,
     })

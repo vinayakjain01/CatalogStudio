@@ -9,8 +9,6 @@ import {
   TemplateMode,
   ProductLayerSettings,
   DEFAULT_PRODUCT_LAYER_SETTINGS,
-  HeadSpaceSettings,
-  DEFAULT_HEAD_SPACE_SETTINGS,
 } from '@/types/template'
 import { nanoid } from 'nanoid'
 
@@ -51,11 +49,10 @@ interface BuilderStore {
   setProductLayerSettings: (settings: Partial<ProductLayerSettings>) => void
 
   /**
-   * Merge a partial HeadSpaceSettings update.
+   * Merge a partial settings update.
    * Missing keys are filled from the current stored settings or
    * DEFAULT_HEAD_SPACE_SETTINGS (which itself has all v2 fields).
    */
-  setHeadSpaceSettings: (settings: Partial<HeadSpaceSettings>) => void
 
   loadTemplate: (canvasData: CanvasData) => void
   resetDirty: () => void
@@ -105,22 +102,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
         ...s.canvasData,
         productLayerSettings: {
           ...(s.canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS),
-          ...settings,
-        },
-      },
-      isDirty: true,
-    })),
-
-  setHeadSpaceSettings: (settings) =>
-    set(s => ({
-      canvasData: {
-        ...s.canvasData,
-        headSpaceSettings: {
-          // Start from full defaults (includes v2 fields: autoZoom, allowAiExtend, etc.)
-          ...DEFAULT_HEAD_SPACE_SETTINGS,
-          // Overlay any previously-saved settings (may be from v1 without v2 fields)
-          ...(s.canvasData.headSpaceSettings ?? {}),
-          // Apply the partial update
           ...settings,
         },
       },
@@ -236,19 +217,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
       else if (ratio < 0.6) aspectRatio = '16:9'
       else if (ratio < 0.8) aspectRatio = '1.91:1'
       canvasData = { ...canvasData, aspectRatio }
-    }
-
-    // ── v2 backward compatibility: backfill new head space fields ────────────
-    // Templates saved before v2 won't have autoZoom / allowAiExtend / etc.
-    // Merge DEFAULT_HEAD_SPACE_SETTINGS so every field is present.
-    if (canvasData.headSpaceSettings) {
-      canvasData = {
-        ...canvasData,
-        headSpaceSettings: {
-          ...DEFAULT_HEAD_SPACE_SETTINGS,
-          ...canvasData.headSpaceSettings,
-        },
-      }
     }
 
     set({ canvasData, selectedLayerId: null, isDirty: false })

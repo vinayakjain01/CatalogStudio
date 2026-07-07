@@ -509,25 +509,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
           />
         )}
         {fgLayers.map(renderLayer)}
-
-        {/* Head Space guide overlay — visible only when head space is enabled */}
-        {canvasData.headSpaceSettings?.enabled &&
-          (canvasData.headSpaceSettings.showGuide ?? true) && (
-            <HeadSpaceGuide
-              settings={canvasData.headSpaceSettings}
-              displayW={displayW}
-              displayH={displayH}
-              canvasW={cW}
-              canvasH={cH}
-            />
-          )}
       </div>
     </div>
   )
 }
-// ─── Head Space Guide Overlay ─────────────────────────────────────────────────
-// Rendered on top of the canvas preview when head space is enabled.
-// Shows dashed guide lines for head space and margins so the user can see
-// exactly how the alignment will work before generating.
-
-import { HeadSpaceGuide } from './HeadSpaceGuide'

@@ -321,8 +321,6 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   // ─────────────────────────────────────────────────────────────────────────
 
   const productLayerSettings = (canvasData as any).productLayerSettings || undefined
-  const headSpaceSettings    = (canvasData as any).headSpaceSettings    || undefined
-
   const buffer = await compositeImage(canvasData as any, {
     title: product.title,
     price: product.price,
@@ -334,7 +332,6 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   }, {
     templateMode: transparentImageUrl ? 'ai_product' : 'standard',
     productLayerSettings,
-    headSpaceSettings,
     storeId: job.store_id,
     supabase,
   })

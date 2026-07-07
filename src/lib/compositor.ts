@@ -4,13 +4,11 @@ import {
   CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
   BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS,
   ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS,
-  HeadSpaceSettings,
 } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
-import { computeExtendedCanvasDimensions, type OverflowInfo } from '@/lib/head-space'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
@@ -76,7 +74,6 @@ export interface CompositeOptions {
   productLayerSettings?: ProductLayerSettings
   storeId?: string
   supabase?: any
-  headSpaceSettings?: HeadSpaceSettings
 }
 
 /**
@@ -416,9 +413,7 @@ function drawFittedImage(
     // canvas exactly. We draw using the full source image (sx=0,sy=0,sw=img.width,
     // sh=img.height) mapped to the destination rect.
     //
-    // IMPORTANT: We do NOT use ctx.clip() here. The head-space scale formula
-    // guarantees x≥0, y≥0, x+w≤canvasW, y+h≤canvasH, so there is nothing to clip.
-    // Any borderRadius clip is applied by the caller (drawLayer) before this call.
+    // No clip needed — the caller handles borderRadius clipping before this call.
     ctx.drawImage(img, 0, 0, img.width, img.height, x, y, w, h)
   }
 }
@@ -439,32 +434,6 @@ function drawFittedImage(
 // extends the original image to fit the template canvas. Here we are
 // extending the canvas ITSELF to accommodate a zoomed product, then
 // compositing both the extended background and the sharp product on top.
-
-async function resolveExtendedBackground(
-  imageUrl: string,
-  targetW: number,
-  targetH: number,
-  overflow: OverflowInfo,
-  storeId: string,
-  supabase: any
-): Promise<{ extendedUrl: string; offsetX: number; offsetY: number } | null> {
-  try {
-    const { extW, extH, offsetX, offsetY } = computeExtendedCanvasDimensions(targetW, targetH, overflow)
-
-    // Only call extend if the expansion is meaningful (> 4px)
-    if (extW <= targetW + 4 && extH <= targetH + 4) return null
-
-    const extendResult = await getExtendedImage(imageUrl, extW, extH, storeId, supabase)
-    console.log(
-      `[compositor] head-space AI extend ${extendResult.fromCache ? 'cached' : 'fresh'} ` +
-      `${targetW}x${targetH} → ${extW}x${extH} overflow=(R:${Math.round(overflow.right)},B:${Math.round(overflow.bottom)})`
-    )
-    return { extendedUrl: extendResult.extendedUrl, offsetX, offsetY }
-  } catch (err: any) {
-    console.error('[compositor] head-space AI extend failed:', err.message)
-    return null
-  }
-}
 
 // ─── Main Composite Function ──────────────────────────────────────────────────
 
@@ -504,15 +473,6 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    // ── Head Space: DISABLED ──────────────────────────────────────────────────
-    // Head Space is currently disabled in the generation pipeline.
-    // The Space tab in the template builder is preserved for future use,
-    // but it has NO EFFECT on generated images. All product images render
-    // using the layer's objectFit setting (contain/cover/fill/ai_extend).
-    const headSpaceLayerOverrides: null = null
-    const headSpaceExtendedBg: null = null
-    // ─────────────────────────────────────────────────────────────────────────
-
     // Layer-drawing options passed to every drawLayer call — enables
     // ai_extend inside image layers to call the extend service.
     const layerOpts = {
@@ -520,7 +480,6 @@ export async function compositeImage(
       supabase: options.supabase,
       targetW,  // 1x dimensions (not supersampled) for extend cache key
       targetH,
-      headSpaceOverrides: headSpaceLayerOverrides,
     }
 
     // ── Head Space Extended Background ────────────────────────────────────────
@@ -592,17 +551,12 @@ async function drawLayer(
     supabase?: any
     targetW?: number
     targetH?: number
-    headSpaceOverrides?: Map<string, any> | null
   }
 ): Promise<void> {
-  // Apply head space position override for product image layers
-  const headSpaceOverride = options?.headSpaceOverrides?.get(layer.id)
-  const effectiveLayer = headSpaceOverride ? { ...layer, ...headSpaceOverride } : layer
-
-  const x = (effectiveLayer.x / 100) * W
-  const y = (effectiveLayer.y / 100) * H
-  const w = (effectiveLayer.width / 100) * W
-  const h = (effectiveLayer.height / 100) * H
+  const x = (layer.x / 100) * W
+  const y = (layer.y / 100) * H
+  const w = (layer.width / 100) * W
+  const h = (layer.height / 100) * H
 
   ctx.save()
   ctx.globalAlpha = layer.opacity
@@ -682,7 +636,7 @@ async function drawLayer(
     case 'logo':
     case 'sticker':
     case 'image': {
-      const l = effectiveLayer as Layer & {
+      const l = layer as Layer & {
         src: string
         objectFit?: 'cover' | 'contain' | 'fill' | 'ai_extend'
         borderRadius?: number
