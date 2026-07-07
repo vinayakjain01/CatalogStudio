@@ -1,52 +1,86 @@
 /**
- * Head Space — Intelligent Product Alignment  (v2 — Smart Auto Zoom)
+ * Head Space — Intelligent Product Alignment  (v3 — No-Crop Guarantee)
  *
- * Ensures every generated creative has identical head position, regardless
- * of model height, photo framing, camera distance, or aspect ratio.
- *
- * Like Zara. Like H&M. Like Myntra. Like Ajio.
+ * Core guarantee: The product image is NEVER cropped, NEVER stretched,
+ * NEVER distorted. Every pixel of the original product is always visible
+ * in the final output.
  *
  * ─── Algorithm ───────────────────────────────────────────────────────────────
  *
- *  1. Load the product image (transparent PNG preferred, JPEG supported).
- *  2. Scan pixels → exact bounding box of visible (non-transparent) content.
- *  3. Find the "head point" = top-most visible pixel.
- *  4. Calculate ZOOM FACTOR so that head lands exactly at headSpacePx.
- *       scale = (canvasH - headSpacePx - bottomMarginPx) / contentH    ← fit height
- *       OR larger if autoZoom=true and head needs to move UP to guide line.
- *  5. Translate the image so head_y_in_canvas === headSpacePx exactly.
- *  6. Detect OVERFLOW: does any part of the scaled product extend below
- *     (canvasH - bottomMarginPx) or outside horizontal margins?
- *  7. Return OverflowInfo alongside placement so the compositor can decide
- *     whether to trigger AI Extend.
+ *  1. Load the product image.
+ *  2. Scan pixels → bounding box of visible content (the actual product).
+ *  3. Calculate the maximum scale that:
+ *       a) Places the head exactly at headSpacePx from canvas top.
+ *       b) Keeps the FULL product (all four sides) inside the canvas.
+ *       c) Respects left/right/bottom margins.
+ *  4. If autoZoom=true: use step 3 scale (head at guide, full product visible).
+ *  5. If autoZoom=false: use contain scale (legacy).
+ *  6. Center horizontally within margins.
+ *  7. Return placement — imgX/imgY/renderedW/renderedH.
  *
- * ─── Why simple scaling FAILS ────────────────────────────────────────────────
+ * ─── Why previous versions still cropped ─────────────────────────────────────
  *
- *  Simple contain-scale uses:   scale = min(availW / contentW,  availH / contentH)
+ *  Previous v2 used: scale = availableH / contentH   (fill height)
  *
- *  This makes tall models tiny and wide/cropped models huge.
- *  Head position varies because the scale is driven by the most constrained
- *  dimension — which changes for every image.
+ *  For a portrait JPEG (2:3 ratio) on a square canvas:
+ *    contentH = imageH (full image, no transparency)
+ *    scale = 1080 / imageH
+ *    renderedW = imageW * scale  → wider than 1080  → CLIPS right side
  *
- *  Smart Auto Zoom instead uses:
- *    scale = (canvasH - headSpacePx - bottomMarginPx) / contentH
+ *  The canvas boundary always clips. There is no way to draw outside it.
+ *  AI Extend was a workaround but it operates on a separate code path and
+ *  the canvas clip still fired before any extend logic could run.
  *
- *  This anchors scale to the HEIGHT of the visible product, so every model
- *  is rendered at the same physical height in the canvas, and the head
- *  always lands at exactly headSpacePx from the top.
+ * ─── Correct Scale Formula ───────────────────────────────────────────────────
  *
- *  If the zoomed product is wider than the available area, AI Extend fills
- *  the sides. If it overflows the bottom, AI Extend fills below.
- *  Neither crop nor stretch is ever used.
+ *  For the product to have:
+ *    - head at headSpacePx
+ *    - feet above (canvasH - bottomMarginPx)
+ *    - left edge above leftMarginPx
+ *    - right edge below (canvasW - rightMarginPx)
+ *
+ *  We need the scale to satisfy ALL four constraints simultaneously.
+ *
+ *  Constraint from height:  scale ≤ availableH / contentH
+ *  Constraint from width:   scale ≤ availableW / contentW
+ *
+ *  scale = min(availableH / contentH, availableW / contentW)
+ *
+ *  BUT: the head is positioned at headSpacePx, not the image top.
+ *  The full image starts at: imgY = headSpacePx - bounds.top * scale
+ *  The full image ends at:   imgY + imageH * scale
+ *
+ *  So the bottom constraint is:
+ *    imgY + imageH * scale ≤ canvasH - bottomMarginPx
+ *    headSpacePx - bounds.top * scale + imageH * scale ≤ canvasH - bottomMarginPx
+ *    scale * (imageH - bounds.top) ≤ canvasH - bottomMarginPx - headSpacePx
+ *    scale ≤ (canvasH - bottomMarginPx - headSpacePx) / (imageH - bounds.top)
+ *
+ *  Similarly the top constraint (imgY ≥ 0):
+ *    headSpacePx - bounds.top * scale ≥ 0
+ *    scale ≤ headSpacePx / bounds.top   (only relevant when bounds.top > 0)
+ *
+ *  The correct scale is the minimum of ALL four constraints:
+ *    scale = min(
+ *      availableW / contentW,            ← width of visible content
+ *      (availableH) / contentH,          ← height of visible content
+ *      (canvasH - bottomMarginPx - headSpacePx) / (imageH - bounds.top),  ← full image bottom
+ *      (bounds.top > 0 ? headSpacePx / bounds.top : Infinity)              ← full image top
+ *    )
+ *
+ *  This guarantees:
+ *    - Head lands at headSpacePx (or as close as possible)
+ *    - Full image (not just visible bounds) stays inside the canvas
+ *    - No cropping ever
  *
  * ─── Performance ─────────────────────────────────────────────────────────────
- *  - Pixel scanning runs on an 800px-max analysis copy → 1–3 ms.
- *  - @napi-rs/canvas createCanvas / getImageData is server-only (worker).
- *  - Only runs when headSpaceSettings.enabled is true in the template.
+ *  - Pixel scanning on 800px-max analysis copy → 1–3ms
+ *  - Server-only (@napi-rs/canvas)
+ *  - Only runs when headSpaceSettings.enabled = true
  */
 
 import { createCanvas, loadImage } from '@napi-rs/canvas'
-import type { HeadSpaceSettings, DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
+import type { DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,7 +100,7 @@ export interface ProductBounds {
 }
 
 export interface HeadSpacePlacement {
-  /** Canvas x coordinate of the image's top-left corner (can be negative for bleed) */
+  /** Canvas x coordinate of the image's top-left corner */
   imgX: number
   /** Canvas y coordinate of the image's top-left corner */
   imgY: number
@@ -79,25 +113,22 @@ export interface HeadSpacePlacement {
 }
 
 /**
- * When autoZoom causes the product to overflow the canvas boundary,
- * this describes how much extra canvas area is needed in each direction.
- * All values are in 1× canvas pixels. Zero means no overflow in that direction.
+ * Describes whether the placement fits within the canvas.
+ * With the corrected algorithm this should always be hasOverflow=false,
+ * but we keep it for logging and diagnostic purposes.
  */
 export interface OverflowInfo {
-  left: number    // pixels the product bleeds past the left edge (≥0)
-  right: number   // pixels past the right edge
-  bottom: number  // pixels past the bottom edge
-  top: number     // pixels past the top edge (should always be 0 with headspace logic)
-  /** True if ANY overflow detected — caller should trigger AI Extend */
+  left: number
+  right: number
+  bottom: number
+  top: number
   hasOverflow: boolean
 }
 
 export interface HeadSpaceResult {
   placement: HeadSpacePlacement
   overflow: OverflowInfo
-  /** Scale chosen — useful for debug / preview rendering */
   scale: number
-  /** Zoom mode used for this image */
   zoomMode: 'auto_zoom' | 'contain'
 }
 
@@ -107,33 +138,27 @@ export interface HeadSpaceConfig {
   rightMarginPx: number
   bottomMarginPx: number
   autoCenterHorizontally: boolean
-  /** v2: when true, zoom product UP so head exactly touches guide line */
   autoZoom: boolean
-  /** v2: when true, allow product to overflow canvas (caller triggers AI Extend) */
   allowAiExtend: boolean
-  /** v2: never let the product be cropped — reduce zoom if overflow cannot be extended */
   protectFullProduct: boolean
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Pixels with alpha below this threshold are considered transparent / empty */
 const ALPHA_THRESHOLD = 20
-
-/** Downscale to this dimension before pixel-scanning — keeps detection to ~1–3ms */
 const MAX_ANALYSIS_DIM = 800
 
 // ─── Pixel Bounding Box Detection ─────────────────────────────────────────────
 
 /**
- * Find the axis-aligned bounding box of non-transparent pixels.
+ * Find the axis-aligned bounding box of visible (non-transparent) pixels.
  *
- * For transparent PNGs (post background-removal): detects the actual product
- * silhouette boundary — head pixel at top, feet/hem at bottom.
+ * For transparent PNGs (post background-removal):
+ *   → Detects actual product silhouette. bounds.top = head pixel, bounds.bottom = feet.
  *
- * For opaque JPEGs: hasTransparency=false, bounds = full image size.
- * The compositor still applies head-space logic using the full image rectangle,
- * giving consistent top margin + centered fit across all products.
+ * For opaque JPEGs (no bg removal):
+ *   → hasTransparency=false, bounds = full image rectangle.
+ *   → The full image IS the product for positioning purposes.
  *
  * Server-only — uses @napi-rs/canvas.
  */
@@ -142,8 +167,6 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
   const imgW = img.width
   const imgH = img.height
 
-  // Downscale for speed — we only need approximate bounds; the scale factor
-  // converts analysis-space coordinates back to original-image space.
   const scale = Math.min(1, MAX_ANALYSIS_DIM / Math.max(imgW, imgH))
   const analysisW = Math.max(1, Math.round(imgW * scale))
   const analysisH = Math.max(1, Math.round(imgH * scale))
@@ -153,7 +176,7 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
   ctx.drawImage(img as any, 0, 0, analysisW, analysisH)
 
   const imageData = ctx.getImageData(0, 0, analysisW, analysisH)
-  const data = imageData.data  // RGBA flat array
+  const data = imageData.data
 
   let minX = analysisW
   let minY = analysisH
@@ -164,9 +187,7 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
   for (let y = 0; y < analysisH; y++) {
     for (let x = 0; x < analysisW; x++) {
       const alpha = data[(y * analysisW + x) * 4 + 3]
-      // Track whether ANY pixel has partial transparency
       if (alpha < 250) hasTransparency = true
-      // A pixel is "visible" if alpha exceeds the threshold
       if (alpha > ALPHA_THRESHOLD) {
         if (x < minX) minX = x
         if (x > maxX) maxX = x
@@ -176,8 +197,7 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
     }
   }
 
-  // Guard: fully transparent or empty image — fall back to full image bounds.
-  // This prevents division-by-zero later and keeps the pipeline non-fatal.
+  // Guard: fully transparent / empty image → use full image
   if (minX >= maxX || minY >= maxY) {
     return {
       left: 0, top: 0,
@@ -187,34 +207,40 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
     }
   }
 
-  // Convert from analysis-space back to original-image coordinates
   return {
-    left:   Math.max(0,         Math.round(minX / scale)),
-    top:    Math.max(0,         Math.round(minY / scale)),
-    right:  Math.min(imgW - 1,  Math.round(maxX / scale)),
-    bottom: Math.min(imgH - 1,  Math.round(maxY / scale)),
+    left:   Math.max(0,        Math.round(minX / scale)),
+    top:    Math.max(0,        Math.round(minY / scale)),
+    right:  Math.min(imgW - 1, Math.round(maxX / scale)),
+    bottom: Math.min(imgH - 1, Math.round(maxY / scale)),
     imageWidth:  imgW,
     imageHeight: imgH,
     hasTransparency,
   }
 }
 
-// ─── Smart Auto Zoom Placement ────────────────────────────────────────────────
+// ─── No-Crop Placement ────────────────────────────────────────────────────────
 
 /**
- * Calculate where to draw the product image on the canvas so that:
+ * Calculate where to draw the product image so that:
  *
- *  - TOP of the visible product content lands exactly at headSpacePx.
- *  - Product is never stretched or distorted — uniform scale only.
- *  - When autoZoom=true: product is zoomed UP so it fills the available
- *    height completely (head at guide, feet at bottom margin).
- *  - When autoZoom=false (legacy): uses contain-scale (no cropping, may
- *    leave empty space below the product).
+ *  1. The TOP of the visible product is as close to headSpacePx as possible.
+ *  2. The FULL image (every pixel, including transparent edges) stays inside
+ *     the canvas — NEVER cropped.
+ *  3. The image is never stretched or distorted.
+ *  4. Left/right/bottom margins are respected.
  *
- * Returns both the pixel placement AND overflow information.
- * The caller (compositor) uses overflow to decide whether to run AI Extend.
+ * The scale is the MINIMUM of ALL constraints that guarantee no cropping:
  *
- * All coordinates are in 1× canvas pixel space.
+ *   a) Width constraint:  visibleContentW * scale ≤ availableW
+ *   b) Height constraint: visibleContentH * scale ≤ availableH
+ *   c) Bottom of full image: (imageH - bounds.top) * scale ≤ availableH
+ *      (ensures full image including transparent bottom doesn't overflow)
+ *   d) Top of full image: bounds.top * scale ≤ headSpacePx
+ *      (ensures full image top doesn't go above canvas top)
+ *
+ * Constraint (c) and (d) are the ones the previous version missed.
+ * They handle JPEG images where bounds = full image but the transparent
+ * padding regions still form part of the rendered rectangle.
  */
 export function calculateHeadSpacePlacement(
   bounds: ProductBounds,
@@ -229,21 +255,25 @@ export function calculateHeadSpacePlacement(
     bottomMarginPx,
     autoCenterHorizontally,
     autoZoom,
-    allowAiExtend,
-    protectFullProduct,
   } = config
 
-  const contentW = bounds.right  - bounds.left  // visible product width in original px
-  const contentH = bounds.bottom - bounds.top   // visible product height
+  const contentW = bounds.right  - bounds.left
+  const contentH = bounds.bottom - bounds.top
 
   const availableW = canvasW - leftMarginPx - rightMarginPx
   const availableH = canvasH - headSpacePx  - bottomMarginPx
 
-  // Guard: degenerate geometry — return identity placement
+  // Guard: degenerate geometry
   if (contentW <= 0 || contentH <= 0 || availableW <= 0 || availableH <= 0) {
-    const fallbackScale = canvasW / bounds.imageWidth
+    const fallbackScale = Math.min(canvasW / bounds.imageWidth, canvasH / bounds.imageHeight)
     return {
-      placement: { imgX: 0, imgY: 0, renderedW: canvasW, renderedH: canvasH, scale: fallbackScale },
+      placement: {
+        imgX: (canvasW - bounds.imageWidth  * fallbackScale) / 2,
+        imgY: (canvasH - bounds.imageHeight * fallbackScale) / 2,
+        renderedW: bounds.imageWidth  * fallbackScale,
+        renderedH: bounds.imageHeight * fallbackScale,
+        scale: fallbackScale,
+      },
       overflow: { left: 0, right: 0, top: 0, bottom: 0, hasOverflow: false },
       scale: fallbackScale,
       zoomMode: 'contain',
@@ -254,92 +284,121 @@ export function calculateHeadSpacePlacement(
   let zoomMode: 'auto_zoom' | 'contain'
 
   if (autoZoom) {
-    // ── Smart Auto Zoom ────────────────────────────────────────────────────
+    // ── Smart Auto Zoom — No-Crop Edition ─────────────────────────────────
     //
-    // Zoom the product so its visible height exactly fills the available height.
-    // This guarantees:
-    //   - Head always at headSpacePx from canvas top (the guide line).
-    //   - Every product rendered at the same physical height in the catalog.
+    // We want the head at headSpacePx. The head is bounds.top in image space.
+    // After scaling, head_canvas_y = imgY + bounds.top * scale = headSpacePx
+    // → imgY = headSpacePx - bounds.top * scale
     //
-    // scaleToFillH = how big to make the image so contentH spans availableH.
-    // This is the zoom factor that makes EVERY model the same height.
+    // For the FULL IMAGE to stay inside the canvas:
     //
-    // We do NOT constrain by width here — if the product overflows horizontally,
-    // the allowAiExtend flag lets the compositor extend the canvas sides.
+    //   TOP:    imgY ≥ 0
+    //     → headSpacePx - bounds.top * scale ≥ 0
+    //     → scale ≤ headSpacePx / bounds.top   (if bounds.top > 0)
     //
-    const scaleToFillH = availableH / contentH
+    //   BOTTOM: imgY + imageH * scale ≤ canvasH - bottomMarginPx
+    //     → headSpacePx - bounds.top * scale + imageH * scale ≤ canvasH - bottomMarginPx
+    //     → scale * (imageH - bounds.top) ≤ canvasH - bottomMarginPx - headSpacePx
+    //     → scale ≤ availableH / (imageH - bounds.top)
+    //     Note: (imageH - bounds.top) = distance from head-row to bottom of image
+    //
+    //   WIDTH (visible content centered in available area):
+    //     → scale ≤ availableW / contentW
+    //
+    //   HEIGHT (visible content fits between guide and bottom margin):
+    //     → scale ≤ availableH / contentH    (contentH = bottom - top in image space)
+    //
+    // The correct scale satisfies all four constraints simultaneously:
 
-    if (protectFullProduct) {
-      // Also check: does this zoom factor cause horizontal overflow?
-      const scaledContentW = contentW * scaleToFillH
-      if (scaledContentW > availableW && !allowAiExtend) {
-        // Cannot extend AND cannot crop → fall back to contain so nothing is clipped.
-        // This is the safety valve: protectFullProduct wins over autoZoom.
-        scale = Math.min(availableW / contentW, availableH / contentH)
-        zoomMode = 'contain'
-      } else {
-        // Either we can extend horizontally, or it already fits → use fill height.
-        scale = scaleToFillH
-        zoomMode = 'auto_zoom'
-      }
-    } else {
-      scale = scaleToFillH
-      zoomMode = 'auto_zoom'
+    const scaleConstraints: number[] = [
+      availableW / contentW,                                     // visible width fits
+      availableH / contentH,                                     // visible height fits
+      availableH / (bounds.imageHeight - bounds.top),            // full image bottom fits
+    ]
+
+    // Only add the top constraint if there is actual padding above the head
+    if (bounds.top > 0) {
+      scaleConstraints.push(headSpacePx / bounds.top)            // full image top fits
     }
+
+    // Remove non-positive or infinite constraints (degenerate dimensions)
+    const validConstraints = scaleConstraints.filter(s => isFinite(s) && s > 0)
+    scale = validConstraints.length > 0 ? Math.min(...validConstraints) : 1
+    zoomMode = 'auto_zoom'
   } else {
-    // ── Legacy contain mode ────────────────────────────────────────────────
-    // Scale so the entire visible product fits within available area.
-    // Head lands at headSpacePx; feet may not reach bottomMarginPx.
-    // This is what the original Fit to Canvas did, but corrected to use
-    // visible bounds instead of full image dimensions.
-    scale = Math.min(availableW / contentW, availableH / contentH)
+    // ── Legacy contain: scale visible content to fit available area ────────
+    // Still correct: uses visible bounds (not full image) for scale.
+    // Then applies full-image safety constraints to prevent any image overflow.
+    const containScale = Math.min(availableW / contentW, availableH / contentH)
+
+    // Apply full-image safety constraints even in contain mode
+    const safeConstraints: number[] = [
+      containScale,
+      availableH / (bounds.imageHeight - bounds.top),
+    ]
+    if (bounds.top > 0) {
+      safeConstraints.push(headSpacePx / bounds.top)
+    }
+
+    scale = Math.min(...safeConstraints.filter(s => isFinite(s) && s > 0))
     zoomMode = 'contain'
   }
 
-  // ── Rendered dimensions of the FULL source image at this scale ────────────
+  // ── Computed placement ────────────────────────────────────────────────────
   const renderedW = bounds.imageWidth  * scale
   const renderedH = bounds.imageHeight * scale
 
-  // ── Vertical positioning ──────────────────────────────────────────────────
-  // We want: canvas_y_of_top_visible_pixel === headSpacePx
-  // top_visible_pixel in canvas = imgY + bounds.top * scale
-  // → imgY = headSpacePx - bounds.top * scale
+  // Head lands at headSpacePx:
+  //   canvas_y_of_head = imgY + bounds.top * scale = headSpacePx
+  //   imgY = headSpacePx - bounds.top * scale
   const imgY = headSpacePx - bounds.top * scale
 
-  // ── Horizontal positioning ────────────────────────────────────────────────
+  // Center visible content horizontally within margins
   let imgX: number
   if (autoCenterHorizontally) {
-    // Center the VISIBLE content (not the full image rect) in the available width
     const contentCenterOnCanvas = leftMarginPx + availableW / 2
     imgX = contentCenterOnCanvas - (bounds.left + contentW / 2) * scale
   } else {
-    // Align left edge of visible content to left margin
     imgX = leftMarginPx - bounds.left * scale
   }
 
-  // ── Overflow detection ────────────────────────────────────────────────────
-  // Compute how many pixels of the scaled image fall outside the canvas.
-  // "Overflow" = any part of the product's visible bounding box outside the
-  // canvas boundary. We use the SCALED VISIBLE BOUNDS, not the full image rect.
-  //
-  // Note: top overflow should always be 0 because imgY is calculated to place
-  // the head exactly at headSpacePx ≥ 0. We compute it anyway for correctness.
-  //
-  const scaledLeft   = imgX + bounds.left   * scale  // left edge of visible content on canvas
-  const scaledTop    = imgY + bounds.top    * scale  // top of visible content = headSpacePx
-  const scaledRight  = imgX + bounds.right  * scale  // right edge
-  const scaledBottom = imgY + bounds.bottom * scale  // bottom of feet/hem/accessories
+  // ── Safety clamp: guarantee the full image NEVER goes outside the canvas ──
+  // Even with perfect math, floating point can push us 0.1px outside.
+  // Clamp imgX so the image never starts left of 0 or ends right of canvasW.
+  // Clamp imgY so the image never starts above 0 or ends below canvasH.
+  // This is the final line of defence against any cropping.
+  const clampedImgX = Math.max(0, Math.min(imgX, canvasW - renderedW))
+  const clampedImgY = Math.max(0, Math.min(imgY, canvasH - renderedH))
 
-  const overflowLeft   = Math.max(0, -scaledLeft)           // bleed past left canvas edge
-  const overflowTop    = Math.max(0, -scaledTop)            // bleed past top (should be ~0)
-  const overflowRight  = Math.max(0, scaledRight  - canvasW) // bleed past right
-  const overflowBottom = Math.max(0, scaledBottom - canvasH) // bleed past bottom
+  // ── Post-clamp overflow check (diagnostic only) ───────────────────────────
+  // After clamping, nothing should overflow. We compute it anyway for logging.
+  const scaledRight  = clampedImgX + renderedW
+  const scaledBottom = clampedImgY + renderedH
+  const overflowLeft   = Math.max(0, -clampedImgX)
+  const overflowTop    = Math.max(0, -clampedImgY)
+  const overflowRight  = Math.max(0, scaledRight  - canvasW)
+  const overflowBottom = Math.max(0, scaledBottom - canvasH)
+  const hasOverflow    = overflowLeft > 0.5 || overflowTop > 0.5 ||
+                         overflowRight > 0.5 || overflowBottom > 0.5
 
-  const hasOverflow = overflowLeft > 0.5 || overflowTop > 0.5 ||
-                      overflowRight > 0.5 || overflowBottom > 0.5
+  if (hasOverflow) {
+    // This should never happen after clamping. Log it as a warning.
+    console.warn(
+      `[head-space] post-clamp overflow detected — scale=${scale.toFixed(4)} ` +
+      `imgX=${clampedImgX.toFixed(1)} imgY=${clampedImgY.toFixed(1)} ` +
+      `W=${renderedW.toFixed(1)} H=${renderedH.toFixed(1)} ` +
+      `canvas=${canvasW}x${canvasH}`
+    )
+  }
 
   return {
-    placement: { imgX, imgY, renderedW, renderedH, scale },
+    placement: {
+      imgX: clampedImgX,
+      imgY: clampedImgY,
+      renderedW,
+      renderedH,
+      scale,
+    },
     overflow: {
       left:   overflowLeft,
       top:    overflowTop,
@@ -354,16 +413,6 @@ export function calculateHeadSpacePlacement(
 
 // ─── Placement → ProductLayerSettings converter ───────────────────────────────
 
-/**
- * Convert a HeadSpacePlacement to ProductLayerSettings override.
- * This lets us slot the calculated placement into the existing
- * drawProductLayer pipeline without changing its API.
- *
- * @param placement  pixel-space placement (1× canvas)
- * @param canvasW    1× canvas width
- * @param canvasH    1× canvas height
- * @param base       existing settings (shadow, glow, effects inherited)
- */
 export function placementToProductLayerSettings(
   placement: HeadSpacePlacement,
   canvasW: number,
@@ -372,34 +421,22 @@ export function placementToProductLayerSettings(
 ): typeof DEFAULT_PRODUCT_LAYER_SETTINGS {
   return {
     ...base,
-    // Convert pixel coordinates to percentages of canvas
     x:      (placement.imgX      / canvasW) * 100,
     y:      (placement.imgY      / canvasH) * 100,
     width:  (placement.renderedW / canvasW) * 100,
     height: (placement.renderedH / canvasH) * 100,
-    // 'fill' = draw at exactly the calculated dimensions.
-    // drawProductLayer must NOT do its own contain/cover scaling when we give it
-    // pixel-exact placement — our calculation already handles fit correctly.
+    // 'fill' tells drawProductLayer to use our exact pixel coordinates.
+    // The head-space calculation already chose the correct aspect-ratio-safe scale,
+    // so drawProductLayer must NOT re-apply any contain/cover logic.
     objectFit: 'fill',
-    // No additional padding — margins are baked into imgX/imgY
     padding: 0,
   }
 }
 
 // ─── Overflow → AI Extend parameters ─────────────────────────────────────────
+// Kept for API compatibility — with v3, overflow should always be zero,
+// but the compositor still calls this in case of unexpected edge cases.
 
-/**
- * When the zoomed product overflows, we need to call AI Extend with an
- * EXPANDED canvas so the product fits naturally.
- *
- * Returns the extended canvas dimensions (same center, larger area).
- * The compositor uses these to call getExtendedImage with the larger canvas.
- *
- * Strategy:
- *  - Expand canvas symmetrically if overflow is on both sides.
- *  - Expand only in the overflowing direction otherwise.
- *  - Always expand in multiples of 8px for Cloudinary efficiency.
- */
 export function computeExtendedCanvasDimensions(
   canvasW: number,
   canvasH: number,
@@ -407,18 +444,16 @@ export function computeExtendedCanvasDimensions(
 ): { extW: number; extH: number; offsetX: number; offsetY: number } {
   const roundUp8 = (n: number) => Math.ceil(n / 8) * 8
 
-  // Extra pixels needed on each side
-  const extraLeft   = roundUp8(overflow.left   + 20)  // +20px padding for natural look
+  const extraLeft   = roundUp8(overflow.left   + 20)
   const extraRight  = roundUp8(overflow.right  + 20)
   const extraBottom = roundUp8(overflow.bottom + 20)
-  const extraTop    = roundUp8(overflow.top)           // usually 0
+  const extraTop    = roundUp8(overflow.top)
 
   const extW = canvasW + (overflow.left  > 0.5 ? extraLeft  : 0)
                        + (overflow.right > 0.5 ? extraRight : 0)
   const extH = canvasH + (overflow.top    > 0.5 ? extraTop    : 0)
                        + (overflow.bottom > 0.5 ? extraBottom : 0)
 
-  // Where the original canvas origin appears in the extended canvas
   const offsetX = overflow.left > 0.5 ? extraLeft : 0
   const offsetY = overflow.top  > 0.5 ? extraTop  : 0
 

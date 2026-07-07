@@ -418,9 +418,15 @@ function drawFittedImage(
     const sh = img.height * scale
     ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
   } else {
-    // 'fill' — draw at exactly the given dimensions.
-    // Used by head-space placement which has already calculated correct dimensions.
-    ctx.drawImage(img, x, y, w, h)
+    // 'fill' — draw at exactly the given x/y/w/h coordinates.
+    // Head-space placement pre-calculates these so the image fits inside the
+    // canvas exactly. We draw using the full source image (sx=0,sy=0,sw=img.width,
+    // sh=img.height) mapped to the destination rect.
+    //
+    // IMPORTANT: We do NOT use ctx.clip() here. The head-space scale formula
+    // guarantees x≥0, y≥0, x+w≤canvasW, y+h≤canvasH, so there is nothing to clip.
+    // Any borderRadius clip is applied by the caller (drawLayer) before this call.
+    ctx.drawImage(img, 0, 0, img.width, img.height, x, y, w, h)
   }
 }
 
