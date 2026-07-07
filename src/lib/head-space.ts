@@ -151,32 +151,23 @@ export function calculateHeadSpacePlacement(
   const scaleToFitW = availableW / contentW    // scale so product fits width
   const scaleToFitH = availableH / contentH    // scale so product fits height
 
-  let scale: number
-  if (bounds.hasTransparency) {
-    // ── Transparent product (after bg removal) ─────────────────────────────
-    // Use CONTAIN: fit the visible product inside the available area.
-    // We know exactly where the product starts/ends, so this gives perfect
-    // "head at headSpacePx" alignment with no overflow or cropping.
-    scale = Math.min(scaleToFitW, scaleToFitH)
-  } else {
-    // ── Opaque product photo (standard JPEG) ───────────────────────────────
-    // Use FILL WIDTH: scale the image so it fills the available width.
-    // The image top is placed at headSpacePx — for tall portrait photos the
-    // feet may overflow below the canvas (they're cropped), which is the
-    // correct visual behavior: every product fills the canvas with its top
-    // at the same Y position, looking consistent across bulk generation.
-    // We cap at 1.0 to avoid upscaling low-res images.
-    scale = Math.min(scaleToFitW, 1.0)
-
-    // If the product is very wide (landscape photo), scale down to fit height too
-    // so we don't lose the head above the canvas top.
-    const renderedHPreview = bounds.imageHeight * scale
-    const imgYPreview = headSpacePx - bounds.top * scale
-    if (imgYPreview < 0) {
-      // Head would be above canvas — fall back to contain so head stays visible
-      scale = Math.min(scaleToFitW, scaleToFitH)
-    }
-  }
+  // ── Scale strategy ──────────────────────────────────────────────────────
+  // ALWAYS use CONTAIN: scale so the full visible product fits within the
+  // available area (no overflow, no cropping at bottom/sides).
+  //
+  // For transparent images (bg removal): contentW/H are the actual product
+  //   bounds — head lands exactly at headSpacePx, feet never overflow.
+  //
+  // For opaque images (JPEG with background): bounds = full image dimensions.
+  //   The image is scaled to fit height within available area, positioned so
+  //   its top is at headSpacePx. This is consistent across all products and
+  //   NEVER crops any product detail.
+  //
+  // Fill-width ("show bigger product") is intentionally NOT used here because
+  // tall portrait photos would overflow the canvas bottom and crop the feet.
+  // The head-space guarantee (consistent Y position) is more important than
+  // maximizing product size.
+  const scale = Math.min(scaleToFitW, scaleToFitH)
 
   const renderedW = bounds.imageWidth  * scale
   const renderedH = bounds.imageHeight * scale
