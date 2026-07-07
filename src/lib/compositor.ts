@@ -76,52 +76,18 @@ export interface CompositeOptions {
   supabase?: any
 }
 
-/**
- * Strip any encoded resolution suffix from Shopify / Cloudinary CDN URLs
- * so we always load the highest-resolution original.
- *
- * Shopify: strips `_WIDTHxHEIGHT` before the extension
- *   product_800x800.jpg  →  product.jpg
- *
- * Cloudinary: strips transformation segment between /upload/ and /v{version}/
- *   /upload/w_800,c_limit/v1/product.jpg  →  /upload/v1/product.jpg
- *   /upload/f_auto,q_auto:good/v1/product.jpg  →  /upload/v1/product.jpg
- */
-function toFullResolution(src: string): string {
-  if (!src) return src
-  try {
-    // Shopify: remove _WxH or _Wx size suffix
-    let result = src.replace(/_([\d]+)x([\d]+)?(@[\d]x)?(\.(?:jpg|jpeg|png|webp|gif))(\?.*)?$/i, '$4$5')
-    // Cloudinary: strip transform segment between /upload/ and /v\d+/
-    result = result.replace(
-      /\/upload\/([^/]+)\/(?=v\d+\/)/,
-      (_match, transforms) => /^v\d+$/.test(transforms) ? _match : '/upload/'
-    )
-    return result
-  } catch {
-    return src
-  }
-}
-
-// Remote image loader — always fetches full-resolution original.
-// Hard timeout prevents hanging on slow CDN responses.
+// Remote image loader with a hard timeout.
+// Loads URLs exactly as stored — same as the template builder preview does.
+// This ensures generated creatives always match what you see in the preview.
+// Quality is maintained through 3× supersampling, lossless PNG storage, and
+// q_auto:best Cloudinary delivery — not by loading different source URLs.
 async function loadImageUncached(src: string, timeoutMs = 20_000) {
   if (src.startsWith('data:')) return loadImage(src)
-  // Always strip size parameters — get the full-resolution master
-  const fullResSrc = toFullResolution(src)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(fullResSrc, { signal: controller.signal, cache: 'force-cache' })
-    if (!res.ok) {
-      // Fallback to original URL if full-res strip changed it
-      if (fullResSrc !== src) {
-        const fb = await fetch(src, { signal: new AbortController().signal })
-        if (!fb.ok) throw new Error(`image fetch ${res.status} for ${src}`)
-        return await loadImage(Buffer.from(await fb.arrayBuffer()))
-      }
-      throw new Error(`image fetch ${res.status} for ${src}`)
-    }
+    const res = await fetch(src, { signal: controller.signal, cache: 'force-cache' })
+    if (!res.ok) throw new Error(`image fetch ${res.status} for ${src}`)
     return await loadImage(Buffer.from(await res.arrayBuffer()))
   } finally {
     clearTimeout(timer)
