@@ -1,11 +1,23 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
-import { CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS, HeadSpaceSettings } from '@/types/template'
+import {
+  CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
+  BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS,
+  ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS,
+  HeadSpaceSettings,
+} from '@/types/template'
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
-import { detectProductBounds, calculateHeadSpacePlacement, placementToProductLayerSettings } from '@/lib/head-space'
+import {
+  detectProductBounds,
+  calculateHeadSpacePlacement,
+  placementToProductLayerSettings,
+  computeExtendedCanvasDimensions,
+  type OverflowInfo,
+  type HeadSpaceResult,
+} from '@/lib/head-space'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
@@ -406,9 +418,56 @@ function drawFittedImage(
     const sh = img.height * scale
     ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
   } else {
+    // 'fill' — draw at exactly the given dimensions.
+    // Used by head-space placement which has already calculated correct dimensions.
     ctx.drawImage(img, x, y, w, h)
   }
 }
+
+// ─── Head Space AI Extend Integration ────────────────────────────────────────
+//
+// When Smart Auto Zoom causes the product to overflow the canvas, we call
+// getExtendedImage with an EXPANDED source-image so the AI can fill the gap.
+//
+// Strategy:
+//   1. Detect overflow from the calculated placement.
+//   2. Compute required canvas expansion (computeExtendedCanvasDimensions).
+//   3. Call getExtendedImage with the expanded dimensions.
+//   4. Draw the extended image, then overlay the product at the correct
+//      position (adjusted for the canvas offset).
+//
+// This is different from the existing ai_extend objectFit mode, which
+// extends the original image to fit the template canvas. Here we are
+// extending the canvas ITSELF to accommodate a zoomed product, then
+// compositing both the extended background and the sharp product on top.
+
+async function resolveExtendedBackground(
+  imageUrl: string,
+  targetW: number,
+  targetH: number,
+  overflow: OverflowInfo,
+  storeId: string,
+  supabase: any
+): Promise<{ extendedUrl: string; offsetX: number; offsetY: number } | null> {
+  try {
+    const { extW, extH, offsetX, offsetY } = computeExtendedCanvasDimensions(targetW, targetH, overflow)
+
+    // Only call extend if the expansion is meaningful (> 4px)
+    if (extW <= targetW + 4 && extH <= targetH + 4) return null
+
+    const extendResult = await getExtendedImage(imageUrl, extW, extH, storeId, supabase)
+    console.log(
+      `[compositor] head-space AI extend ${extendResult.fromCache ? 'cached' : 'fresh'} ` +
+      `${targetW}x${targetH} → ${extW}x${extH} overflow=(R:${Math.round(overflow.right)},B:${Math.round(overflow.bottom)})`
+    )
+    return { extendedUrl: extendResult.extendedUrl, offsetX, offsetY }
+  } catch (err: any) {
+    console.error('[compositor] head-space AI extend failed:', err.message)
+    return null
+  }
+}
+
+// ─── Main Composite Function ──────────────────────────────────────────────────
 
 export async function compositeImage(
   canvasData: CanvasData,
@@ -446,41 +505,93 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    // ── Head Space: consistent product alignment ──────────────────────────
-    // Works in BOTH standard mode (product image layer) and ai_product mode.
+    // ── Head Space: consistent product alignment ──────────────────────────────
     //
-    // Standard mode: finds the '{{product_image}}' layer and overrides its
-    //   x/y/width/height with the head-space-calculated placement.
-    // AI Product mode: overrides productLayerSettings as before.
+    // v2 pipeline:
     //
-    // For transparent PNGs (after bg removal) → detects visible pixel bounds.
-    // For opaque JPEGs (standard photos) → uses full image bounds, giving
-    //   consistent top margin + centered fit within safe margins.
+    //   1. Detect product bounding box (visible pixels only for transparent PNGs)
+    //   2. Find top-of-head (topmost visible pixel)
+    //   3. Calculate Smart Auto Zoom: scale so visible height = available height
+    //   4. Position image so head lands exactly at headSpacePx
+    //   5. Detect overflow (feet/dupatta/accessories outside canvas)
+    //   6. If overflow AND allowAiExtend AND storeId available:
+    //        → run AI Extend on the background with expanded canvas
+    //        → draw extended background first, then product on top
+    //   7. If overflow AND !allowAiExtend AND protectFullProduct:
+    //        → fallback to contain (no zoom, no crop)
+    //   8. Apply final placement to product layer
     //
-    // Non-fatal: any failure falls back to normal placement silently.
+    // Non-fatal: any detection failure falls back to normal placement silently.
+    //
     const hs = options.headSpaceSettings
-    let headSpaceLayerOverrides: Map<string, Partial<{ x: number; y: number; width: number; height: number; objectFit: string; padding: number }>> | null = null
+    let headSpaceLayerOverrides: Map<string, Partial<{
+      x: number; y: number; width: number; height: number; objectFit: string; padding: number
+    }>> | null = null
+
+    // Track whether we ran an AI extend for the product background.
+    // If we did, we draw the extended image as a full-canvas background layer
+    // BEFORE drawing the product, so the product always remains sharp.
+    let headSpaceExtendedBg: { extendedUrl: string; offsetX: number; offsetY: number } | null = null
 
     if (hs?.enabled) {
+      // Prefer the transparent PNG (post-bg-removal) for precise head detection.
+      // Fall back to the original JPEG for standard mode — detection still works,
+      // just uses full image bounds instead of per-pixel silhouette.
       const imageToAnalyze = product.transparentImageUrl || product.imageUrl
+
       if (imageToAnalyze) {
         try {
-          const bounds = await detectProductBounds(imageToAnalyze)
-          const placement = calculateHeadSpacePlacement(bounds, targetW, targetH, {
+          const bounds = await measureAsync('head_space.detect_bounds', () =>
+            detectProductBounds(imageToAnalyze)
+          )
+
+          const hsResult: HeadSpaceResult = calculateHeadSpacePlacement(bounds, targetW, targetH, {
             headSpacePx:            hs.headSpacePx,
             leftMarginPx:           hs.leftMarginPx,
             rightMarginPx:          hs.rightMarginPx,
             bottomMarginPx:         hs.bottomMarginPx,
             autoCenterHorizontally: hs.autoCenterHorizontally,
+            autoZoom:               hs.autoZoom         ?? true,
+            allowAiExtend:          hs.allowAiExtend    ?? true,
+            protectFullProduct:     hs.protectFullProduct ?? true,
           })
+
+          const { placement, overflow, zoomMode } = hsResult
+
+          console.log(
+            `[compositor] head-space zoom=${zoomMode} scale=${placement.scale.toFixed(3)} ` +
+            `overflow=(L:${Math.round(overflow.left)},R:${Math.round(overflow.right)},B:${Math.round(overflow.bottom)}) ` +
+            `head@${hs.headSpacePx}px`
+          )
+
+          // ── AI Extend on overflow ─────────────────────────────────────────
+          // When the zoom causes overflow AND the user has enabled AI Extend AND
+          // we have the required Cloudinary credentials (storeId + supabase):
+          // → request an extended-canvas background image
+          // → store it to draw BEFORE the product layer
+          if (overflow.hasOverflow && (hs.allowAiExtend ?? true) && options.storeId && options.supabase) {
+            // Use original product image for background extension (not transparent PNG)
+            // because AI extend needs real background pixels to generate natural fill.
+            const bgImageForExtend = product.imageUrl
+            if (bgImageForExtend) {
+              headSpaceExtendedBg = await resolveExtendedBackground(
+                bgImageForExtend,
+                targetW,
+                targetH,
+                overflow,
+                options.storeId,
+                options.supabase
+              )
+            }
+          }
 
           // For AI product mode: override the floating product layer settings
           productLayerSettings = placementToProductLayerSettings(
             placement, targetW, targetH, productLayerSettings
           )
 
-          // For standard mode: record overrides for the {{product_image}} layer
-          // We key by layer id; we'll match any image layer with src={{product_image}}
+          // For standard mode: build layer overrides for any {{product_image}} layer
+          // We skip ai_extend layers — those have their own extend logic.
           const layerOverride = {
             x:         (placement.imgX      / targetW) * 100,
             y:         (placement.imgY      / targetH) * 100,
@@ -490,22 +601,20 @@ export async function compositeImage(
             padding:   0,
           }
           headSpaceLayerOverrides = new Map()
-          // Detect ALL layer types that can render a product image:
-          // 'image' | 'overlay' | 'logo' | 'sticker' all fall through to
-          // the same image-rendering code path in drawLayer.
+
           const PRODUCT_IMAGE_TYPES = new Set(['image', 'overlay', 'logo', 'sticker'])
           for (const layer of canvasData.layers) {
             const imgLayer = layer as any
             if (
               PRODUCT_IMAGE_TYPES.has(imgLayer.type) &&
               imgLayer.src === '{{product_image}}' &&
-              imgLayer.objectFit !== 'ai_extend'  // don't override AI extend layers
+              imgLayer.objectFit !== 'ai_extend'  // don't override existing AI extend layers
             ) {
               headSpaceLayerOverrides.set(layer.id, layerOverride)
             }
           }
         } catch (err: any) {
-          console.warn('[compositor] head space fallback:', err.message)
+          console.warn('[compositor] head space calculation fallback:', err.message)
         }
       }
     }
@@ -516,9 +625,39 @@ export async function compositeImage(
     const layerOpts = {
       storeId: options.storeId,
       supabase: options.supabase,
-      targetW: targetW,  // 1x dimensions (not supersampled) for extend cache key
-      targetH: targetH,
-      headSpaceOverrides: headSpaceLayerOverrides,  // null when head space disabled
+      targetW,  // 1x dimensions (not supersampled) for extend cache key
+      targetH,
+      headSpaceOverrides: headSpaceLayerOverrides,
+    }
+
+    // ── Head Space Extended Background ────────────────────────────────────────
+    // When AI Extend resolved an extended background image, draw it now as
+    // a full-canvas underlay. This fills the overflow regions with AI-generated
+    // background so the zoomed product can overflow naturally without any crop.
+    //
+    // The extended image is larger than the canvas. We draw it offset so
+    // the original canvas region aligns with the canvas boundaries.
+    if (headSpaceExtendedBg) {
+      try {
+        const extBg = await loadImageSafe(headSpaceExtendedBg.extendedUrl)
+        const { extW: extImgW, extH: extImgH } = {
+          // The extended image covers the overflow area; its dimensions in 1x space
+          // were determined by computeExtendedCanvasDimensions.
+          // We draw it so the original canvas region aligns correctly.
+          extW: extBg.width,
+          extH: extBg.height,
+        }
+        // Scale to our supersample resolution
+        const drawX = -headSpaceExtendedBg.offsetX * S
+        const drawY = -headSpaceExtendedBg.offsetY * S
+        const drawW = extImgW * S
+        const drawH = extImgH * S
+        ctx.drawImage(extBg, drawX, drawY, drawW, drawH)
+        console.log(`[compositor] head-space extended BG drawn at offset (${drawX},${drawY})`)
+      } catch (err: any) {
+        console.error('[compositor] head-space extended BG draw failed:', err.message)
+        // Non-fatal: canvas already has solid/gradient background from serverRenderBackground
+      }
     }
 
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
@@ -535,10 +674,10 @@ export async function compositeImage(
       // final downscale brings them back to the intended visual size.
       const scaledSettings: ProductLayerSettings = {
         ...productLayerSettings,
-        shadowBlur: productLayerSettings.shadowBlur * S,
+        shadowBlur:    productLayerSettings.shadowBlur    * S,
         shadowOffsetX: productLayerSettings.shadowOffsetX * S,
         shadowOffsetY: productLayerSettings.shadowOffsetY * S,
-        glowBlur: productLayerSettings.glowBlur * S,
+        glowBlur:      productLayerSettings.glowBlur      * S,
       }
       await drawProductLayer(ctx, product.transparentImageUrl, scaledSettings, W, H)
       for (const layer of fgLayers) {
@@ -583,7 +722,13 @@ async function drawLayer(
   product: ProductData,
   W: number,
   H: number,
-  options?: { storeId?: string; supabase?: any; targetW?: number; targetH?: number; headSpaceOverrides?: Map<string, any> | null }
+  options?: {
+    storeId?: string
+    supabase?: any
+    targetW?: number
+    targetH?: number
+    headSpaceOverrides?: Map<string, any> | null
+  }
 ): Promise<void> {
   // Apply head space position override for product image layers
   const headSpaceOverride = options?.headSpaceOverrides?.get(layer.id)

@@ -1,5 +1,17 @@
 import { create } from 'zustand'
-import { Layer, CanvasData, AspectRatio, ASPECT_RATIOS, BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS, TemplateMode, ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS, HeadSpaceSettings, DEFAULT_HEAD_SPACE_SETTINGS } from '@/types/template'
+import {
+  Layer,
+  CanvasData,
+  AspectRatio,
+  ASPECT_RATIOS,
+  BackgroundSettings,
+  DEFAULT_BACKGROUND_SETTINGS,
+  TemplateMode,
+  ProductLayerSettings,
+  DEFAULT_PRODUCT_LAYER_SETTINGS,
+  HeadSpaceSettings,
+  DEFAULT_HEAD_SPACE_SETTINGS,
+} from '@/types/template'
 import { nanoid } from 'nanoid'
 
 // Shape of a preview product for live preview in the builder
@@ -17,7 +29,6 @@ interface BuilderStore {
   selectedLayerId: string | null
   isDirty: boolean
 
-  // NEW
   previewProduct: PreviewProduct | null
   setPreviewProduct: (product: PreviewProduct | null) => void
 
@@ -38,6 +49,12 @@ interface BuilderStore {
 
   setTemplateMode: (mode: TemplateMode) => void
   setProductLayerSettings: (settings: Partial<ProductLayerSettings>) => void
+
+  /**
+   * Merge a partial HeadSpaceSettings update.
+   * Missing keys are filled from the current stored settings or
+   * DEFAULT_HEAD_SPACE_SETTINGS (which itself has all v2 fields).
+   */
   setHeadSpaceSettings: (settings: Partial<HeadSpaceSettings>) => void
 
   loadTemplate: (canvasData: CanvasData) => void
@@ -58,7 +75,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
   selectedLayerId: null,
   isDirty: false,
 
-  // NEW
   previewProduct: null,
   setPreviewProduct: (product) => set({ previewProduct: product }),
 
@@ -100,7 +116,11 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
       canvasData: {
         ...s.canvasData,
         headSpaceSettings: {
-          ...(s.canvasData.headSpaceSettings ?? DEFAULT_HEAD_SPACE_SETTINGS),
+          // Start from full defaults (includes v2 fields: autoZoom, allowAiExtend, etc.)
+          ...DEFAULT_HEAD_SPACE_SETTINGS,
+          // Overlay any previously-saved settings (may be from v1 without v2 fields)
+          ...(s.canvasData.headSpaceSettings ?? {}),
+          // Apply the partial update
           ...settings,
         },
       },
@@ -108,7 +128,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     })),
 
   setAspectRatio: (ratio) => {
-    // 'custom' keeps the current pixel size; user edits it via setCanvasSize.
     if (ratio === 'custom') {
       set(s => ({
         canvasData: { ...s.canvasData, aspectRatio: 'custom' },
@@ -130,7 +149,6 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
   },
 
   setCanvasSize: (width, height) => {
-    // Clamp to sane bounds (Meta/IG creatives top out around 2048).
     const w = Math.max(200, Math.min(4000, Math.round(width) || 1080))
     const h = Math.max(200, Math.min(4000, Math.round(height) || 1080))
     set(s => ({
@@ -205,23 +223,36 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
     set(s => ({ canvasData: { ...s.canvasData, layers }, isDirty: true })),
 
   loadTemplate: (canvasData) => {
-  // Guarantee width/height always exist
-  if (!canvasData.width) canvasData = { ...canvasData, width: 1080 }
-  if (!canvasData.height) canvasData = { ...canvasData, height: 1080 }
+    // Guarantee width/height always exist
+    if (!canvasData.width)  canvasData = { ...canvasData, width: 1080 }
+    if (!canvasData.height) canvasData = { ...canvasData, height: 1080 }
 
-  // Backfill aspectRatio for older templates
-  if (!canvasData.aspectRatio) {
-    const ratio = canvasData.height / canvasData.width
-    let aspectRatio: AspectRatio = '1:1'
-    if (ratio > 1.7) aspectRatio = '9:16'
-    else if (ratio > 1.1) aspectRatio = '4:5'
-    else if (ratio < 0.6) aspectRatio = '16:9'
-    else if (ratio < 0.8) aspectRatio = '1.91:1'
-    canvasData = { ...canvasData, aspectRatio }
-  }
+    // Backfill aspectRatio for older templates
+    if (!canvasData.aspectRatio) {
+      const ratio = canvasData.height / canvasData.width
+      let aspectRatio: AspectRatio = '1:1'
+      if (ratio > 1.7)  aspectRatio = '9:16'
+      else if (ratio > 1.1) aspectRatio = '4:5'
+      else if (ratio < 0.6) aspectRatio = '16:9'
+      else if (ratio < 0.8) aspectRatio = '1.91:1'
+      canvasData = { ...canvasData, aspectRatio }
+    }
 
-  set({ canvasData, selectedLayerId: null, isDirty: false })
-},
+    // ── v2 backward compatibility: backfill new head space fields ────────────
+    // Templates saved before v2 won't have autoZoom / allowAiExtend / etc.
+    // Merge DEFAULT_HEAD_SPACE_SETTINGS so every field is present.
+    if (canvasData.headSpaceSettings) {
+      canvasData = {
+        ...canvasData,
+        headSpaceSettings: {
+          ...DEFAULT_HEAD_SPACE_SETTINGS,
+          ...canvasData.headSpaceSettings,
+        },
+      }
+    }
+
+    set({ canvasData, selectedLayerId: null, isDirty: false })
+  },
 
   resetDirty: () => set({ isDirty: false }),
 }))
