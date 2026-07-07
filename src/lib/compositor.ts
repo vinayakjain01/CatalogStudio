@@ -76,18 +76,94 @@ export interface CompositeOptions {
   supabase?: any
 }
 
-// Remote image loader with a hard timeout.
-// Loads URLs exactly as stored — same as the template builder preview does.
-// This ensures generated creatives always match what you see in the preview.
-// Quality is maintained through 3× supersampling, lossless PNG storage, and
-// q_auto:best Cloudinary delivery — not by loading different source URLs.
+/**
+ * Upgrade a URL to its highest-quality version WITHOUT changing what content is shown.
+ *
+ * Three CDN patterns handled:
+ *
+ * 1. Cloudinary — strip non-content transforms between /upload/ and the version/path.
+ *    Transforms like w_800,h_800,c_limit / f_auto,q_auto only resize/reformat.
+ *    They do NOT change what part of the image is visible.
+ *    Transforms like c_crop, c_fill, c_thumb DO change content → preserved unchanged.
+ *
+ * 2. Google Drive (lh3.googleusercontent.com) — ensure =s0 suffix (original size).
+ *    =s1600 loads a 1600px thumbnail; =s0 loads the original full-res file.
+ *
+ * 3. Shopify CDN — strip _WxH size suffix before the extension.
+ *    shirt_800x800.jpg → shirt.jpg (same image, original resolution).
+ *
+ * This gives us the real pixel data of the stored master, so supersampling at 3×
+ * operates on the highest available quality and produces a sharper final output.
+ */
+function toHighQualityUrl(src: string): string {
+  if (!src) return src
+
+  try {
+    // ── Cloudinary ──────────────────────────────────────────────────────────
+    if (src.includes('res.cloudinary.com') && src.includes('/image/upload/')) {
+      const uploadMarker = '/image/upload/'
+      const uploadIdx = src.indexOf(uploadMarker)
+      const afterUpload = src.slice(uploadIdx + uploadMarker.length)
+      const firstSeg = afterUpload.split('/')[0]
+
+      // If the first segment is already a version number (v1234), no transforms present
+      if (/^v\d+$/.test(firstSeg)) return src
+
+      // Content-altering crop transforms — changing these would show a different image
+      const contentCrops = ['c_crop', 'c_fill', 'c_thumb', 'c_lfill', 'c_imagga_crop', 'c_auto', 'c_pad']
+      const hasContentCrop = contentCrops.some(c => firstSeg.includes(c))
+      if (hasContentCrop) return src  // Preserve — these define what content is visible
+
+      // Strip the transforms segment (only quality/size/format — safe to remove)
+      const rest = afterUpload.slice(firstSeg.length + 1)  // +1 for the slash
+      return src.slice(0, uploadIdx + uploadMarker.length) + rest
+    }
+
+    // ── Google Drive (lh3.googleusercontent.com) ────────────────────────────
+    if (src.includes('lh3.googleusercontent.com/d/')) {
+      // Replace any =sNNNN size param with =s0 (original size)
+      const base = src.replace(/=s\d+[^&]*/, '')
+      return base.endsWith('=s0') ? base : base + '=s0'
+    }
+
+    // ── Shopify CDN ─────────────────────────────────────────────────────────
+    if (src.includes('cdn.shopify.com')) {
+      // Strip _WxH or _Wx or _xH size suffixes before the file extension
+      return src.replace(
+        /(_(\d+x\d*|\d*x\d+)(@\dx)?)(\.(jpg|jpeg|png|webp|gif))(\?.*)?$/i,
+        '$4$6'
+      )
+    }
+  } catch {
+    // URL parsing failed — return original unchanged
+  }
+
+  return src
+}
+
+/**
+ * Load an image at its highest quality.
+ * Always fetches the full-resolution master by calling toHighQualityUrl first.
+ * Falls back to the original URL if the high-quality URL fails.
+ */
 async function loadImageUncached(src: string, timeoutMs = 20_000) {
   if (src.startsWith('data:')) return loadImage(src)
+
+  const highQualitySrc = toHighQualityUrl(src)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+
   try {
-    const res = await fetch(src, { signal: controller.signal, cache: 'force-cache' })
-    if (!res.ok) throw new Error(`image fetch ${res.status} for ${src}`)
+    const res = await fetch(highQualitySrc, { signal: controller.signal, cache: 'force-cache' })
+    if (!res.ok) {
+      // If we modified the URL and it failed, fall back to original
+      if (highQualitySrc !== src) {
+        const fallback = await fetch(src, { signal: new AbortController().signal, cache: 'force-cache' })
+        if (!fallback.ok) throw new Error(`image fetch ${res.status} for ${src}`)
+        return await loadImage(Buffer.from(await fallback.arrayBuffer()))
+      }
+      throw new Error(`image fetch ${res.status} for ${src}`)
+    }
     return await loadImage(Buffer.from(await res.arrayBuffer()))
   } finally {
     clearTimeout(timer)
