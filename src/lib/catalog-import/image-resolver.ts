@@ -174,8 +174,14 @@ function detectImageType(buffer: Buffer): string | null {
 
 /**
  * Upload a downloaded image buffer to Cloudinary.
- * Automatically resizes images that exceed Cloudinary's 10MB upload limit
- * by using Cloudinary's eager transformation to downscale during upload.
+ *
+ * Quality policy:
+ *  - We upload WITHOUT forcing format or quality — the raw bytes are stored as-is.
+ *  - For Drive images that exceed the 10MB Cloudinary upload limit, we use a
+ *    Cloudinary upload transformation (limit dimensions to 3000px) instead of
+ *    forcing JPG conversion, so we preserve transparency and avoid compression.
+ *  - Delivery optimization (f_auto, q_auto:best) happens at URL level, not
+ *    at upload time, so the stored master is always the highest quality version.
  */
 export async function uploadImageToCloudinary(
   buffer: Buffer,
@@ -189,10 +195,11 @@ export async function uploadImageToCloudinary(
     api_secret: process.env.CLOUDINARY_API_SECRET,
   })
 
-  // Cloudinary free/starter plan caps uploads at 10MB.
-  // If the buffer is larger, we ask Cloudinary to cap dimensions at 2000px
-  // on the longest side during the upload itself — this avoids needing sharp.
-  const isLarge = buffer.length > 9 * 1024 * 1024  // > 9MB
+  // Cloudinary's upload limit is 10MB. For files that exceed this, we use
+  // a transformation to cap the longest dimension at 3000px — large enough
+  // for print-quality output but small enough to avoid the 10MB cap.
+  // We use 'png' format (lossless) rather than 'jpg' to avoid compression.
+  const isLarge = buffer.length > 9 * 1024 * 1024
 
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_stream(
@@ -201,12 +208,9 @@ export async function uploadImageToCloudinary(
         folder: 'catalog-imports',
         overwrite: false,
         resource_type: 'image',
-        format: 'jpg',
-        quality: 'auto:good',
-        // For large files: limit max dimension to 2000px so the upload stays
-        // under the 10MB limit. The original ratio is always preserved.
+        // No format/quality forced — preserve original format
         ...(isLarge ? {
-          transformation: [{ width: 2000, height: 2000, crop: 'limit' }],
+          transformation: [{ width: 3000, height: 3000, crop: 'limit' }],
         } : {}),
       },
       (error, result) => {

@@ -25,9 +25,11 @@ export class RemoveBgProvider implements BackgroundRemovalProvider {
 
     const form = new FormData()
     form.append('image_file', new Blob([new Uint8Array(imageBuffer)], { type: 'image/png' }), 'image.png')
-    // 'auto' lets remove.bg pick the best size up to what your plan allows.
-    // Use 'full' if you're on a paid plan and want guaranteed full-resolution output.
-    form.append('size', 'auto')
+    // Always request FULL resolution — this is the most important quality setting.
+    // 'auto' gives preview quality on free tier (625px max).
+    // 'full' ensures the original resolution is preserved end-to-end.
+    // Requires a paid remove.bg plan (worth it for fashion/luxury brands).
+    form.append('size', 'full')
 
     const res = await fetch('https://api.remove.bg/v1.0/removebg', {
       method: 'POST',

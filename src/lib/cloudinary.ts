@@ -59,10 +59,13 @@ export async function uploadBuffer(
  * `/upload/`. Safe to call once per URL.
  *
  *   .../image/upload/v123/foo.png
- *   .../image/upload/f_auto,q_auto:good/v123/foo.png
+ *   .../image/upload/f_auto,q_auto:best/v123/foo.png
+ *
+ * q_auto:best — highest quality automatic optimization (vs :good which is lower).
+ * For luxury fashion catalog creatives, quality > file size.
  */
 export function toDeliveryUrl(secureUrl: string, extra?: string): string {
-  const transform = ['f_auto', 'q_auto:good', extra].filter(Boolean).join(',')
+  const transform = ['f_auto', 'q_auto:best', extra].filter(Boolean).join(',')
   return secureUrl.replace('/upload/', `/upload/${transform}/`)
 }
 

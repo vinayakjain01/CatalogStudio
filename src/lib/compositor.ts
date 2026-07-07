@@ -21,7 +21,9 @@ import { detectProductBounds, calculateHeadSpacePlacement, placementToProductLay
 // ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_TARGET_SIZE = 1080
-const SUPERSAMPLE = 2 // 2x is the sweet spot; 3x for print, at higher memory cost
+const SUPERSAMPLE = 3 // 3x for maximum quality — fabric texture, embroidery, edges
+                       // Memory cost: ~54MB for 3240×3240 vs ~24MB for 2160×2160
+                       // Worth it: generated creatives must match original photography
 const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
 const IMAGE_CACHE_MAX = 250
 
@@ -73,33 +75,52 @@ export interface CompositeOptions {
 }
 
 /**
- * Ensure we always pull Shopify's full-resolution master, never a resized
- * variant. Shopify encodes size into the filename as `_WIDTHxHEIGHT` right
- * before the extension (e.g. `shirt_800x800.jpg`). Stripping that suffix
- * yields the original upload. Non-Shopify URLs pass through untouched.
+ * Strip any encoded resolution suffix from Shopify / Cloudinary CDN URLs
+ * so we always load the highest-resolution original.
+ *
+ * Shopify: strips `_WIDTHxHEIGHT` before the extension
+ *   product_800x800.jpg  →  product.jpg
+ *
+ * Cloudinary: strips transformation segment between /upload/ and /v{version}/
+ *   /upload/w_800,c_limit/v1/product.jpg  →  /upload/v1/product.jpg
+ *   /upload/f_auto,q_auto:good/v1/product.jpg  →  /upload/v1/product.jpg
  */
 function toFullResolution(src: string): string {
+  if (!src) return src
   try {
-    return src.replace(/_(\d+)x(\d+)?(@\dx)?(\.\w+)(\?.*)?$/i, '$4$5')
+    // Shopify: remove _WxH or _Wx size suffix
+    let result = src.replace(/_([\d]+)x([\d]+)?(@[\d]x)?(\.(?:jpg|jpeg|png|webp|gif))(\?.*)?$/i, '$4$5')
+    // Cloudinary: strip transform segment between /upload/ and /v\d+/
+    result = result.replace(
+      /\/upload\/([^/]+)\/(?=v\d+\/)/,
+      (_match, transforms) => /^v\d+$/.test(transforms) ? _match : '/upload/'
+    )
+    return result
   } catch {
     return src
   }
 }
 
-// Remote image loader with a hard timeout. @napi-rs/canvas's loadImage has no
-// timeout, so a slow or unreachable product-image URL would hang the whole
-// serverless function until it 504s. We fetch the bytes ourselves with an
-// AbortController and hand the buffer to loadImage (which accepts Buffers).
-async function loadImageUncached(src: string, timeoutMs = 12_000) {
-  // data: URLs and local buffers pass straight through
+// Remote image loader — always fetches full-resolution original.
+// Hard timeout prevents hanging on slow CDN responses.
+async function loadImageUncached(src: string, timeoutMs = 20_000) {
   if (src.startsWith('data:')) return loadImage(src)
+  // Always strip size parameters — get the full-resolution master
+  const fullResSrc = toFullResolution(src)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(src, { signal: controller.signal, cache: 'force-cache' })
-    if (!res.ok) throw new Error(`image fetch ${res.status} for ${src}`)
-    const buf = Buffer.from(await res.arrayBuffer())
-    return await loadImage(buf)
+    const res = await fetch(fullResSrc, { signal: controller.signal, cache: 'force-cache' })
+    if (!res.ok) {
+      // Fallback to original URL if full-res strip changed it
+      if (fullResSrc !== src) {
+        const fb = await fetch(src, { signal: new AbortController().signal })
+        if (!fb.ok) throw new Error(`image fetch ${res.status} for ${src}`)
+        return await loadImage(Buffer.from(await fb.arrayBuffer()))
+      }
+      throw new Error(`image fetch ${res.status} for ${src}`)
+    }
+    return await loadImage(Buffer.from(await res.arrayBuffer()))
   } finally {
     clearTimeout(timer)
   }
