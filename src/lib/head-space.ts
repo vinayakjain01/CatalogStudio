@@ -82,6 +82,20 @@
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 import type { DEFAULT_PRODUCT_LAYER_SETTINGS } from '@/types/template'
 
+/**
+ * Strip Shopify/Cloudinary resize parameters — identical to compositor's toFullResolution().
+ * CRITICAL: detectProductBounds must load the same image dimensions as the compositor,
+ * otherwise the scale calculation will produce wrong placement coordinates.
+ */
+function stripResizeParams(src: string): string {
+  if (!src) return src
+  try {
+    let r = src.replace(/_([\d]+)x([\d]+)?(@[\d]x)?(\.(?:jpg|jpeg|png|webp|gif))(\?.*)?$/i, '$4$5')
+    r = r.replace(/\/upload\/([^/]+)\/(?=v\d+\/)/, (_m, t) => /^v\d+$/.test(t) ? _m : '/upload/')
+    return r
+  } catch { return src }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ProductBounds {
@@ -163,7 +177,10 @@ const MAX_ANALYSIS_DIM = 800
  * Server-only — uses @napi-rs/canvas.
  */
 export async function detectProductBounds(imageUrl: string): Promise<ProductBounds> {
-  const img = await loadImage(imageUrl)
+  // Use the same URL normalization as the compositor's loadImageSafe() so both
+  // detection and drawing operate on the same image dimensions.
+  const normalizedUrl = stripResizeParams(imageUrl)
+  const img = await loadImage(normalizedUrl).catch(() => loadImage(imageUrl))
   const imgW = img.width
   const imgH = img.height
 

@@ -566,9 +566,28 @@ export async function compositeImage(
 
           console.log(
             `[compositor] head-space zoom=${zoomMode} scale=${placement.scale.toFixed(3)} ` +
-            `overflow=(L:${Math.round(overflow.left)},R:${Math.round(overflow.right)},B:${Math.round(overflow.bottom)}) ` +
+            `img=(${placement.imgX.toFixed(0)},${placement.imgY.toFixed(0)}) ` +
+            `size=(${placement.renderedW.toFixed(0)}x${placement.renderedH.toFixed(0)}) ` +
+            `canvas=${targetW}x${targetH} overflow=(L:${Math.round(overflow.left)},R:${Math.round(overflow.right)},B:${Math.round(overflow.bottom)}) ` +
             `head@${hs.headSpacePx}px`
           )
+
+          // Hard safety: if placement would cause ANY part to fall outside canvas,
+          // skip the head space override entirely for this layer.
+          // This is the final backstop against any edge case that slips through.
+          const wouldCrop =
+            placement.imgX < -0.5 ||
+            placement.imgY < -0.5 ||
+            placement.imgX + placement.renderedW > targetW + 0.5 ||
+            placement.imgY + placement.renderedH > targetH + 0.5
+
+          if (wouldCrop) {
+            console.warn(
+              `[compositor] head-space placement would crop product — skipping override. ` +
+              `imgY=${placement.imgY.toFixed(1)} renderedH=${placement.renderedH.toFixed(1)} canvasH=${targetH}`
+            )
+            // Leave productLayerSettings and headSpaceLayerOverrides at defaults (contain)
+          } else {
 
           // ── AI Extend on overflow ─────────────────────────────────────────
           // When the zoom causes overflow AND the user has enabled AI Extend AND
@@ -619,6 +638,7 @@ export async function compositeImage(
               headSpaceLayerOverrides.set(layer.id, layerOverride)
             }
           }
+          } // end of !wouldCrop else block
         } catch (err: any) {
           console.warn('[compositor] head space calculation fallback:', err.message)
         }
