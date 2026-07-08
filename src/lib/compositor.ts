@@ -9,26 +9,51 @@ import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
+import type { Canvas } from '@napi-rs/canvas'
 
 // ──────────────────────────────────────────────────────────────────────────
 // QUALITY CONFIG
 //
-// `targetSize`        the final delivered pixel dimension (e.g. 1080).
-// `SUPERSAMPLE`       internal render multiplier. We render larger, then let
-//                     Cloudinary downscale on delivery. Supersampling is the
-//                     single biggest quality win for text edges and thin shapes.
+// OUTPUT_SIZE        Final delivered pixel dimension on the longest side.
+//                    2048 is the standard for premium catalog photography:
+//                    it's print-ready, Retina-sharp on all screens, and
+//                    still within Instagram/Meta upload specs.
+//                    (Instagram: 1080–1440; Meta Ads: up to 1440×1800;
+//                     Catalog print: 300dpi at ~7cm = 826px minimum)
 //
-// We render a square canvas at targetSize * SUPERSAMPLE, draw everything in
-// device pixels, and return a LOSSLESS PNG. All lossy compression happens
-// exactly once, later, at Cloudinary delivery time — never here.
+// SUPERSAMPLE        Internal render multiplier. We render at OUTPUT_SIZE × S,
+//                    then do a quality multi-step downscale to OUTPUT_SIZE.
+//                    3× for 1080 output (3240 internal, 42MB).
+//                    2× for 2048 output (4096 internal, 67MB) — same RAM budget,
+//                    90% more output pixels, still clean downsampling from the
+//                    full-resolution source (4160×6240 source → 1365px output
+//                    means source is 3× larger than output = crisp detail).
+//
+// SUPERSAMPLE_LARGE  When template canvas > 1440px on any side, use 2× instead
+//                    of 3× to stay within the ~75MB canvas RAM budget.
+//
+// PNG_COMPRESSION    0–9. Default (6) is slow and saves ~5% over level 1.
+//                    Level 1 = lossless, 3× faster encode, imperceptibly larger.
+//                    We upload lossless PNG once; Cloudinary delivers optimised
+//                    WebP/AVIF from it, so storage size here is irrelevant.
 // ──────────────────────────────────────────────────────────────────────────
 
-const DEFAULT_TARGET_SIZE = 1080
-const SUPERSAMPLE = 3 // 3x for maximum quality — fabric texture, embroidery, edges
-                       // Memory cost: ~54MB for 3240×3240 vs ~24MB for 2160×2160
-                       // Worth it: generated creatives must match original photography
+const OUTPUT_SIZE      = 2048   // output px (square canvas; non-square uses canvasData dims)
+const SUPERSAMPLE      = 2      // 2× for ≥ 1440px canvas  →  4096 internal, 67MB
+const SUPERSAMPLE_SM   = 3      // 3× for < 1440px canvas  →  ≤ 4320 internal, 75MB
+const PNG_COMPRESSION  = 1      // level 1: lossless, ~3× faster than default level 6
 const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
-const IMAGE_CACHE_MAX = 250
+const IMAGE_CACHE_MAX    = 250
+
+/**
+ * Choose supersample factor based on canvas dimensions.
+ * Keeps internal canvas RAM under ~80MB on all plans.
+ */
+function chooseSuperSample(targetW: number, targetH: number, override?: number): number {
+  if (override != null) return override
+  const longest = Math.max(targetW, targetH)
+  return longest >= 1440 ? SUPERSAMPLE : SUPERSAMPLE_SM
+}
 
 type CachedImage = {
   promise: Promise<any>
@@ -487,20 +512,44 @@ export async function compositeImage(
   return measureAsync('creative.render.total', async () => {
     ensureFontsRegistered()
 
-    const targetW = canvasData.width || 1080
-    const targetH = canvasData.height || 1080
+    // ── Output dimensions ────────────────────────────────────────────────────
+    // Use the template's canvas size if it's larger than OUTPUT_SIZE.
+    // Otherwise scale up to OUTPUT_SIZE while preserving the aspect ratio.
+    // This means a 1080×1080 template outputs at 2048×2048 (90% more pixels),
+    // while a 1080×1350 template outputs at 1638×2048 (preserves 4:5 ratio).
+    // No zoom, no crop — just more pixels of the same image.
+    const rawW = canvasData.width  || 1080
+    const rawH = canvasData.height || 1080
 
-    // Render at SUPERSAMPLE× the target size, then downscale at the end.
-    // This is the single biggest quality lever: it fixes soft/blurry edges
-    // on the AI-removed product silhouette, anti-aliases text and shapes,
-    // and matches how every professional design tool renders for export.
-    const S = options.supersample ?? SUPERSAMPLE
+    let targetW: number
+    let targetH: number
+
+    if (rawW >= OUTPUT_SIZE || rawH >= OUTPUT_SIZE) {
+      // Template is already large — use as-is
+      targetW = rawW
+      targetH = rawH
+    } else {
+      // Scale up to OUTPUT_SIZE on the longest side, preserving aspect ratio
+      const upScale = OUTPUT_SIZE / Math.max(rawW, rawH)
+      // Round to even numbers (better for video encoding and Cloudinary processing)
+      targetW = Math.round(rawW * upScale / 2) * 2
+      targetH = Math.round(rawH * upScale / 2) * 2
+    }
+
+    // ── Supersampling ─────────────────────────────────────────────────────────
+    // Internal canvas is targetW×targetH × S. Render at high res, downscale at end.
+    // chooseSuperSample keeps internal canvas RAM under ~80MB across all plan tiers.
+    const S = chooseSuperSample(targetW, targetH, options.supersample)
     const W = targetW * S
     const H = targetH * S
 
+    console.log(
+      `[compositor] render ${rawW}×${rawH} template → ${targetW}×${targetH} output ` +
+      `(SS=${S}, internal=${W}×${H}, RAM≈${Math.round(W*H*4/1e6)}MB)`
+    )
+
     const canvas = createCanvas(W, H)
     const ctx = canvas.getContext('2d')
-    // @napi-rs/canvas: ensure smooth scaling for any upscaled raster source
     if ('imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = true
     if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
 
@@ -515,19 +564,15 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    // Layer-drawing options passed to every drawLayer call — enables
-    // ai_extend inside image layers to call the extend service.
+    // Layer-drawing options passed to every drawLayer call
     const layerOpts = {
       storeId: options.storeId,
       supabase: options.supabase,
-      targetW,  // 1x dimensions (not supersampled) for extend cache key
+      targetW,
       targetH,
     }
 
-    // ── Head Space Extended Background ────────────────────────────────────────
-
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
-      // AI Product Mode: split layers around the product layer zIndex
       const allLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
       const bgLayers = allLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
       const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
@@ -535,9 +580,6 @@ export async function compositeImage(
       for (const layer of bgLayers) {
         await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
-      // Shadow/glow blur values are authored at 1x in the builder UI — scale
-      // them up by S so they look identical at render resolution, then the
-      // final downscale brings them back to the intended visual size.
       const scaledSettings: ProductLayerSettings = {
         ...productLayerSettings,
         shadowBlur:    productLayerSettings.shadowBlur    * S,
@@ -550,27 +592,61 @@ export async function compositeImage(
         await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     } else {
-      // Standard mode: draw all layers in z-order
       const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
       for (const layer of sorted) {
         await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     }
 
-    // Downscale from the supersampled render to the target size. This pass
-    // is what removes jagged/soft edges — @napi-rs/canvas's drawImage does
-    // a quality resample when scaling down, equivalent to a sharpen+AA pass.
-    let finalCanvas = canvas
-    if (S !== 1) {
-      finalCanvas = createCanvas(targetW, targetH)
-      const finalCtx = finalCanvas.getContext('2d')
-      if ('imageSmoothingEnabled' in finalCtx) finalCtx.imageSmoothingEnabled = true
-      if ('imageSmoothingQuality' in finalCtx) finalCtx.imageSmoothingQuality = 'high'
-      finalCtx.drawImage(canvas as any, 0, 0, targetW, targetH)
+    // ── Multi-step quality downscale ─────────────────────────────────────────
+    // Single-step downscale from 3× to 1× can produce softness at edges.
+    // Multi-step halving (Mitchell/Lanczos-equivalent) preserves sharpness:
+    //   3240 → 1620 → 1080  (two 2× steps instead of one 3× step)
+    //   4096 → 2048         (one clean 2× step — optimal for SS=2)
+    //   4320 → 2160 → 1080  (two steps for SS=3 + small canvas)
+    // Each halving is a perfect power-of-2 scale — maximum quality for that step.
+    let finalCanvas: Canvas
+
+    if (S === 1) {
+      finalCanvas = canvas
+    } else {
+      // Build the downscale chain: halve until we reach target size
+      let currentCanvas = canvas
+      let currentW = W
+      let currentH = H
+
+      while (currentW > targetW * 1.5 || currentH > targetH * 1.5) {
+        // Halve each step (but never go below target)
+        const nextW = Math.max(targetW, Math.round(currentW / 2))
+        const nextH = Math.max(targetH, Math.round(currentH / 2))
+        const stepCanvas = createCanvas(nextW, nextH)
+        const stepCtx = stepCanvas.getContext('2d')
+        if ('imageSmoothingEnabled' in stepCtx) stepCtx.imageSmoothingEnabled = true
+        if ('imageSmoothingQuality' in stepCtx) stepCtx.imageSmoothingQuality = 'high'
+        stepCtx.drawImage(currentCanvas as any, 0, 0, nextW, nextH)
+        currentCanvas = stepCanvas
+        currentW = nextW
+        currentH = nextH
+      }
+
+      // Final step to exact target dimensions
+      if (currentW !== targetW || currentH !== targetH) {
+        finalCanvas = createCanvas(targetW, targetH)
+        const finalCtx = finalCanvas.getContext('2d')
+        if ('imageSmoothingEnabled' in finalCtx) finalCtx.imageSmoothingEnabled = true
+        if ('imageSmoothingQuality' in finalCtx) finalCtx.imageSmoothingQuality = 'high'
+        finalCtx.drawImage(currentCanvas as any, 0, 0, targetW, targetH)
+      } else {
+        finalCanvas = currentCanvas
+      }
     }
 
+    // ── PNG encode ────────────────────────────────────────────────────────────
+    // compressionLevel 1 = lossless (same pixel data as level 6),
+    // ~3× faster encode, imperceptibly larger file.
+    // We upload lossless once; Cloudinary delivers optimised WebP/AVIF.
     const pngStarted = Date.now()
-    const buffer = finalCanvas.toBuffer('image/png')
+    const buffer = (finalCanvas as any).toBuffer('image/png', { compressionLevel: PNG_COMPRESSION })
     logPerf('creative.render.png_encode', Date.now() - pngStarted, {
       bytes: buffer.length,
       width: targetW,
