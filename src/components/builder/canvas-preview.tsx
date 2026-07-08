@@ -611,7 +611,18 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
     ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
     : undefined
 
-  const sortedLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+  // Once background removal succeeds, the transparent cutout (rendered via
+  // AiModePositioning below) is the ONLY visual representation of the
+  // product — an 'image'-type layer still pointing at '{{product_image}}'
+  // (e.g. the default layer every new template starts with) would otherwise
+  // show the ORIGINAL, non-transparent photo underneath it. Mirrors the same
+  // exclusion in the server compositor.
+  const isRawProductImageLayer = (l: Layer) =>
+    l.type === 'image' && (l as any).src === '{{product_image}}'
+
+  const sortedLayers = [...canvasData.layers]
+    .filter(l => !(isAiMode && isRawProductImageLayer(l)))
+    .sort((a, b) => a.zIndex - b.zIndex)
   const bgLayers = isAiMode
     ? sortedLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
     : sortedLayers

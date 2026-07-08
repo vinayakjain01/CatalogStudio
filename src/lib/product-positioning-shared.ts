@@ -63,11 +63,28 @@ export interface PlacementResult {
 }
 
 /**
- * Compute where to draw a product image so its visible content's top lands at
- * headSpacePx, the full image never crops, and it's never stretched. Ported
- * from the old (deleted) head-space.ts — that 4-constraint scale formula was
- * never the source of the crop bugs; only the "apply unconditionally" policy
- * around it was. See src/lib/product-positioning.ts for the fix (classification).
+ * Compute where to draw a product image so its visible content is scaled to
+ * fit BETWEEN two guides simultaneously — top at headSpacePx, bottom at
+ * (canvasH - bottomMarginPx) — never stretched, never cropped.
+ *
+ * scale = min(availableW/contentW, availableH/contentH)   — fits both the
+ * horizontal margins and the vertical head/bottom guides at once. Content
+ * top then lands at exactly headSpacePx, and — by construction, since
+ * availableH = canvasH - headSpacePx - bottomMarginPx — content bottom lands
+ * at exactly (canvasH - bottomMarginPx) too, UNLESS width is the binding
+ * constraint (an unusually wide stance/pose), in which case bottom won't
+ * quite reach the guide but nothing crops horizontally either — "never crop"
+ * wins over "always touch both guides" in that rare case.
+ *
+ * Deliberately uses only the DETECTED CONTENT's bounding box, not the full
+ * source image dimensions: for a transparent PNG (ai_product mode), any
+ * margin between the image's own edges and the visible silhouette is
+ * invisible padding — letting it fall outside the canvas is harmless and
+ * was, in an earlier version of this formula, the reason the bottom guide
+ * was never reached (an extra "protect full image" constraint was
+ * needlessly conservative). For an opaque photo (standard mode, no
+ * transparency), bounds already equal the full image rect, so this reduces
+ * to the same thing either way.
  */
 export function calculatePlacement(
   bounds: ProductBounds,
@@ -105,28 +122,16 @@ export function calculatePlacement(
 
   const containScale = Math.min(availableW / contentW, availableH / contentH)
 
-  let rawScale: number
-  if (scaleMode === 'smart_fit') {
-    // Move first, scale only if required to hit the head-space target while
-    // keeping the FULL image (not just the visible silhouette) inside canvas.
-    const constraints: number[] = [
-      availableW / contentW,                                   // visible width fits
-      availableH / contentH,                                   // visible height fits
-      availableH / (bounds.imageHeight - bounds.top),          // full image bottom fits
-    ]
-    if (bounds.top > 0) constraints.push(headSpacePx / bounds.top)   // full image top fits
-    const valid = constraints.filter(s => isFinite(s) && s > 0)
-    rawScale = valid.length > 0 ? Math.min(...valid) : containScale
-  } else {
-    // 'fit' — plain contain, still subject to the same full-image safety
-    // constraints so it can never push the image off-canvas.
-    const safe: number[] = [containScale, availableH / (bounds.imageHeight - bounds.top)]
-    if (bounds.top > 0) safe.push(headSpacePx / bounds.top)
-    rawScale = Math.min(...safe.filter(s => isFinite(s) && s > 0))
-  }
+  // 'smart_fit': always zoom to hit both guides (up to maxUpscale). 'fit':
+  // never enlarge past native pixel size — may leave a gap rather than
+  // upscale, but never loses quality.
+  const rawScale = scaleMode === 'smart_fit' ? containScale : Math.min(1, containScale)
 
-  const maxAllowedScale = containScale * maxUpscale
-  const scale = Math.min(rawScale, maxAllowedScale)
+  // maxUpscale is an ABSOLUTE cap on the scale factor (e.g. 1.5 = never
+  // render source pixels at more than 150% of their native size) — not
+  // relative to containScale, which would make it a no-op for smart_fit
+  // (since containScale already IS the scale smart_fit wants to use).
+  const scale = Math.min(rawScale, maxUpscale)
   const clampedByMaxUpscale = scale < rawScale - 1e-9
 
   const renderedW = bounds.imageWidth * scale
@@ -141,20 +146,21 @@ export function calculatePlacement(
     imgX = leftMarginPx - bounds.left * scale
   }
 
-  // Final defensive clamp — floating point can push us fractions of a pixel
-  // outside; this guarantees the full image never starts left/above canvas
-  // origin or ends right/below the canvas edge.
-  const clampedImgX = Math.max(0, Math.min(imgX, canvasW - renderedW))
-  const clampedImgY = Math.max(0, Math.min(imgY, canvasH - renderedH))
-
-  const overflowLeft   = Math.max(0, -clampedImgX)
-  const overflowTop    = Math.max(0, -clampedImgY)
-  const overflowRight  = Math.max(0, clampedImgX + renderedW - canvasW)
-  const overflowBottom = Math.max(0, clampedImgY + renderedH - canvasH)
-  const wouldCrop = overflowLeft > 0.5 || overflowTop > 0.5 || overflowRight > 0.5 || overflowBottom > 0.5
+  // wouldCrop reflects the VISIBLE CONTENT only (never the full image,
+  // whose margins may be transparent) — content is guaranteed to fit by
+  // construction above, so this only fires for genuine floating-point edge
+  // cases, and is the hard backstop the caller bypasses on rather than
+  // shifting position (which would break the "touch both guides" guarantee).
+  const contentTop    = imgY + bounds.top * scale
+  const contentBottom = imgY + bounds.bottom * scale
+  const contentLeft   = imgX + bounds.left * scale
+  const contentRight  = imgX + bounds.right * scale
+  const wouldCrop =
+    contentTop < -0.5 || contentLeft < -0.5 ||
+    contentBottom > canvasH + 0.5 || contentRight > canvasW + 0.5
 
   return {
-    placement: { imgX: clampedImgX, imgY: clampedImgY, renderedW, renderedH, scale },
+    placement: { imgX, imgY, renderedW, renderedH, scale },
     wouldCrop,
     clampedByMaxUpscale,
   }

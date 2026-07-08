@@ -614,7 +614,19 @@ export async function compositeImage(
       }
       // ─────────────────────────────────────────────────────────────────────
 
-      const allLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
+      // Once background removal succeeds, the transparent cutout (drawn
+      // below) is the ONLY visual representation of the product — an
+      // 'image'-type layer still pointing at '{{product_image}}' (e.g. the
+      // default layer every new template starts with, left over from before
+      // AI Product Mode was enabled) would otherwise render the ORIGINAL,
+      // non-transparent photo underneath it, producing two overlapping
+      // products. Never render both.
+      const isRawProductImageLayer = (l: Layer) =>
+        l.type === 'image' && (l as any).src === '{{product_image}}'
+
+      const allLayers = [...canvasData.layers]
+        .filter(l => !isRawProductImageLayer(l))
+        .sort((a, b) => a.zIndex - b.zIndex)
       const bgLayers = allLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
       const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
 
