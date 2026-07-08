@@ -10,6 +10,7 @@ import {
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 import { getTransparentProductImage } from '@/lib/background-removal'
+import { getReconstructedBackground } from '@/lib/background-reconstruction'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
@@ -320,6 +321,22 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   }
   // ─────────────────────────────────────────────────────────────────────────
 
+  // ── Background Reconstruction (opt-in) ────────────────────────────────────
+  // Only attempted when the template explicitly opted into backgroundSettings
+  // .mode === 'original' — everyone else pays zero extra cost/latency here.
+  // Never fatal: a null result just falls back to the solid background.
+  let reconstructedBackgroundUrl: string | null = null
+  if (transparentImageUrl && imageUrl && (canvasData as any).backgroundSettings?.mode === 'original') {
+    try {
+      const reconResult = await getReconstructedBackground(imageUrl, transparentImageUrl, job.store_id, supabase)
+      reconstructedBackgroundUrl = reconResult?.backgroundUrl ?? null
+      console.log(`[runJob] Background reconstruction ${reconResult ? (reconResult.fromCache ? 'cached' : 'fresh') : 'unavailable'} for jobId=${job.id}`)
+    } catch (reconErr: any) {
+      console.error(`[runJob] Background reconstruction failed for jobId=${job.id}, falling back to solid:`, reconErr.message)
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const productLayerSettings = (canvasData as any).productLayerSettings || undefined
   const buffer = await compositeImage(canvasData as any, {
     title: product.title,
@@ -330,6 +347,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     imageUrl,
     transparentImageUrl,
     shotTypeOverride: (product as any).shot_type_override ?? null,
+    reconstructedBackgroundUrl,
   }, {
     templateMode: transparentImageUrl ? 'ai_product' : 'standard',
     productLayerSettings,

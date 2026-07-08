@@ -103,6 +103,8 @@ interface ProductData {
   transparentImageUrl?: string | null
   /** Manual per-product shot-type override for Product Positioning (null/undefined = auto-detect). */
   shotTypeOverride?: string | null
+  /** Original photo with the product region AI-inpainted. Only used by backgroundSettings.mode === 'original'. */
+  reconstructedBackgroundUrl?: string | null
 }
 
 export interface CompositeOptions {
@@ -237,14 +239,20 @@ function pruneImageCache(now = Date.now()) {
   }
 }
 
-async function preloadRenderableImages(canvasData: CanvasData, product: { imageUrl: string | null }) {
+async function preloadRenderableImages(
+  canvasData: CanvasData,
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null }
+) {
   const urls = new Set<string>()
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
   if (settings.mode === 'solid' && canvasData.backgroundImageUrl) {
     urls.add(canvasData.backgroundImageUrl)
   }
-  if (settings.mode !== 'solid' && settings.mode !== 'transparent' && product.imageUrl) {
+  if (settings.mode === 'original' && product.reconstructedBackgroundUrl) {
+    urls.add(product.reconstructedBackgroundUrl)
+  }
+  if (settings.mode !== 'solid' && settings.mode !== 'transparent' && settings.mode !== 'original' && product.imageUrl) {
     urls.add(product.imageUrl)
   }
 
@@ -302,6 +310,19 @@ function rgbToHex({ r, g, b }: RgbColor) {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
 }
 
+/**
+ * Shared "cover" scale-to-fill geometry — scale an image up just enough that
+ * it fully covers a box (zoomFactor adds extra overscan margin, e.g. to hide
+ * blur edge artifacts), centered. Returns box-relative offsets/dimensions;
+ * callers add their own box origin.
+ */
+function computeCoverFit(imgW: number, imgH: number, boxW: number, boxH: number, zoomFactor = 1) {
+  const scale = Math.max(boxW / imgW, boxH / imgH) * zoomFactor
+  const sw = imgW * scale
+  const sh = imgH * scale
+  return { sx: (boxW - sw) / 2, sy: (boxH - sh) / 2, sw, sh }
+}
+
 function serverRenderBlurExtend(
   ctx: any,
   imgNode: any,
@@ -310,11 +331,7 @@ function serverRenderBlurExtend(
   blurStrength: number
 ) {
   // @napi-rs/canvas supports ctx.filter
-  const scale = Math.max(W / imgNode.width, H / imgNode.height) * 1.15
-  const sw = imgNode.width * scale
-  const sh = imgNode.height * scale
-  const sx = (W - sw) / 2
-  const sy = (H - sh) / 2
+  const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, W, H, 1.15)
   ctx.save()
   ctx.filter = `blur(${blurStrength}px) saturate(1.2) brightness(0.9)`
   ctx.drawImage(imgNode, sx, sy, sw, sh)
@@ -337,28 +354,32 @@ function drawBlurredBackdropInBox(
   x: number, y: number,
   w: number, h: number
 ) {
-  const scale = Math.max(w / imgNode.width, h / imgNode.height) * 1.15
-  const sw = imgNode.width * scale
-  const sh = imgNode.height * scale
-  const sx = x + (w - sw) / 2
-  const sy = y + (h - sh) / 2
+  const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, w, h, 1.15)
   ctx.save()
   ctx.filter = `blur(${POSITIONING_GAP_BLUR}px) saturate(1.1) brightness(0.95)`
-  ctx.drawImage(imgNode, sx, sy, sw, sh)
+  ctx.drawImage(imgNode, x + sx, y + sy, sw, sh)
   ctx.filter = 'none'
   ctx.restore()
+}
+
+/** Sharp (unblurred) cover-fit draw — e.g. a reconstructed original background. */
+function drawCoverFit(ctx: any, imgNode: any, x: number, y: number, w: number, h: number) {
+  const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, w, h, 1)
+  ctx.drawImage(imgNode, x + sx, y + sy, sw, sh)
 }
 
 async function serverRenderBackground(
   ctx: any,
   canvasData: CanvasData,
-  product: { imageUrl: string | null },
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null },
   W: number,
   H: number
 ): Promise<void> {
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
-  // Always fill solid color first
+  // Always fill solid color first — this is also the fallback for 'original'
+  // mode when no reconstructed background is available (nothing further
+  // draws on top in that case, so the solid fill remains visible).
   ctx.fillStyle = canvasData.backgroundColor
   ctx.fillRect(0, 0, W, H)
 
@@ -376,6 +397,20 @@ async function serverRenderBackground(
   if (settings.mode === 'transparent') {
     // Fill with transparent (already done by clearing; compositor keeps it)
     ctx.clearRect(0, 0, W, H)
+    return
+  }
+
+  if (settings.mode === 'original') {
+    // Opt-in: the original photo's own background (product region AI-
+    // inpainted upstream) — falls back to the solid fill above when the
+    // reconstruction wasn't available (generation failure, or this being
+    // called for a template mode where it doesn't apply).
+    if (product.reconstructedBackgroundUrl) {
+      try {
+        const bgImg = await loadImageSafe(product.reconstructedBackgroundUrl)
+        drawCoverFit(ctx, bgImg, 0, 0, W, H)
+      } catch {}
+    }
     return
   }
 

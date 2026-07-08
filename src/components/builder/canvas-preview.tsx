@@ -11,6 +11,7 @@ import { useSmartBackground } from './smart-background'
 import { useTransparentPreview } from './use-transparent-preview'
 import { useExtendPreview } from './use-extend-preview'
 import { useProductPositioningPreview } from './use-product-positioning-preview'
+import { useBackgroundReconstructionPreview } from './use-background-reconstruction-preview'
 import { ProductPositioningGuide } from './product-positioning-guide'
 import { placementToProductLayerSettings } from '@/lib/product-positioning-shared'
 import { Loader2, Sparkles, Wand2 } from 'lucide-react'
@@ -607,6 +608,19 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
     solidColor: canvasData.backgroundColor,
   })
 
+  // 'original' mode: reconstruct the product's own studio backdrop (product
+  // region AI-inpainted) instead of any synthetic background. Only runs when
+  // explicitly opted into — useSmartBackground doesn't know this mode and
+  // no-ops for it (sampleSrc is already null in ai_product mode above), so
+  // this is a fully separate, additive source, resolved the same
+  // cache-then-generate way as the transparent cutout itself.
+  const useOriginalBackground = isAiMode && bgSettings.mode === 'original'
+  const { transparentUrl: transparentUrlForBg } = useTransparentPreview(
+    product.imageUrl, storeId ?? null, useOriginalBackground
+  )
+  const { backgroundUrl: reconstructedBackgroundUrl, loading: reconstructingBackground } =
+    useBackgroundReconstructionPreview(product.imageUrl, transparentUrlForBg, storeId ?? null, useOriginalBackground)
+
   const transparentBg = bgSettings.mode === 'transparent'
     ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
     : undefined
@@ -660,6 +674,12 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
             Live AI preview
           </span>
         )}
+        {useOriginalBackground && reconstructingBackground && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Reconstructing background…
+          </span>
+        )}
       </div>
       <div
         ref={(el) => {
@@ -669,7 +689,9 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         style={{
           width: displayW, height: displayH,
           backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
-          backgroundImage: backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined)),
+          backgroundImage: useOriginalBackground
+            ? (reconstructedBackgroundUrl ? `url(${reconstructedBackgroundUrl})` : undefined)
+            : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined))),
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           position: 'relative', overflow: 'hidden', flexShrink: 0,

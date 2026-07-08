@@ -5,6 +5,7 @@ import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 import { getTransparentProductImage } from '@/lib/background-removal'
+import { getReconstructedBackground } from '@/lib/background-reconstruction'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -104,6 +105,18 @@ export async function POST(request: NextRequest) {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ── Background Reconstruction (opt-in) ────────────────────────────────────
+    let reconstructedBackgroundUrl: string | null = null
+    if (transparentImageUrl && imageUrl && canvasData.backgroundSettings?.mode === 'original') {
+      try {
+        const reconResult = await getReconstructedBackground(imageUrl, transparentImageUrl, storeId, adminSupabase)
+        reconstructedBackgroundUrl = reconResult?.backgroundUrl ?? null
+      } catch (reconErr: any) {
+        console.error(`[generate/single] Background reconstruction failed for productId=${product.id}, falling back to solid:`, reconErr.message)
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const productLayerSettings = canvasData.productLayerSettings || undefined
     const buffer = await compositeImage(canvasData, {
       title: product.title,
@@ -114,6 +127,7 @@ export async function POST(request: NextRequest) {
       imageUrl,
       transparentImageUrl,
       shotTypeOverride: (product as any).shot_type_override ?? null,
+      reconstructedBackgroundUrl,
     }, {
       templateMode: transparentImageUrl ? 'ai_product' : 'standard',
       productLayerSettings,

@@ -134,6 +134,29 @@ export function AiProductModePanel() {
               <span className="text-xs text-muted-foreground">Custom color</span>
             </div>
 
+            {/* Original background (opt-in AI reconstruction) */}
+            <button
+              onClick={() => setBackgroundSettings({ mode: 'original' })}
+              className={`w-full p-2.5 rounded-lg border text-left transition-all ${
+                bgSettings.mode === 'original'
+                  ? 'border-primary bg-primary/5 text-primary'
+                  : 'border-border hover:border-muted-foreground/40'
+              }`}
+            >
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-semibold">Original Background</p>
+                <Sparkles className="h-3 w-3" />
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Keep the product&apos;s own studio backdrop — AI removes only the product and fills the gap.
+              </p>
+            </button>
+            {bgSettings.mode === 'original' && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                Uses Cloudinary&apos;s Generative Remove AI — billed separately from background removal, works best on plain studio backdrops, and may take a moment to generate the first time per photo.
+              </p>
+            )}
+
             {/* Note about blur-extend/smart modes */}
             {(bgSettings.mode === 'blur-extend' || bgSettings.mode === 'smart') && (
               <p className="text-xs text-amber-600 dark:text-amber-400">

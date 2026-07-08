@@ -170,6 +170,11 @@ export type BackgroundMode =
   | 'blur-extend'  // blurred + zoomed copy of the image behind it (Instagram style)
   | 'gradient'     // 2-stop gradient derived from image OR user-chosen colors
   | 'transparent'  // alpha-0 fill (for PNG exports)
+  | 'original'     // opt-in: the ORIGINAL photo's own background, with only the
+                    // product region AI-inpainted (Cloudinary Generative Remove).
+                    // Only has an effect in ai_product mode with a successful
+                    // cutout — falls back to 'solid' otherwise (enforced in
+                    // serverRenderBackground, not here).
 
 export interface GradientStop {
   color: string   // hex
