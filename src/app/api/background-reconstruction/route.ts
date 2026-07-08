@@ -35,8 +35,9 @@ export async function POST(request: NextRequest) {
   const result = await getReconstructedBackground(imageUrl, transparentUrl, storeId, admin)
 
   return NextResponse.json({
-    backgroundUrl: result?.backgroundUrl ?? null,
-    fromCache: result?.fromCache ?? false,
+    backgroundUrl: result.backgroundUrl,
+    fromCache: result.fromCache,
+    error: result.error,
   })
 }
 

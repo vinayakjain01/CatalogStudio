@@ -329,8 +329,8 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   if (transparentImageUrl && imageUrl && (canvasData as any).backgroundSettings?.mode === 'original') {
     try {
       const reconResult = await getReconstructedBackground(imageUrl, transparentImageUrl, job.store_id, supabase)
-      reconstructedBackgroundUrl = reconResult?.backgroundUrl ?? null
-      console.log(`[runJob] Background reconstruction ${reconResult ? (reconResult.fromCache ? 'cached' : 'fresh') : 'unavailable'} for jobId=${job.id}`)
+      reconstructedBackgroundUrl = reconResult.backgroundUrl
+      console.log(`[runJob] Background reconstruction ${reconResult.backgroundUrl ? (reconResult.fromCache ? 'cached' : 'fresh') : `unavailable (${reconResult.error})`} for jobId=${job.id}`)
     } catch (reconErr: any) {
       console.error(`[runJob] Background reconstruction failed for jobId=${job.id}, falling back to solid:`, reconErr.message)
     }

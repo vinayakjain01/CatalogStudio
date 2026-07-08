@@ -85,22 +85,26 @@ const REGION_PADDING_FRACTION = 0.08
 // ─── Main service function ───────────────────────────────────────────────────
 
 export interface ReconstructionResult {
-  backgroundUrl: string
-  cloudinaryId: string
+  backgroundUrl: string | null
+  cloudinaryId: string | null
   fromCache: boolean
+  /** Set when backgroundUrl is null due to a failure — never thrown, always returned, so callers/UIs can show the real reason instead of a silent bypass. */
+  error?: string
 }
 
 /**
  * Get the original background with the product region removed and inpainted.
- * Returns null (never throws) on any failure — callers should fall back to
- * their existing default background rather than fail the whole generation.
+ * Never throws — any failure comes back as { backgroundUrl: null, error }, so
+ * callers can fall back to their existing default background (the fallback
+ * behavior is unchanged; only the diagnostic detail is new) rather than fail
+ * the whole generation.
  */
 export async function getReconstructedBackground(
   sourceUrl: string,
   transparentCutoutUrl: string,
   storeId: string,
   supabase: SupabaseClient
-): Promise<ReconstructionResult | null> {
+): Promise<ReconstructionResult> {
   const cacheKey = getReconstructionCacheKey(sourceUrl)
 
   // 1. Check cache
@@ -136,7 +140,7 @@ export async function getReconstructedBackground(
 
     if (regionW <= 0 || regionH <= 0) {
       console.warn('[background-reconstruction] degenerate region, bypassing')
-      return null
+      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: 'degenerate region (bounds detection produced an empty box)' }
     }
 
     // 4. Ensure source is on Cloudinary, then run region-based Generative Remove.
@@ -162,9 +166,14 @@ export async function getReconstructedBackground(
     })
 
     const eagerResult = uploadResult.eager?.[0]
+    if (eagerResult?.status === 'error' || eagerResult?.error) {
+      const reason = eagerResult?.error?.message || JSON.stringify(eagerResult)
+      console.error('[background-reconstruction] Eager transform reported an error:', reason)
+      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: `Cloudinary eager transform error: ${reason}` }
+    }
     if (!eagerResult?.secure_url) {
-      console.error('[background-reconstruction] Generative Remove produced no result, bypassing')
-      return null
+      console.error('[background-reconstruction] Generative Remove produced no result, bypassing. Raw eager response:', JSON.stringify(uploadResult.eager))
+      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: 'Generative Remove produced no result (no eager.secure_url in response — check server logs for the raw response)' }
     }
 
     const backgroundUrl = eagerResult.secure_url
@@ -185,9 +194,11 @@ export async function getReconstructedBackground(
 
     return { backgroundUrl, cloudinaryId, fromCache: false }
   } catch (err: any) {
-    // Non-fatal by design — the caller falls back to the solid background.
-    console.error('[background-reconstruction] Failed, bypassing:', err?.message)
-    return null
+    // Non-fatal by design — the caller falls back to the solid background —
+    // but the real reason is now returned, not just logged server-side.
+    const reason = err?.error?.message || err?.message || String(err)
+    console.error('[background-reconstruction] Failed, bypassing:', reason)
+    return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: reason }
   }
 }
 

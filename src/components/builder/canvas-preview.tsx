@@ -546,7 +546,7 @@ function AiModePositioning({
   // generation pipeline uses — not the opaque original — otherwise
   // classification would take the unreliable "no transparency" fallback path.
   const { transparentUrl } = useTransparentPreview(imageUrl, storeId, enabled)
-  const { result } = useProductPositioningPreview(
+  const { result, error } = useProductPositioningPreview(
     transparentUrl,
     canvasW, canvasH,
     positioningSettings,
@@ -560,13 +560,37 @@ function AiModePositioning({
     : settings
 
   return (
-    <ProductLayerPreview
-      imageUrl={imageUrl}
-      storeId={storeId}
-      enabled={enabled}
-      settings={effectiveSettings}
-      scaleX={scaleX}
-    />
+    <>
+      <ProductLayerPreview
+        imageUrl={imageUrl}
+        storeId={storeId}
+        enabled={enabled}
+        settings={effectiveSettings}
+        scaleX={scaleX}
+      />
+      {/* Temporary debug badge — shows exactly what Positioning decided, so a
+          silent "no visible change" can be diagnosed from a screenshot
+          instead of guessed at. Remove once positioning is confirmed working
+          end-to-end. */}
+      {Boolean(positioningSettings?.enabled) && (
+        <div
+          style={{
+            position: 'absolute', left: 4, bottom: 4, zIndex: 99999,
+            fontSize: 9, lineHeight: 1.4, fontFamily: 'monospace',
+            background: 'rgba(0,0,0,0.75)', color: '#0f0', padding: '3px 6px',
+            borderRadius: 4, maxWidth: '90%', whiteSpace: 'pre-wrap', pointerEvents: 'none',
+          }}
+        >
+          {error
+            ? `positioning ERROR: ${error}`
+            : !transparentUrl
+              ? 'positioning: waiting for transparent cutout…'
+              : !result
+                ? 'positioning: waiting for /api/product-positioning/preview…'
+                : `positioning: shotType=${result.shotType} apply=${result.apply} wouldCrop=${result.wouldCrop}`}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -618,7 +642,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const { transparentUrl: transparentUrlForBg } = useTransparentPreview(
     product.imageUrl, storeId ?? null, useOriginalBackground
   )
-  const { backgroundUrl: reconstructedBackgroundUrl, loading: reconstructingBackground } =
+  const { backgroundUrl: reconstructedBackgroundUrl, loading: reconstructingBackground, error: reconstructionError } =
     useBackgroundReconstructionPreview(product.imageUrl, transparentUrlForBg, storeId ?? null, useOriginalBackground)
 
   const transparentBg = bgSettings.mode === 'transparent'
@@ -678,6 +702,19 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             Reconstructing background…
+          </span>
+        )}
+        {/* Temporary debug text — surfaces the real Cloudinary/API failure
+            reason instead of silently falling back, so a blank/white
+            background can be diagnosed from a screenshot. Remove once this
+            is confirmed working end-to-end. */}
+        {useOriginalBackground && !reconstructingBackground && (
+          <span className="text-xs font-mono" style={{ color: reconstructionError ? '#dc2626' : '#16a34a' }}>
+            {reconstructionError
+              ? `bg-reconstruction ERROR: ${reconstructionError}`
+              : reconstructedBackgroundUrl
+                ? 'bg-reconstruction: OK'
+                : 'bg-reconstruction: no result (check transparent cutout loaded)'}
           </span>
         )}
       </div>
