@@ -55,25 +55,17 @@ export async function uploadBuffer(
 }
 
 /**
- * Insert delivery transforms into a Cloudinary URL. Inserts right after `/upload/`.
+ * Insert delivery transforms into a Cloudinary URL. Inserts right after
+ * `/upload/`. Safe to call once per URL.
  *
  *   .../image/upload/v123/foo.png
- *   .../image/upload/f_auto,q_auto:best,dpr_auto,fl_progressive/v123/foo.png
+ *   .../image/upload/f_auto,q_auto:best/v123/foo.png
  *
- * f_auto       — WebP/AVIF for browsers that support it; JPEG fallback.
- * q_auto:best  — highest quality automatic compression (vs :good which is lower).
- * dpr_auto     — serve 2× pixels on Retina/HiDPI screens automatically.
- *                On a Retina display showing the image at 1024px, Cloudinary
- *                delivers 2048px — zero blurriness at 1:1 pixel mapping.
- * fl_progressive — progressive JPEG loading (first pass shows full image at
- *                  lower quality, subsequent passes sharpen — feels faster).
- *
- * For luxury fashion catalog creatives, quality > file size at every step.
+ * q_auto:best — highest quality automatic optimization (vs :good which is lower).
+ * For luxury fashion catalog creatives, quality > file size.
  */
 export function toDeliveryUrl(secureUrl: string, extra?: string): string {
-  const transform = ['f_auto', 'q_auto:best', 'dpr_auto', 'fl_progressive', extra]
-    .filter(Boolean)
-    .join(',')
+  const transform = ['f_auto', 'q_auto:best', extra].filter(Boolean).join(',')
   return secureUrl.replace('/upload/', `/upload/${transform}/`)
 }
 

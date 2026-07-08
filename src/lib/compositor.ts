@@ -4,11 +4,20 @@ import {
   CanvasData, Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
   BackgroundSettings, DEFAULT_BACKGROUND_SETTINGS,
   ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS,
+  ProductPositioningSettings,
 } from '@/types/template'
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
+import {
+  resolveProductPositioning,
+  placementToProductLayerSettings,
+  computeStandardModeTargetBox,
+  classifyProductImage,
+  type ClassifyResult,
+  type ProductBounds,
+} from '@/lib/product-positioning'
 import type { Canvas } from '@napi-rs/canvas'
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -90,6 +99,8 @@ interface ProductData {
   imageUrl: string | null
   /** Transparent PNG URL from background removal. Set when template is in ai_product mode. */
   transparentImageUrl?: string | null
+  /** Manual per-product shot-type override for Product Positioning (null/undefined = auto-detect). */
+  shotTypeOverride?: string | null
 }
 
 export interface CompositeOptions {
@@ -475,32 +486,16 @@ function drawFittedImage(
     const sh = img.height * scale
     ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
   } else {
-    // 'fill' — draw at exactly the given x/y/w/h coordinates.
-    // Head-space placement pre-calculates these so the image fits inside the
-    // canvas exactly. We draw using the full source image (sx=0,sy=0,sw=img.width,
-    // sh=img.height) mapped to the destination rect.
+    // 'fill' — draw at exactly the given x/y/w/h coordinates, e.g. when
+    // Product Positioning has pre-calculated a placement (see
+    // src/lib/product-positioning.ts) that already accounts for aspect ratio.
+    // We draw using the full source image (sx=0,sy=0,sw=img.width,sh=img.height)
+    // mapped to the destination rect.
     //
     // No clip needed — the caller handles borderRadius clipping before this call.
     ctx.drawImage(img, 0, 0, img.width, img.height, x, y, w, h)
   }
 }
-
-// ─── Head Space AI Extend Integration ────────────────────────────────────────
-//
-// When Smart Auto Zoom causes the product to overflow the canvas, we call
-// getExtendedImage with an EXPANDED source-image so the AI can fill the gap.
-//
-// Strategy:
-//   1. Detect overflow from the calculated placement.
-//   2. Compute required canvas expansion (computeExtendedCanvasDimensions).
-//   3. Call getExtendedImage with the expanded dimensions.
-//   4. Draw the extended image, then overlay the product at the correct
-//      position (adjusted for the canvas offset).
-//
-// This is different from the existing ai_extend objectFit mode, which
-// extends the original image to fit the template canvas. Here we are
-// extending the canvas ITSELF to accommodate a zoomed product, then
-// compositing both the extended background and the sharp product on top.
 
 // ─── Main Composite Function ──────────────────────────────────────────────────
 
@@ -564,18 +559,32 @@ export async function compositeImage(
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
-    // Layer-drawing options passed to every drawLayer call
-    const layerOpts = {
-      storeId: options.storeId,
-      supabase: options.supabase,
-      targetW,
-      targetH,
-    }
-
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
+      // ── Product Positioning (Head Space) — ai_product mode ─────────────────
+      // Pure local math, no network calls: the background already fills 100%
+      // of the canvas above (serverRenderBackground), so repositioning the
+      // transparent cutout on top never creates a gap that needs filling.
+      // Must run against targetW/targetH (pre-supersample), not W/H — the
+      // result is converted to percentages, which are supersample-invariant.
+      const positioning = await resolveProductPositioning(
+        product.transparentImageUrl,
+        targetW, targetH,
+        canvasData.productPositioningSettings,
+        product.shotTypeOverride
+      )
+      if (positioning.apply && positioning.placement) {
+        productLayerSettings = placementToProductLayerSettings(
+          positioning.placement, targetW, targetH, productLayerSettings
+        )
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       const allLayers = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
       const bgLayers = allLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
       const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
+
+      // Layer-drawing options passed to every drawLayer call
+      const layerOpts = { storeId: options.storeId, supabase: options.supabase, targetW, targetH }
 
       for (const layer of bgLayers) {
         await drawLayer(ctx, layer, product, W, H, layerOpts)
@@ -592,6 +601,33 @@ export async function compositeImage(
         await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     } else {
+      // ── Product Positioning (Head Space) — standard mode ────────────────────
+      // Unlike ai_product mode, there's no separate background layer under the
+      // product photo here, so repositioning can require filling extra space.
+      // Reuse the EXISTING ai_extend (Cloudinary generative fill) pipeline for
+      // that — see the '{{product_image}}' handling inside drawLayer() below —
+      // rather than any new canvas-expansion mechanism.
+      let standardModePositioning: ClassifyResult | null = null
+      const positioningSettings = canvasData.productPositioningSettings
+      if (positioningSettings?.enabled && product.imageUrl) {
+        try {
+          const classified = await classifyProductImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
+          if (classified.applies) standardModePositioning = classified
+        } catch (err: any) {
+          console.warn('[product-positioning] standard-mode classification failed, bypassing:', err?.message)
+        }
+      }
+
+      const layerOpts = {
+        storeId: options.storeId,
+        supabase: options.supabase,
+        targetW,
+        targetH,
+        standardModePositioning: standardModePositioning
+          ? { bounds: standardModePositioning.bounds, settings: positioningSettings! }
+          : null,
+      }
+
       const sorted = [...canvasData.layers].sort((a, b) => a.zIndex - b.zIndex)
       for (const layer of sorted) {
         await drawLayer(ctx, layer, product, W, H, layerOpts)
@@ -669,6 +705,8 @@ async function drawLayer(
     supabase?: any
     targetW?: number
     targetH?: number
+    /** Product Positioning (standard mode) — set only when classification says apply. */
+    standardModePositioning?: { bounds: ProductBounds; settings: ProductPositioningSettings } | null
   }
 ): Promise<void> {
   const x = (layer.x / 100) * W
@@ -764,14 +802,33 @@ async function drawLayer(
       const radius = (l as any).borderRadius ?? 0
 
       if (imgSrc) {
+        // ── Product Positioning (standard mode) ────────────────────────────
+        // When classification says this image should be repositioned, force
+        // the existing ai_extend path with a target box derived from the
+        // placement math (rather than the layer's own configured target),
+        // instead of any new canvas-expansion mechanism. If the native image
+        // aspect ratio already satisfies the placement, or the placement
+        // would crop, computeStandardModeTargetBox returns null and the
+        // layer's own objectFit is left completely untouched.
+        let effectiveFit = fit
+        let extendTargetOverride: { targetW: number; targetH: number } | null = null
+        if (l.src === '{{product_image}}' && options?.standardModePositioning) {
+          const { bounds, settings } = options.standardModePositioning
+          const box = computeStandardModeTargetBox(bounds, w, h, settings)
+          if (box) {
+            effectiveFit = 'ai_extend'
+            extendTargetOverride = box
+          }
+        }
+
         // ── AI Extend: use Cloudinary Generative Fill ──────────────────────
         // When objectFit='ai_extend' and we have a product image layer,
         // the extend service returns an already-full-canvas image so we
         // draw it cover-style (should fill exactly with no empty space).
         let resolvedSrc = imgSrc
-        if (fit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
-          const targetW = options.targetW ?? W
-          const targetH = options.targetH ?? H
+        if (effectiveFit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
+          const targetW = extendTargetOverride?.targetW ?? options.targetW ?? W
+          const targetH = extendTargetOverride?.targetH ?? options.targetH ?? H
           // Check if extend is actually needed (skip if image already fills canvas)
           const imgForCheck = await loadImageSafe(imgSrc).catch(() => null)
           const actualNeedsExtend = imgForCheck
@@ -805,7 +862,7 @@ async function drawLayer(
             ctx.clip()
           }
           // ai_extend result already fills exactly, so draw it as 'cover'
-          const drawFit = fit === 'ai_extend' ? 'cover' : fit as 'cover' | 'contain' | 'fill'
+          const drawFit = effectiveFit === 'ai_extend' ? 'cover' : effectiveFit as 'cover' | 'contain' | 'fill'
           drawFittedImage(ctx, img, x, y, w, h, drawFit)
           ctx.restore()
         } catch (err: any) {

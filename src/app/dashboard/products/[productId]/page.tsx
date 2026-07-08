@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { ArrowLeft, ImageIcon, Download } from 'lucide-react'
 import { ProductGenerateButton } from '@/components/products/product-generate-button'
+import { ProductShotTypeSelector } from '@/components/products/product-shot-type-selector'
 import { formatDistanceToNow } from 'date-fns'
 
 export default async function ProductDetailPage({
@@ -104,6 +105,12 @@ export default async function ProductDetailPage({
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Generated creative</h2>
             <ProductGenerateButton productId={product.id} storeId={(product as any).stores.id} />
+          </div>
+          <div className="mb-2">
+            <ProductShotTypeSelector
+              productId={product.id}
+              initialValue={(product as any).shot_type_override ?? null}
+            />
           </div>
 
           {generatedImages.length > 0 ? (

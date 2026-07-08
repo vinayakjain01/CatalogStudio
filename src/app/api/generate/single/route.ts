@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
   // Load this one product
   const { data: product } = await adminSupabase
     .from('products')
-    .select(`id, title, vendor, product_type, tags, price, compare_at_price,
+    .select(`id, title, vendor, product_type, tags, price, compare_at_price, shot_type_override,
       product_images(src, is_primary)`)
     .eq('id', productId)
     .eq('store_id', storeId)
@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
       product_type: product.product_type,
       imageUrl,
       transparentImageUrl,
+      shotTypeOverride: (product as any).shot_type_override ?? null,
     }, {
       templateMode: transparentImageUrl ? 'ai_product' : 'standard',
       productLayerSettings,

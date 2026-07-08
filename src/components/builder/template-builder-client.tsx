@@ -9,6 +9,7 @@ import { LayerProperties } from './layer-properties'
 import { ToolBar } from './toolbar'
 import { ProductPreviewSelector } from './product-preview-selector'
 import { AiProductModePanel } from './ai-product-mode-panel'
+import { ProductPositioningPanel } from './product-positioning-panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -18,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Save, ArrowLeft, Loader2, Layers, Sparkles } from 'lucide-react'
+import { Save, ArrowLeft, Loader2, Layers, Sparkles, AlignVerticalJustifyStart } from 'lucide-react'
 import { CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
 import Link from 'next/link'
 
@@ -35,7 +36,7 @@ interface Props {
   storeId?: string | null
 }
 
-type RightPanelTab = 'layers' | 'properties' | 'ai'
+type RightPanelTab = 'layers' | 'properties' | 'ai' | 'positioning'
 
 export function TemplateBuilderClient({ template, categories, previewProducts = [], storeId }: Props) {
   const router = useRouter()
@@ -218,12 +219,20 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
               label="AI"
               highlight={isAiMode}
             />
+            <TabButton
+              active={rightTab === 'positioning'}
+              onClick={() => setRightTab('positioning')}
+              icon={<AlignVerticalJustifyStart className="h-3.5 w-3.5" />}
+              label="Space"
+              highlight={canvasData.productPositioningSettings?.enabled}
+            />
           </div>
 
           <div className="flex-1 overflow-y-auto">
             {rightTab === 'layers' && <LayerPanel embedded />}
             {rightTab === 'properties' && <LayerProperties />}
             {rightTab === 'ai' && <AiProductModePanel />}
+            {rightTab === 'positioning' && <ProductPositioningPanel />}
           </div>
         </div>
       </div>

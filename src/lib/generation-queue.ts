@@ -252,7 +252,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     'supabase.products.load_for_generation',
     () => supabase
       .from('products')
-      .select(`id, title, vendor, product_type, tags, price, compare_at_price, import_id,
+      .select(`id, title, vendor, product_type, tags, price, compare_at_price, import_id, shot_type_override,
         product_images(src, is_primary)`)
       .eq('id', job.product_id)
       .single(),
@@ -329,6 +329,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     product_type: product.product_type,
     imageUrl,
     transparentImageUrl,
+    shotTypeOverride: (product as any).shot_type_override ?? null,
   }, {
     templateMode: transparentImageUrl ? 'ai_product' : 'standard',
     productLayerSettings,

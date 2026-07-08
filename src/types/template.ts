@@ -210,6 +210,7 @@ export interface CanvasData {
   backgroundSettings?: BackgroundSettings
   templateMode?: TemplateMode
   productLayerSettings?: ProductLayerSettings
+  productPositioningSettings?: ProductPositioningSettings
 }
 
 // ─── AI Product Mode ─────────────────────────────────────────────────────────
@@ -262,4 +263,47 @@ export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
   glowBlur: 15,
   zIndex: 5,
   padding: 4,
+}
+
+// ─── Product Positioning ("Head Space") ──────────────────────────────────────
+// Aligns the product's visible bounding box to a consistent head position
+// across all products rendered through a template. Classification (heuristic,
+// no AI call) gates WHICH images this applies to — see src/lib/product-positioning.ts.
+// All fields optional on CanvasData; absence or enabled:false is a byte-identical
+// no-op with the pre-existing rendering path.
+
+export type ShotType =
+  | 'full_body'   // head-space applies
+  | 'half_body'   // head-space applies
+  | 'close_up'    // bypassed — renders exactly as today
+  | 'detail'      // bypassed
+  | 'flat_lay'    // bypassed
+  | 'accessory'   // bypassed
+
+export const SHOT_TYPES: ShotType[] = ['full_body', 'half_body', 'close_up', 'detail', 'flat_lay', 'accessory']
+
+export interface ProductPositioningSettings {
+  enabled: boolean                 // default false — master no-op switch
+  headSpacePx: number              // default 120 — distance from canvas top to head
+  leftMarginPx: number             // default 40
+  rightMarginPx: number            // default 40
+  bottomMarginPx: number           // default 40
+  autoCenterHorizontally: boolean  // default true
+  scaleMode: 'fit' | 'smart_fit'   // default 'smart_fit' — move first, scale only if required
+  maxUpscale: number               // default 1.5 — never zoom more than this far beyond plain "contain"
+  applyToShotTypes: ShotType[]     // default ['full_body', 'half_body']
+  showGuide: boolean               // default true — editor-only static guide overlay toggle
+}
+
+export const DEFAULT_PRODUCT_POSITIONING_SETTINGS: ProductPositioningSettings = {
+  enabled: false,
+  headSpacePx: 120,
+  leftMarginPx: 40,
+  rightMarginPx: 40,
+  bottomMarginPx: 40,
+  autoCenterHorizontally: true,
+  scaleMode: 'smart_fit',
+  maxUpscale: 1.5,
+  applyToShotTypes: ['full_body', 'half_body'],
+  showGuide: true,
 }

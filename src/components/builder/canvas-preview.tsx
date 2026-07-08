@@ -10,6 +10,9 @@ import {
 import { useSmartBackground } from './smart-background'
 import { useTransparentPreview } from './use-transparent-preview'
 import { useExtendPreview } from './use-extend-preview'
+import { useProductPositioningPreview } from './use-product-positioning-preview'
+import { ProductPositioningGuide } from './product-positioning-guide'
+import { placementToProductLayerSettings } from '@/lib/product-positioning-shared'
 import { Loader2, Sparkles, Wand2 } from 'lucide-react'
 
 const MAX_W = 580
@@ -406,6 +409,59 @@ function ProductLayerPreview({
   )
 }
 
+// ─── Product Positioning — live preview wrapper (ai_product mode) ────────────
+// Recomputes the real placement (via the server's product-positioning module,
+// since bounds detection needs @napi-rs/canvas) and overrides the settings fed
+// into ProductLayerPreview, so the editor shows the actual computed position
+// rather than a static guideline.
+
+function AiModePositioning({
+  imageUrl,
+  storeId,
+  enabled,
+  settings,
+  positioningSettings,
+  scaleX,
+  canvasW,
+  canvasH,
+}: {
+  imageUrl: string | null
+  storeId: string | null
+  enabled: boolean
+  settings: typeof DEFAULT_PRODUCT_LAYER_SETTINGS
+  positioningSettings: import('@/types/template').ProductPositioningSettings | undefined
+  scaleX: number
+  canvasW: number
+  canvasH: number
+}) {
+  // Positioning must run against the SAME transparent image the real
+  // generation pipeline uses — not the opaque original — otherwise
+  // classification would take the unreliable "no transparency" fallback path.
+  const { transparentUrl } = useTransparentPreview(imageUrl, storeId, enabled)
+  const { result } = useProductPositioningPreview(
+    transparentUrl,
+    canvasW, canvasH,
+    positioningSettings,
+    null,
+    storeId,
+    enabled && Boolean(positioningSettings?.enabled)
+  )
+
+  const effectiveSettings = (result?.apply && result.placement)
+    ? placementToProductLayerSettings(result.placement, canvasW, canvasH, settings)
+    : settings
+
+  return (
+    <ProductLayerPreview
+      imageUrl={imageUrl}
+      storeId={storeId}
+      enabled={enabled}
+      settings={effectiveSettings}
+      scaleX={scaleX}
+    />
+  )
+}
+
 // ─── Canvas Preview ───────────────────────────────────────────────────────────
 
 export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
@@ -500,15 +556,27 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
       >
         {bgLayers.map(renderLayer)}
         {isAiMode && (
-          <ProductLayerPreview
+          <AiModePositioning
             imageUrl={product.imageUrl}
             storeId={storeId ?? null}
             enabled={isAiMode}
             settings={productLayerSettings}
+            positioningSettings={canvasData.productPositioningSettings}
             scaleX={scaleX}
+            canvasW={cW}
+            canvasH={cH}
           />
         )}
         {fgLayers.map(renderLayer)}
+        {canvasData.productPositioningSettings?.enabled && (
+          <ProductPositioningGuide
+            settings={canvasData.productPositioningSettings}
+            displayW={displayW}
+            displayH={displayH}
+            canvasW={cW}
+            canvasH={cH}
+          />
+        )}
       </div>
     </div>
   )

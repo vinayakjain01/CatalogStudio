@@ -9,6 +9,8 @@ import {
   TemplateMode,
   ProductLayerSettings,
   DEFAULT_PRODUCT_LAYER_SETTINGS,
+  ProductPositioningSettings,
+  DEFAULT_PRODUCT_POSITIONING_SETTINGS,
 } from '@/types/template'
 import { nanoid } from 'nanoid'
 
@@ -47,12 +49,7 @@ interface BuilderStore {
 
   setTemplateMode: (mode: TemplateMode) => void
   setProductLayerSettings: (settings: Partial<ProductLayerSettings>) => void
-
-  /**
-   * Merge a partial settings update.
-   * Missing keys are filled from the current stored settings or
-   * DEFAULT_HEAD_SPACE_SETTINGS (which itself has all v2 fields).
-   */
+  setProductPositioningSettings: (settings: Partial<ProductPositioningSettings>) => void
 
   loadTemplate: (canvasData: CanvasData) => void
   resetDirty: () => void
@@ -102,6 +99,18 @@ export const useBuilderStore = create<BuilderStore>((set, get) => ({
         ...s.canvasData,
         productLayerSettings: {
           ...(s.canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS),
+          ...settings,
+        },
+      },
+      isDirty: true,
+    })),
+
+  setProductPositioningSettings: (settings) =>
+    set(s => ({
+      canvasData: {
+        ...s.canvasData,
+        productPositioningSettings: {
+          ...(s.canvasData.productPositioningSettings ?? DEFAULT_PRODUCT_POSITIONING_SETTINGS),
           ...settings,
         },
       },
