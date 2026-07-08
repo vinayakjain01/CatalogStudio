@@ -12,12 +12,14 @@ import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, needsExtend } from '@/lib/image-extend'
 import {
   resolveProductPositioning,
-  placementToProductLayerSettings,
-  computeStandardModeTargetBox,
   classifyProductImage,
   type ClassifyResult,
-  type ProductBounds,
 } from '@/lib/product-positioning'
+import {
+  placementToProductLayerSettings,
+  calculatePlacement,
+  type ProductBounds,
+} from '@/lib/product-positioning-shared'
 import type { Canvas } from '@napi-rs/canvas'
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -320,6 +322,33 @@ function serverRenderBlurExtend(
   ctx.restore()
 }
 
+const POSITIONING_GAP_BLUR = 30
+
+/**
+ * Fills an arbitrary (x,y,w,h) box with a blurred, zoomed copy of the SAME
+ * image — used behind a Product Positioning repositioned photo (standard
+ * mode) so any margin left by the reposition/scale is filled with pixels
+ * guaranteed to match the photo's own lighting/color/texture, rather than
+ * a blank gap. Same technique as serverRenderBlurExtend, just box-scoped.
+ */
+function drawBlurredBackdropInBox(
+  ctx: any,
+  imgNode: any,
+  x: number, y: number,
+  w: number, h: number
+) {
+  const scale = Math.max(w / imgNode.width, h / imgNode.height) * 1.15
+  const sw = imgNode.width * scale
+  const sh = imgNode.height * scale
+  const sx = x + (w - sw) / 2
+  const sy = y + (h - sh) / 2
+  ctx.save()
+  ctx.filter = `blur(${POSITIONING_GAP_BLUR}px) saturate(1.1) brightness(0.95)`
+  ctx.drawImage(imgNode, sx, sy, sw, sh)
+  ctx.filter = 'none'
+  ctx.restore()
+}
+
 async function serverRenderBackground(
   ctx: any,
   canvasData: CanvasData,
@@ -564,17 +593,23 @@ export async function compositeImage(
       // Pure local math, no network calls: the background already fills 100%
       // of the canvas above (serverRenderBackground), so repositioning the
       // transparent cutout on top never creates a gap that needs filling.
-      // Must run against targetW/targetH (pre-supersample), not W/H — the
-      // result is converted to percentages, which are supersample-invariant.
+      //
+      // Must run against rawW/rawH (canvasData.width/height) — headSpacePx
+      // and the margins are configured in the builder relative to THAT size
+      // (it's what the "Distance from top" slider and its max, and the
+      // editor's guide-line overlay, are both calibrated against), not the
+      // upscaled targetW/targetH output size. The result is then converted
+      // to percentages (divided by the SAME rawW/rawH used to compute it),
+      // which are correctly resolution-independent from there on.
       const positioning = await resolveProductPositioning(
         product.transparentImageUrl,
-        targetW, targetH,
+        rawW, rawH,
         canvasData.productPositioningSettings,
         product.shotTypeOverride
       )
       if (positioning.apply && positioning.placement) {
         productLayerSettings = placementToProductLayerSettings(
-          positioning.placement, targetW, targetH, productLayerSettings
+          positioning.placement, rawW, rawH, productLayerSettings
         )
       }
       // ─────────────────────────────────────────────────────────────────────
@@ -603,10 +638,9 @@ export async function compositeImage(
     } else {
       // ── Product Positioning (Head Space) — standard mode ────────────────────
       // Unlike ai_product mode, there's no separate background layer under the
-      // product photo here, so repositioning can require filling extra space.
-      // Reuse the EXISTING ai_extend (Cloudinary generative fill) pipeline for
-      // that — see the '{{product_image}}' handling inside drawLayer() below —
-      // rather than any new canvas-expansion mechanism.
+      // product photo here, so repositioning can leave empty space that gets
+      // filled with a blurred backdrop of the same photo — see the
+      // '{{product_image}}' handling inside drawLayer() below.
       let standardModePositioning: ClassifyResult | null = null
       const positioningSettings = canvasData.productPositioningSettings
       if (positioningSettings?.enabled && product.imageUrl) {
@@ -623,6 +657,8 @@ export async function compositeImage(
         supabase: options.supabase,
         targetW,
         targetH,
+        rawW,
+        rawH,
         standardModePositioning: standardModePositioning
           ? { bounds: standardModePositioning.bounds, settings: positioningSettings! }
           : null,
@@ -705,6 +741,9 @@ async function drawLayer(
     supabase?: any
     targetW?: number
     targetH?: number
+    /** Raw canvasData.width/height — what headSpacePx/margins are calibrated against (see below). */
+    rawW?: number
+    rawH?: number
     /** Product Positioning (standard mode) — set only when classification says apply. */
     standardModePositioning?: { bounds: ProductBounds; settings: ProductPositioningSettings } | null
   }
@@ -803,44 +842,62 @@ async function drawLayer(
 
       if (imgSrc) {
         // ── Product Positioning (standard mode) ────────────────────────────
-        // When classification says this image should be repositioned, force
-        // the existing ai_extend path with a target box derived from the
-        // placement math (rather than the layer's own configured target),
-        // instead of any new canvas-expansion mechanism. If the native image
-        // aspect ratio already satisfies the placement, or the placement
-        // would crop, computeStandardModeTargetBox returns null and the
-        // layer's own objectFit is left completely untouched.
-        let effectiveFit = fit
-        let extendTargetOverride: { targetW: number; targetH: number } | null = null
+        // Directly apply the computed placement (move + scale the SAME photo
+        // within its own layer box) rather than routing through ai_extend —
+        // ai_extend only fixes aspect-ratio mismatches; it does nothing when
+        // the photo already matches the box's aspect ratio but the subject's
+        // head sits at a different offset within it, which is the common
+        // case Product Positioning needs to solve. When the repositioned
+        // photo leaves empty space at the edges (e.g. shrunk slightly to
+        // avoid cropping), a blurred/zoomed copy of the SAME photo fills the
+        // gap first — guaranteed to match lighting/color/texture since it's
+        // the same source pixels, reusing the blur-extend technique already
+        // used for backgrounds elsewhere in this file.
+        let positioningPlacement: { imgX: number; imgY: number; renderedW: number; renderedH: number } | null = null
         if (l.src === '{{product_image}}' && options?.standardModePositioning) {
           const { bounds, settings } = options.standardModePositioning
-          const box = computeStandardModeTargetBox(bounds, w, h, settings)
-          if (box) {
-            effectiveFit = 'ai_extend'
-            extendTargetOverride = box
+          // headSpacePx/margins are configured relative to rawW/rawH (what the
+          // builder's slider and its guide-line overlay are calibrated
+          // against) — but w/h here are in W/H's pixel space, which can be
+          // supersampled (2-3x larger) at render time. Scale them into that
+          // same space before computing, so "151px" means the same fraction
+          // of canvas height it did in the editor, not a near-invisible
+          // sliver of a much taller internal canvas.
+          const rawW = options.rawW ?? W
+          const rawH = options.rawH ?? H
+          const scaleX = W / rawW
+          const scaleY = H / rawH
+          const scaledSettings = {
+            ...settings,
+            headSpacePx:    settings.headSpacePx    * scaleY,
+            leftMarginPx:   settings.leftMarginPx   * scaleX,
+            rightMarginPx:  settings.rightMarginPx  * scaleX,
+            bottomMarginPx: settings.bottomMarginPx * scaleY,
           }
+          const { placement, wouldCrop } = calculatePlacement(bounds, w, h, scaledSettings)
+          if (!wouldCrop) positioningPlacement = placement
         }
 
         // ── AI Extend: use Cloudinary Generative Fill ──────────────────────
-        // When objectFit='ai_extend' and we have a product image layer,
-        // the extend service returns an already-full-canvas image so we
-        // draw it cover-style (should fill exactly with no empty space).
+        // Original purpose, unchanged: when objectFit='ai_extend' on the
+        // product layer and Product Positioning isn't overriding this layer,
+        // outpaint the image to fit the layer's aspect ratio.
         let resolvedSrc = imgSrc
-        if (effectiveFit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
-          const targetW = extendTargetOverride?.targetW ?? options.targetW ?? W
-          const targetH = extendTargetOverride?.targetH ?? options.targetH ?? H
+        if (!positioningPlacement && fit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
+          const extTargetW = options.targetW ?? W
+          const extTargetH = options.targetH ?? H
           // Check if extend is actually needed (skip if image already fills canvas)
           const imgForCheck = await loadImageSafe(imgSrc).catch(() => null)
           const actualNeedsExtend = imgForCheck
-            ? needsExtend(imgForCheck.width, imgForCheck.height, targetW, targetH)
+            ? needsExtend(imgForCheck.width, imgForCheck.height, extTargetW, extTargetH)
             : true
 
           if (actualNeedsExtend) {
             try {
               const extendResult = await getExtendedImage(
                 imgSrc,
-                targetW,
-                targetH,
+                extTargetW,
+                extTargetH,
                 options.storeId,
                 options.supabase
               )
@@ -857,13 +914,28 @@ async function drawLayer(
         try {
           const img = await loadImageSafe(resolvedSrc)
           ctx.save()
-          if (radius > 0) {
+          if (positioningPlacement) {
+            // Always clip to the layer's own box when repositioning — the
+            // sharp image is drawn at a computed offset/scale that can
+            // legitimately extend past this rectangle at its edges; without
+            // a clip it would bleed into whatever's drawn around this layer.
             roundRect(ctx, x, y, w, h, radius)
             ctx.clip()
+            drawBlurredBackdropInBox(ctx, img, x, y, w, h)
+            ctx.drawImage(
+              img, 0, 0, img.width, img.height,
+              x + positioningPlacement.imgX, y + positioningPlacement.imgY,
+              positioningPlacement.renderedW, positioningPlacement.renderedH
+            )
+          } else {
+            if (radius > 0) {
+              roundRect(ctx, x, y, w, h, radius)
+              ctx.clip()
+            }
+            // ai_extend result already fills exactly, so draw it as 'cover'
+            const drawFit = fit === 'ai_extend' ? 'cover' : fit as 'cover' | 'contain' | 'fill'
+            drawFittedImage(ctx, img, x, y, w, h, drawFit)
           }
-          // ai_extend result already fills exactly, so draw it as 'cover'
-          const drawFit = effectiveFit === 'ai_extend' ? 'cover' : effectiveFit as 'cover' | 'contain' | 'fill'
-          drawFittedImage(ctx, img, x, y, w, h, drawFit)
           ctx.restore()
         } catch (err: any) {
           console.error('[compositor] image load failed:', resolvedSrc, err?.message)

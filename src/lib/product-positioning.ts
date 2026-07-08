@@ -26,10 +26,13 @@ import type { ProductPositioningSettings, ShotType } from '@/types/template'
 import { SHOT_TYPES } from '@/types/template'
 import {
   placementToProductLayerSettings,
+  calculatePlacement,
   type HeadSpacePlacement,
+  type PlacementResult,
+  type ProductBounds as SharedProductBounds,
 } from '@/lib/product-positioning-shared'
 
-export { placementToProductLayerSettings, type HeadSpacePlacement }
+export { placementToProductLayerSettings, calculatePlacement, type HeadSpacePlacement, type PlacementResult }
 
 // ─── URL normalization ────────────────────────────────────────────────────────
 
@@ -51,15 +54,7 @@ function stripResizeParams(src: string): string {
 
 // ─── Bounds detection ─────────────────────────────────────────────────────────
 
-export interface ProductBounds {
-  left: number
-  top: number
-  right: number
-  bottom: number
-  imageWidth: number
-  imageHeight: number
-  hasTransparency: boolean
-}
+export type ProductBounds = SharedProductBounds
 
 const ALPHA_THRESHOLD = 20
 const MAX_ANALYSIS_DIM = 800
@@ -258,151 +253,15 @@ function isValidShotType(value: unknown): value is ShotType {
   return typeof value === 'string' && (SHOT_TYPES as string[]).includes(value)
 }
 
-// ─── No-crop placement ─────────────────────────────────────────────────────────
-//
-// Ported from the old head-space.ts (that math was never the bug) with one
-// addition: a max-upscale clamp so a tightly-cropped image manually
-// overridden into full_body/half_body can't be zoomed in past readable
-// quality. Reducing scale below the raw no-crop scale can only ever shrink
-// the rendered box further inside the already-safe bounds, so it cannot
-// introduce new overflow.
-
-export interface PlacementResult {
-  placement: HeadSpacePlacement
-  wouldCrop: boolean
-  clampedByMaxUpscale: boolean
-}
-
-export function calculatePlacement(
-  bounds: ProductBounds,
-  canvasW: number,
-  canvasH: number,
-  settings: Pick<ProductPositioningSettings,
-    'headSpacePx' | 'leftMarginPx' | 'rightMarginPx' | 'bottomMarginPx' |
-    'autoCenterHorizontally' | 'scaleMode' | 'maxUpscale'>
-): PlacementResult {
-  const { headSpacePx, leftMarginPx, rightMarginPx, bottomMarginPx, autoCenterHorizontally, scaleMode, maxUpscale } = settings
-
-  const contentW = bounds.right - bounds.left
-  const contentH = bounds.bottom - bounds.top
-
-  const availableW = canvasW - leftMarginPx - rightMarginPx
-  const availableH = canvasH - headSpacePx - bottomMarginPx
-
-  // Degenerate geometry (e.g. margins configured larger than the canvas) —
-  // fall back to a basic contain-to-canvas fit. Never crops; just ignores
-  // head-space/margins for this one pathological configuration.
-  if (contentW <= 0 || contentH <= 0 || availableW <= 0 || availableH <= 0) {
-    const fallbackScale = Math.min(canvasW / bounds.imageWidth, canvasH / bounds.imageHeight)
-    return {
-      placement: {
-        imgX: (canvasW - bounds.imageWidth * fallbackScale) / 2,
-        imgY: (canvasH - bounds.imageHeight * fallbackScale) / 2,
-        renderedW: bounds.imageWidth * fallbackScale,
-        renderedH: bounds.imageHeight * fallbackScale,
-        scale: fallbackScale,
-      },
-      wouldCrop: false,
-      clampedByMaxUpscale: false,
-    }
-  }
-
-  const containScale = Math.min(availableW / contentW, availableH / contentH)
-
-  let rawScale: number
-  if (scaleMode === 'smart_fit') {
-    // Move first, scale only if required to hit the head-space target while
-    // keeping the FULL image (not just the visible silhouette) inside canvas.
-    const constraints: number[] = [
-      availableW / contentW,                                   // visible width fits
-      availableH / contentH,                                   // visible height fits
-      availableH / (bounds.imageHeight - bounds.top),          // full image bottom fits
-    ]
-    if (bounds.top > 0) constraints.push(headSpacePx / bounds.top)   // full image top fits
-    const valid = constraints.filter(s => isFinite(s) && s > 0)
-    rawScale = valid.length > 0 ? Math.min(...valid) : containScale
-  } else {
-    // 'fit' — plain contain, still subject to the same full-image safety
-    // constraints so it can never push the image off-canvas.
-    const safe: number[] = [containScale, availableH / (bounds.imageHeight - bounds.top)]
-    if (bounds.top > 0) safe.push(headSpacePx / bounds.top)
-    rawScale = Math.min(...safe.filter(s => isFinite(s) && s > 0))
-  }
-
-  const maxAllowedScale = containScale * maxUpscale
-  const scale = Math.min(rawScale, maxAllowedScale)
-  const clampedByMaxUpscale = scale < rawScale - 1e-9
-
-  const renderedW = bounds.imageWidth * scale
-  const renderedH = bounds.imageHeight * scale
-  const imgY = headSpacePx - bounds.top * scale
-
-  let imgX: number
-  if (autoCenterHorizontally) {
-    const contentCenterOnCanvas = leftMarginPx + availableW / 2
-    imgX = contentCenterOnCanvas - (bounds.left + contentW / 2) * scale
-  } else {
-    imgX = leftMarginPx - bounds.left * scale
-  }
-
-  // Final defensive clamp — floating point can push us fractions of a pixel
-  // outside; this guarantees the full image never starts left/above canvas
-  // origin or ends right/below the canvas edge.
-  const clampedImgX = Math.max(0, Math.min(imgX, canvasW - renderedW))
-  const clampedImgY = Math.max(0, Math.min(imgY, canvasH - renderedH))
-
-  const overflowLeft   = Math.max(0, -clampedImgX)
-  const overflowTop    = Math.max(0, -clampedImgY)
-  const overflowRight  = Math.max(0, clampedImgX + renderedW - canvasW)
-  const overflowBottom = Math.max(0, clampedImgY + renderedH - canvasH)
-  const wouldCrop = overflowLeft > 0.5 || overflowTop > 0.5 || overflowRight > 0.5 || overflowBottom > 0.5
-
-  return {
-    placement: { imgX: clampedImgX, imgY: clampedImgY, renderedW, renderedH, scale },
-    wouldCrop,
-    clampedByMaxUpscale,
-  }
-}
-
-/**
- * Standard-mode target box for the EXISTING ai_extend pipeline (Cloudinary
- * generative fill). Treats the layer's own box as the "canvas" for placement
- * purposes (standard-mode product layers are typically full-bleed). Returns
- * null when no extend is warranted — either the native image aspect ratio
- * already satisfies the placement within needsExtend's 1% tolerance (the
- * common case, stays network-free), or the placement would crop (the hard
- * backstop — bypass rather than force a bad extend).
- */
-export function computeStandardModeTargetBox(
-  bounds: ProductBounds,
-  layerBoxW: number,
-  layerBoxH: number,
-  settings: ProductPositioningSettings
-): { targetW: number; targetH: number } | null {
-  const { placement, wouldCrop } = calculatePlacement(bounds, layerBoxW, layerBoxH, settings)
-  if (wouldCrop) return null
-
-  const targetW = Math.round(placement.renderedW)
-  const targetH = Math.round(placement.renderedH)
-
-  const nativeRatio = bounds.imageWidth / bounds.imageHeight
-  const targetRatio = targetW / targetH
-  const ratioDiff = Math.abs(nativeRatio - targetRatio) / nativeRatio
-
-  // Matches needsExtend()'s own 1% tolerance (src/lib/image-extend/index.ts) —
-  // keep these in sync so "no extend needed" means the same thing in both places.
-  if (ratioDiff <= 0.01) return null
-
-  return { targetW, targetH }
-}
+// calculatePlacement / PlacementResult now live in product-positioning-shared.ts
+// (pure math, no @napi-rs/canvas dependency — imported and re-exported above).
 
 // ─── Classification step — shared by both template modes ─────────────────────
 //
 // ai_product mode needs a single canvas-sized placement (the product layer's
 // settings ARE the placement). standard mode needs the classification/allow-list
 // decision made independently of any specific layer box, since the actual
-// placement math there runs per-layer against that layer's own box (see
-// computeStandardModeTargetBox above). This step is shared between both.
+// placement math there runs per-layer against that layer's own box.
 
 export interface ClassifyResult {
   shotType: ShotType

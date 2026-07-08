@@ -119,9 +119,95 @@ function AiExtendImageLayer({
   )
 }
 
+// ─── Product Positioning Image Layer Preview (standard mode) ─────────────────
+// Live-previews the actual computed reposition (move + scale within the
+// layer's own box, blurred backdrop filling any gap) — matches what the
+// server compositor now does for standard-mode templates.
+
+function PositionedProductImageLayer({
+  imageUrl,
+  storeId,
+  positioningSettings,
+  boxPixelW,
+  boxPixelH,
+  fallbackObjectFit,
+}: {
+  imageUrl: string | null
+  storeId: string | null
+  positioningSettings: import('@/types/template').ProductPositioningSettings
+  boxPixelW: number
+  boxPixelH: number
+  fallbackObjectFit: 'cover' | 'contain' | 'fill'
+}) {
+  const { result } = useProductPositioningPreview(
+    imageUrl,
+    Math.round(boxPixelW), Math.round(boxPixelH),
+    positioningSettings,
+    null,
+    storeId,
+    Boolean(imageUrl && storeId && boxPixelW && boxPixelH)
+  )
+
+  if (!imageUrl) {
+    return (
+      <div style={{
+        width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
+      }}>
+        Product Image
+      </div>
+    )
+  }
+
+  // No placement yet (loading / bypassed / not applicable) — show the plain
+  // image with its normal fit so there's no flicker/empty state.
+  if (!result?.apply || !result.placement) {
+    return (
+      <img
+        src={imageUrl}
+        alt=""
+        draggable={false}
+        style={{ width: '100%', height: '100%', objectFit: fallbackObjectFit, pointerEvents: 'none' }}
+      />
+    )
+  }
+
+  const { imgX, imgY, renderedW, renderedH } = result.placement
+  const pctX = (v: number) => `${(v / boxPixelW) * 100}%`
+  const pctY = (v: number) => `${(v / boxPixelH) * 100}%`
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
+      {/* Blurred backdrop — same photo, fills any gap left by the reposition */}
+      <img
+        src={imageUrl}
+        alt=""
+        draggable={false}
+        style={{
+          position: 'absolute', inset: 0, width: '100%', height: '100%',
+          objectFit: 'cover', filter: 'blur(20px) saturate(1.1) brightness(0.95)',
+          transform: 'scale(1.15)', pointerEvents: 'none',
+        }}
+      />
+      {/* Sharp repositioned image at the exact computed placement */}
+      <img
+        src={imageUrl}
+        alt=""
+        draggable={false}
+        style={{
+          position: 'absolute',
+          left: pctX(imgX), top: pctY(imgY),
+          width: pctX(renderedW), height: pctY(renderedH),
+          objectFit: 'fill', pointerEvents: 'none',
+        }}
+      />
+    </div>
+  )
+}
+
 // ─── Layer Renderer ───────────────────────────────────────────────────────────
 
-function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, onChange }: {
+function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, onChange, positioningSettings, storeId, cW, cH, isAiMode }: {
   layer: Layer
   selected: boolean
   scaleX: number
@@ -129,6 +215,11 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
   canvasEl: HTMLDivElement | null
   onSelect: () => void
   onChange: (updates: Partial<Layer>) => void
+  positioningSettings: import('@/types/template').ProductPositioningSettings | undefined
+  storeId: string | null
+  cW: number
+  cH: number
+  isAiMode: boolean
 }) {
   const startDrag = useCallback((e: React.MouseEvent, kind: DragKind) => {
     e.stopPropagation()
@@ -238,10 +329,26 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
       const isProductImage = l.src === '{{product_image}}'
       const realSrc = isProductImage ? product.imageUrl : l.src
 
+      // Product Positioning (standard mode): live-preview the actual computed
+      // reposition, matching what the server compositor now does.
+      if (!isAiMode && isProductImage && positioningSettings?.enabled && product.imageUrl) {
+        const boxPixelW = (layer.width / 100) * cW
+        const boxPixelH = (layer.height / 100) * cH
+        return wrap(
+          <PositionedProductImageLayer
+            imageUrl={product.imageUrl}
+            storeId={storeId}
+            positioningSettings={positioningSettings}
+            boxPixelW={boxPixelW}
+            boxPixelH={boxPixelH}
+            fallbackObjectFit={l.objectFit === 'ai_extend' ? 'contain' : l.objectFit}
+          />,
+          { borderRadius: l.borderRadius, overflow: 'hidden' }
+        )
+      }
+
       // AI Extend mode: use the dedicated component which has its own hook
       if (l.objectFit === 'ai_extend' && isProductImage) {
-        // Read storeId stored on the canvas DOM element
-        const storeId = (canvasEl as any)?.__storeId ?? null
         const canvasW = canvasEl?.offsetWidth ?? 1080
         const canvasH = canvasEl?.offsetHeight ?? 1080
         const targetW = Math.round((layer.width / 100) * canvasW)
@@ -523,6 +630,11 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         selected={selectedLayerId === layer.id}
         onSelect={() => selectLayer(layer.id)}
         onChange={(updates) => updateLayer(layer.id, updates)}
+        positioningSettings={canvasData.productPositioningSettings}
+        storeId={storeId ?? null}
+        cW={cW}
+        cH={cH}
+        isAiMode={isAiMode}
       />
     )
   }
