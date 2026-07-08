@@ -8,7 +8,11 @@ import { getTransparentProductImage } from '@/lib/background-removal'
 import { getReconstructedBackground } from '@/lib/background-reconstruction'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+// Was 60s; bumped since the optional Background Reconstruction step
+// (backgroundSettings.mode === 'original') can itself take up to 60s
+// (Cloudinary Generative Remove polling — see background-reconstruction/index.ts),
+// on top of background removal + compositing + upload for everyone else.
+export const maxDuration = 120
 
 function getAdminClient() {
   // Node.js 20 (and the Vercel Node runtime in some regions) has no native

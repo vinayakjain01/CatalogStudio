@@ -16,6 +16,10 @@ import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/generation-queue'
 import { getReconstructedBackground, getReconstructionCacheKey } from '@/lib/background-reconstruction'
 
+// Generative Remove polls for up to 60s (see background-reconstruction/index.ts) —
+// give the function enough headroom to not get killed mid-poll.
+export const maxDuration = 90
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

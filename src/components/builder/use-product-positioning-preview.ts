@@ -8,6 +8,8 @@ export interface PositioningPreviewResult {
   shotType: ShotType | null
   placement: { imgX: number; imgY: number; renderedW: number; renderedH: number; scale: number } | null
   wouldCrop: boolean
+  /** Diagnostic only — raw signals behind the shotType decision. */
+  signals?: { coverageRatio: number; aspectRatio: number; hasTransparency: boolean }
 }
 
 // Module-level in-memory cache, same convention as use-transparent-preview.ts /

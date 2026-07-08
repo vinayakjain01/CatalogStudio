@@ -50,25 +50,19 @@ export function getReconstructionCacheKey(sourceUrl: string): string {
   return crypto.createHash('sha256').update(`${sourceUrl}|gen_remove|v1`).digest('hex')
 }
 
-// ─── Upload source image to Cloudinary ───────────────────────────────────────
-// Same pattern as image-extend/index.ts's ensureOnCloudinary — kept as its
-// own copy rather than a shared import, matching this codebase's convention
-// of each AI-pipeline module being self-contained.
+// ─── Async eager-transform polling ────────────────────────────────────────────
+// Generative Remove is a heavier AI operation than Generative Fill (object
+// detection + inpainting) — it does not reliably complete within a
+// synchronous eager_async:false request the way image-extend's Generative
+// Fill does. Mirrors the EXACT proven pattern already used in this codebase
+// for a similarly heavy Cloudinary AI call: src/lib/background-removal/
+// cloudinary-provider.ts's background_removal polling (2s interval, 60s cap).
 
-async function ensureOnCloudinary(sourceUrl: string): Promise<string> {
-  const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME
-  if (sourceUrl.includes(`res.cloudinary.com/${cloudName}`)) {
-    const match = sourceUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-z]+)?$/)
-    if (match) return match[1]
-  }
+const POLL_INTERVAL_MS = 2000
+const POLL_MAX_ATTEMPTS = 30 // 60 seconds max
 
-  const result = await cloudinary.uploader.upload(sourceUrl, {
-    folder: 'bg-reconstruction-sources',
-    public_id: `src_${crypto.createHash('sha256').update(sourceUrl).digest('hex').slice(0, 16)}`,
-    overwrite: false,
-    resource_type: 'image',
-  })
-  return result.public_id
+async function sleep(ms: number) {
+  return new Promise(r => setTimeout(r, ms))
 }
 
 // ─── Region padding ───────────────────────────────────────────────────────────
@@ -144,7 +138,6 @@ export async function getReconstructedBackground(
     }
 
     // 4. Ensure source is on Cloudinary, then run region-based Generative Remove.
-    const publicId = await ensureOnCloudinary(sourceUrl)
     const eagerPublicId = `bg-reconstructed/${cacheKey.slice(0, 24)}`
 
     // Cloudinary Generative Remove, region syntax: removes the given
@@ -162,22 +155,36 @@ export async function getReconstructedBackground(
       overwrite: true,
       resource_type: 'image',
       eager: [{ effect, fetch_format: 'auto', quality: 'auto:best' }],
-      eager_async: false, // wait for the eager transform so we can cache the final URL immediately
+      eager_async: true, // Generative Remove is heavy (object detection + inpainting) —
+                          // doesn't reliably finish synchronously; poll for it below,
+                          // same proven pattern as background-removal/cloudinary-provider.ts.
     })
 
-    const eagerResult = uploadResult.eager?.[0]
-    if (eagerResult?.status === 'error' || eagerResult?.error) {
+    const publicId = uploadResult.public_id
+    let eagerResult = uploadResult.eager?.[0]
+
+    if (!eagerResult?.secure_url) {
+      for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+        await sleep(POLL_INTERVAL_MS)
+        const resource = await cloudinary.api.resource(publicId, { resource_type: 'image', eager: true }).catch(() => null)
+        eagerResult = resource?.eager?.[0]
+        if (eagerResult?.status === 'failed' || eagerResult?.error) break
+        if (eagerResult?.secure_url) break
+      }
+    }
+
+    if (eagerResult?.status === 'error' || eagerResult?.status === 'failed' || eagerResult?.error) {
       const reason = eagerResult?.error?.message || JSON.stringify(eagerResult)
       console.error('[background-reconstruction] Eager transform reported an error:', reason)
       return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: `Cloudinary eager transform error: ${reason}` }
     }
     if (!eagerResult?.secure_url) {
-      console.error('[background-reconstruction] Generative Remove produced no result, bypassing. Raw eager response:', JSON.stringify(uploadResult.eager))
-      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: 'Generative Remove produced no result (no eager.secure_url in response — check server logs for the raw response)' }
+      console.error('[background-reconstruction] Generative Remove timed out after 60s, bypassing. Raw eager response:', JSON.stringify(eagerResult))
+      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: `Generative Remove timed out after 60s (last eager status: ${JSON.stringify(eagerResult)})` }
     }
 
     const backgroundUrl = eagerResult.secure_url
-    const cloudinaryId = uploadResult.public_id
+    const cloudinaryId = publicId
 
     // 5. Cache
     await supabase

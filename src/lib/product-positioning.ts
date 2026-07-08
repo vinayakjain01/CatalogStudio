@@ -73,19 +73,33 @@ export const CLASSIFICATION_THRESHOLDS = {
   accessoryMaxCoverage: 0.12,
   /** Opaque (no-transparency) fallback: aspect ratio threshold for full_body vs flat_lay. */
   opaqueFullBodyAspectRatio: 1.15,
-  /** Edge-to-edge vertical span + narrow width → 'detail'. */
+  /** Edge-to-edge vertical span + narrow width + high coverage → 'detail'. */
   detailMinAspectRatio: 1.6,
-  /** Very tall/narrow silhouette → 'close_up'. */
-  closeUpMinAspectRatio: 2.2,
-  /** full_body band. */
-  fullBodyMinAspectRatio: 1.35,
-  fullBodyMinCoverage: 0.25,
+  detailMinCoverage: 0.4,
+  /**
+   * Tall/narrow AND fills most of the frame → 'close_up'.
+   * Aspect ratio alone is NOT a reliable close-up signal — a standing human
+   * figure is naturally 3-4x taller than wide, so a genuine full-body shot
+   * with generous product-photography margins is ALSO tall/narrow in SHAPE.
+   * What actually distinguishes "zoomed in tight" from "full body with
+   * headroom" is COVERAGE: a close-up fills most of the frame; a full body
+   * shot with margins occupies much less of it despite the same aspect ratio.
+   * Both conditions must hold, or a real full-body photo gets misclassified
+   * (this exact bug was observed: a full-body photo at aspect ratio ~2.3-2.5
+   * with normal margins was wrongly caught by an aspect-ratio-only rule).
+   */
+  closeUpMinAspectRatio: 2.6,
+  closeUpMinCoverage: 0.45,
+  /** full_body band — deliberately wide aspect-ratio allowance (a standing
+   *  figure can be very tall/narrow) but capped coverage (margins are typical). */
+  fullBodyMinAspectRatio: 1.3,
+  fullBodyMinCoverage: 0.12,
   fullBodyMaxCoverage: 0.85,
   /** half_body band. */
-  halfBodyMinAspectRatio: 0.9,
-  halfBodyMaxAspectRatio: 1.35,
+  halfBodyMinAspectRatio: 0.8,
+  halfBodyMaxAspectRatio: 1.3,
   halfBodyMinCoverage: 0.2,
-  /** Above this coverage ratio (and not already 'detail') → 'flat_lay'. */
+  /** Above this coverage ratio (and not already 'detail'/'close_up') → 'flat_lay'. */
   flatLayMinCoverage: 0.85,
 } as const
 
@@ -135,12 +149,15 @@ export function classifyShotType(signals: ClassificationSignals): ShotType {
   if (
     signals.touchesTopEdge && signals.touchesBottomEdge &&
     !signals.touchesLeftEdge && !signals.touchesRightEdge &&
-    signals.aspectRatio >= t.detailMinAspectRatio
+    signals.aspectRatio >= t.detailMinAspectRatio &&
+    signals.coverageRatio >= t.detailMinCoverage
   ) {
     return 'detail'
   }
 
-  if (signals.aspectRatio >= t.closeUpMinAspectRatio) return 'close_up'
+  if (signals.aspectRatio >= t.closeUpMinAspectRatio && signals.coverageRatio >= t.closeUpMinCoverage) {
+    return 'close_up'
+  }
 
   if (
     signals.aspectRatio >= t.fullBodyMinAspectRatio &&
@@ -181,6 +198,7 @@ export interface ClassifyResult {
   shotType: ShotType
   bounds: ProductBounds
   applies: boolean
+  signals: ClassificationSignals
 }
 
 export async function classifyProductImage(
@@ -189,9 +207,10 @@ export async function classifyProductImage(
   manualShotTypeOverride?: ShotType | string | null
 ): Promise<ClassifyResult> {
   const bounds = await detectProductBounds(imageUrl)
+  const signals = computeClassificationSignals(bounds)
   const override = isValidShotType(manualShotTypeOverride) ? manualShotTypeOverride : null
-  const shotType = override ?? classifyShotType(computeClassificationSignals(bounds))
-  return { shotType, bounds, applies: settings.applyToShotTypes.includes(shotType) }
+  const shotType = override ?? classifyShotType(signals)
+  return { shotType, bounds, applies: settings.applyToShotTypes.includes(shotType), signals }
 }
 
 // ─── Orchestration — ai_product mode's single entry point ────────────────────
@@ -201,6 +220,8 @@ export interface ResolvePositioningResult {
   shotType: ShotType | null
   placement: HeadSpacePlacement | null
   wouldCrop: boolean
+  /** Diagnostic only — raw signals behind the shotType decision. */
+  signals?: ClassificationSignals
 }
 
 export async function resolveProductPositioning(
@@ -226,15 +247,15 @@ export async function resolveProductPositioning(
   }
 
   if (!classified.applies) {
-    return { apply: false, shotType: classified.shotType, placement: null, wouldCrop: false }
+    return { apply: false, shotType: classified.shotType, placement: null, wouldCrop: false, signals: classified.signals }
   }
 
   const { placement, wouldCrop } = calculatePlacement(classified.bounds, canvasW, canvasH, settings)
 
   if (wouldCrop) {
     console.warn(`[product-positioning] placement would crop (shotType=${classified.shotType}) — bypassing to default rendering`)
-    return { apply: false, shotType: classified.shotType, placement: null, wouldCrop: true }
+    return { apply: false, shotType: classified.shotType, placement: null, wouldCrop: true, signals: classified.signals }
   }
 
-  return { apply: true, shotType: classified.shotType, placement, wouldCrop: false }
+  return { apply: true, shotType: classified.shotType, placement, wouldCrop: false, signals: classified.signals }
 }

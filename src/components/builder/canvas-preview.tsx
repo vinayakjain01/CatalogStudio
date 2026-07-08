@@ -587,7 +587,10 @@ function AiModePositioning({
               ? 'positioning: waiting for transparent cutout…'
               : !result
                 ? 'positioning: waiting for /api/product-positioning/preview…'
-                : `positioning: shotType=${result.shotType} apply=${result.apply} wouldCrop=${result.wouldCrop}`}
+                : `positioning: shotType=${result.shotType} apply=${result.apply} wouldCrop=${result.wouldCrop}` +
+                  (result.signals
+                    ? ` | aspect=${result.signals.aspectRatio.toFixed(2)} coverage=${result.signals.coverageRatio.toFixed(2)} transparent=${result.signals.hasTransparency}`
+                    : '')}
         </div>
       )}
     </>
