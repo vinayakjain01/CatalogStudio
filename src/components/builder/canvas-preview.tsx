@@ -10,10 +10,18 @@ import {
 import { useSmartBackground } from './smart-background'
 import { useTransparentPreview } from './use-transparent-preview'
 import { useExtendPreview } from './use-extend-preview'
-import { useProductPositioningPreview } from './use-product-positioning-preview'
+import { useProductBounds } from './use-product-bounds'
 import { useBackgroundReconstructionPreview } from './use-background-reconstruction-preview'
 import { ProductPositioningGuide } from './product-positioning-guide'
-import { placementToProductLayerSettings } from '@/lib/product-positioning-shared'
+import {
+  placementToProductLayerSettings,
+  calculatePlacement,
+  computeClassificationSignals,
+  classifyShotType,
+  type ProductBounds,
+  type HeadSpacePlacement,
+} from '@/lib/product-positioning-shared'
+import type { ProductPositioningSettings, ShotType } from '@/types/template'
 import { Loader2, Sparkles, Wand2 } from 'lucide-react'
 
 const MAX_W = 580
@@ -120,6 +128,45 @@ function AiExtendImageLayer({
   )
 }
 
+// ─── Local (client-side) positioning compute ─────────────────────────────────
+// Bounds are fetched ONCE per image (useProductBounds); everything else —
+// classification + placement — is pure math from product-positioning-shared.ts,
+// recomputed synchronously during render on every slider change. This is what
+// makes the live preview instantaneous: zero API calls while dragging.
+// Mirrors the server's resolveProductPositioning() decision flow exactly.
+
+interface LocalPositioning {
+  apply: boolean
+  shotType: ShotType | null
+  placement: HeadSpacePlacement | null
+  wouldCrop: boolean
+  aspectRatio: number | null
+  coverageRatio: number | null
+}
+
+function computeLocalPositioning(
+  bounds: ProductBounds | null,
+  settings: ProductPositioningSettings | undefined,
+  boxW: number,
+  boxH: number
+): LocalPositioning | null {
+  if (!bounds || !settings?.enabled || !boxW || !boxH) return null
+
+  const signals = computeClassificationSignals(bounds)
+  const shotType = classifyShotType(signals)
+  const base = { shotType, aspectRatio: signals.aspectRatio, coverageRatio: signals.coverageRatio }
+
+  if (!settings.applyToShotTypes.includes(shotType)) {
+    return { ...base, apply: false, placement: null, wouldCrop: false }
+  }
+
+  const { placement, wouldCrop } = calculatePlacement(bounds, boxW, boxH, settings)
+  if (wouldCrop) {
+    return { ...base, apply: false, placement: null, wouldCrop: true }
+  }
+  return { ...base, apply: true, placement, wouldCrop: false }
+}
+
 // ─── Product Positioning Image Layer Preview (standard mode) ─────────────────
 // Live-previews the actual computed reposition (move + scale within the
 // layer's own box, blurred backdrop filling any gap) — matches what the
@@ -135,19 +182,14 @@ function PositionedProductImageLayer({
 }: {
   imageUrl: string | null
   storeId: string | null
-  positioningSettings: import('@/types/template').ProductPositioningSettings
+  positioningSettings: ProductPositioningSettings
   boxPixelW: number
   boxPixelH: number
   fallbackObjectFit: 'cover' | 'contain' | 'fill'
 }) {
-  const { result } = useProductPositioningPreview(
-    imageUrl,
-    Math.round(boxPixelW), Math.round(boxPixelH),
-    positioningSettings,
-    null,
-    storeId,
-    Boolean(imageUrl && storeId && boxPixelW && boxPixelH)
-  )
+  // One network fetch per image; placement below is instant local math.
+  const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId))
+  const result = computeLocalPositioning(bounds, positioningSettings, Math.round(boxPixelW), Math.round(boxPixelH))
 
   if (!imageUrl) {
     return (
@@ -545,19 +587,36 @@ function AiModePositioning({
   // Positioning must run against the SAME transparent image the real
   // generation pipeline uses — not the opaque original — otherwise
   // classification would take the unreliable "no transparency" fallback path.
+  // Bounds are fetched once per image; everything below is instant local
+  // math, recomputed synchronously on every slider change with no API calls.
   const { transparentUrl } = useTransparentPreview(imageUrl, storeId, enabled)
-  const { result, error } = useProductPositioningPreview(
-    transparentUrl,
-    canvasW, canvasH,
-    positioningSettings,
-    null,
-    storeId,
-    enabled && Boolean(positioningSettings?.enabled)
+  const { bounds, error } = useProductBounds(
+    transparentUrl, storeId, enabled && Boolean(positioningSettings?.enabled)
   )
+  const result = computeLocalPositioning(bounds, positioningSettings, canvasW, canvasH)
 
   const effectiveSettings = (result?.apply && result.placement)
     ? placementToProductLayerSettings(result.placement, canvasW, canvasH, settings)
     : settings
+
+  const positioningOn = Boolean(positioningSettings?.enabled)
+
+  const SHOT_LABELS: Record<ShotType, string> = {
+    full_body: 'Full Body', half_body: 'Half Body', close_up: 'Close-up',
+    detail: 'Detail', flat_lay: 'Flat Lay', accessory: 'Accessory',
+  }
+
+  // Detected content box in canvas percentages — for the guide-mode
+  // bounding-box visualization (editor-only, never exported).
+  const contentBox = (result?.apply && result.placement && bounds) ? (() => {
+    const { imgX, imgY, scale } = result.placement!
+    return {
+      left:   ((imgX + bounds.left * scale) / canvasW) * 100,
+      top:    ((imgY + bounds.top * scale) / canvasH) * 100,
+      width:  (((bounds.right - bounds.left) * scale) / canvasW) * 100,
+      height: (((bounds.bottom - bounds.top) * scale) / canvasH) * 100,
+    }
+  })() : null
 
   return (
     <>
@@ -568,29 +627,37 @@ function AiModePositioning({
         settings={effectiveSettings}
         scaleX={scaleX}
       />
-      {/* Temporary debug badge — shows exactly what Positioning decided, so a
-          silent "no visible change" can be diagnosed from a screenshot
-          instead of guessed at. Remove once positioning is confirmed working
-          end-to-end. */}
-      {Boolean(positioningSettings?.enabled) && (
+      {/* Detected bounding box — visible only with guides on, never exported */}
+      {positioningOn && positioningSettings?.showGuide && contentBox && (
         <div
           style={{
-            position: 'absolute', left: 4, bottom: 4, zIndex: 99999,
-            fontSize: 9, lineHeight: 1.4, fontFamily: 'monospace',
-            background: 'rgba(0,0,0,0.75)', color: '#0f0', padding: '3px 6px',
-            borderRadius: 4, maxWidth: '90%', whiteSpace: 'pre-wrap', pointerEvents: 'none',
+            position: 'absolute',
+            left: `${contentBox.left}%`, top: `${contentBox.top}%`,
+            width: `${contentBox.width}%`, height: `${contentBox.height}%`,
+            border: '1px dashed rgba(16, 185, 129, 0.8)',
+            zIndex: 9998, pointerEvents: 'none',
+          }}
+          aria-hidden="true"
+        />
+      )}
+      {/* Auto-position indicator: what was detected and whether alignment applied */}
+      {positioningOn && (
+        <div
+          style={{
+            position: 'absolute', left: 6, bottom: 6, zIndex: 9999,
+            fontSize: 10, lineHeight: 1.3,
+            background: 'rgba(255,255,255,0.88)', color: '#111', padding: '2px 8px',
+            borderRadius: 999, pointerEvents: 'none', border: '1px solid rgba(0,0,0,0.08)',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.12)', whiteSpace: 'nowrap',
           }}
         >
           {error
-            ? `positioning ERROR: ${error}`
-            : !transparentUrl
-              ? 'positioning: waiting for transparent cutout…'
-              : !result
-                ? 'positioning: waiting for /api/product-positioning/preview…'
-                : `positioning: shotType=${result.shotType} apply=${result.apply} wouldCrop=${result.wouldCrop}` +
-                  (result.signals
-                    ? ` | aspect=${result.signals.aspectRatio.toFixed(2)} coverage=${result.signals.coverageRatio.toFixed(2)} transparent=${result.signals.hasTransparency}`
-                    : '')}
+            ? <span style={{ color: '#dc2626' }}>Detection failed — using manual layout</span>
+            : !bounds
+              ? 'Detecting product…'
+              : result?.apply
+                ? <>Detected: <b>{SHOT_LABELS[result.shotType!]}</b> · auto-aligned</>
+                : <>Detected: <b>{result?.shotType ? SHOT_LABELS[result.shotType] : '—'}</b> · skipped (not in Shot Types)</>}
         </div>
       )}
     </>

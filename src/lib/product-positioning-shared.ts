@@ -8,7 +8,7 @@
  * with zero server-only dependencies.
  */
 
-import type { ProductLayerSettings, ProductPositioningSettings } from '@/types/template'
+import type { ProductLayerSettings, ProductPositioningSettings, ShotType } from '@/types/template'
 
 export interface HeadSpacePlacement {
   imgX: number
@@ -60,6 +60,138 @@ export interface PlacementResult {
   placement: HeadSpacePlacement
   wouldCrop: boolean
   clampedByMaxUpscale: boolean
+}
+
+// ─── Shot-type classification (pure — no @napi-rs/canvas) ────────────────────
+//
+// Heuristic-only (no AI/ML call) — computed purely from a ProductBounds.
+// Lives here (not in the server-only module) so the live editor can classify
+// and re-place INSTANTLY on every slider change from a bounds object it
+// fetched once per image — zero API calls while dragging. Thresholds are
+// tunable; they encode the following reasoning about fashion catalog
+// photography:
+//
+//  - full_body:  a standing figure — tall aspect ratio, moderate-to-large
+//                coverage, with room at the sides for arms/stance.
+//  - half_body:  waist-up/bust shot — less elongated than a standing figure
+//                (width doesn't shrink the way legs do), still substantial
+//                coverage.
+//  - close_up:   tall/narrow AND fills most of the frame. Aspect ratio alone
+//                is NOT a reliable close-up signal — a standing human figure
+//                is naturally 3-4x taller than wide, so a genuine full-body
+//                shot with generous margins is ALSO tall/narrow in shape.
+//                What distinguishes "zoomed in tight" from "full body with
+//                headroom" is COVERAGE.
+//  - detail:     content spans the full vertical frame edge-to-edge but is
+//                narrow — a macro/fabric-texture/zipper shot.
+//  - accessory:  a small isolated object (jewelry/belt/bag) on a large mostly
+//                empty transparent canvas.
+//  - flat_lay:   a garment/object filling almost the entire frame, or the
+//                safe default for anything that doesn't match above.
+//
+// Only 'full_body'/'half_body' land in the default applyToShotTypes allow-list.
+
+export const CLASSIFICATION_THRESHOLDS = {
+  /** Fraction of the shorter image side used as "touches the edge" tolerance. */
+  edgeToleranceFraction: 0.01,
+  minEdgeTolerancePx: 4,
+  /** Below this coverage ratio → 'accessory'. */
+  accessoryMaxCoverage: 0.12,
+  /** Opaque (no-transparency) fallback: aspect ratio threshold for full_body vs flat_lay. */
+  opaqueFullBodyAspectRatio: 1.15,
+  /** Edge-to-edge vertical span + narrow width + high coverage → 'detail'. */
+  detailMinAspectRatio: 1.6,
+  detailMinCoverage: 0.4,
+  /** Tall/narrow AND fills most of the frame → 'close_up'. */
+  closeUpMinAspectRatio: 2.6,
+  closeUpMinCoverage: 0.45,
+  /** full_body band — wide aspect-ratio allowance, capped coverage. */
+  fullBodyMinAspectRatio: 1.3,
+  fullBodyMinCoverage: 0.12,
+  fullBodyMaxCoverage: 0.85,
+  /** half_body band. */
+  halfBodyMinAspectRatio: 0.8,
+  halfBodyMaxAspectRatio: 1.3,
+  halfBodyMinCoverage: 0.2,
+  /** Above this coverage ratio (and not already 'detail'/'close_up') → 'flat_lay'. */
+  flatLayMinCoverage: 0.85,
+} as const
+
+export interface ClassificationSignals {
+  coverageRatio: number
+  aspectRatio: number
+  touchesTopEdge: boolean
+  touchesBottomEdge: boolean
+  touchesLeftEdge: boolean
+  touchesRightEdge: boolean
+  hasTransparency: boolean
+}
+
+export function computeClassificationSignals(bounds: ProductBounds): ClassificationSignals {
+  const contentW = Math.max(1, bounds.right - bounds.left)
+  const contentH = Math.max(1, bounds.bottom - bounds.top)
+  const coverageRatio = (contentW * contentH) / (bounds.imageWidth * bounds.imageHeight)
+  const aspectRatio = contentH / contentW
+
+  const edgeTolerancePx = Math.max(
+    CLASSIFICATION_THRESHOLDS.minEdgeTolerancePx,
+    Math.round(CLASSIFICATION_THRESHOLDS.edgeToleranceFraction * Math.min(bounds.imageWidth, bounds.imageHeight))
+  )
+
+  return {
+    coverageRatio,
+    aspectRatio,
+    touchesTopEdge:    bounds.top    <= edgeTolerancePx,
+    touchesBottomEdge: bounds.bottom >= bounds.imageHeight - 1 - edgeTolerancePx,
+    touchesLeftEdge:   bounds.left   <= edgeTolerancePx,
+    touchesRightEdge:  bounds.right  >= bounds.imageWidth  - 1 - edgeTolerancePx,
+    hasTransparency:   bounds.hasTransparency,
+  }
+}
+
+export function classifyShotType(signals: ClassificationSignals): ShotType {
+  const t = CLASSIFICATION_THRESHOLDS
+
+  // No silhouette data at all — riskiest branch, pure aspect-ratio guess.
+  // The manual per-product override exists specifically to correct this branch.
+  if (!signals.hasTransparency) {
+    return signals.aspectRatio >= t.opaqueFullBodyAspectRatio ? 'full_body' : 'flat_lay'
+  }
+
+  if (signals.coverageRatio < t.accessoryMaxCoverage) return 'accessory'
+
+  if (
+    signals.touchesTopEdge && signals.touchesBottomEdge &&
+    !signals.touchesLeftEdge && !signals.touchesRightEdge &&
+    signals.aspectRatio >= t.detailMinAspectRatio &&
+    signals.coverageRatio >= t.detailMinCoverage
+  ) {
+    return 'detail'
+  }
+
+  if (signals.aspectRatio >= t.closeUpMinAspectRatio && signals.coverageRatio >= t.closeUpMinCoverage) {
+    return 'close_up'
+  }
+
+  if (
+    signals.aspectRatio >= t.fullBodyMinAspectRatio &&
+    signals.coverageRatio >= t.fullBodyMinCoverage &&
+    signals.coverageRatio <= t.fullBodyMaxCoverage
+  ) {
+    return 'full_body'
+  }
+
+  if (
+    signals.aspectRatio >= t.halfBodyMinAspectRatio &&
+    signals.aspectRatio < t.halfBodyMaxAspectRatio &&
+    signals.coverageRatio >= t.halfBodyMinCoverage
+  ) {
+    return 'half_body'
+  }
+
+  if (signals.coverageRatio > t.flatLayMinCoverage) return 'flat_lay'
+
+  return 'flat_lay'
 }
 
 /**

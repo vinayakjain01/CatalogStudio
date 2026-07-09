@@ -271,11 +271,30 @@ function SliderField({
   onChange: (v: number) => void
   unit?: string
 }) {
+  function commitNumber(raw: string) {
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return
+    onChange(Math.min(max, Math.max(min, n)))
+  }
+
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">{label}</p>
-        <span className="text-xs font-mono text-foreground">{value}{unit}</span>
+        <span className="flex items-center gap-0.5">
+          <input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            onChange={e => commitNumber(e.target.value)}
+            className="w-14 h-5 text-xs font-mono text-right bg-transparent border border-border rounded px-1
+                       focus:outline-none focus:border-primary
+                       [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          />
+          <span className="text-xs font-mono text-muted-foreground">{unit}</span>
+        </span>
       </div>
       <input
         type="range"
