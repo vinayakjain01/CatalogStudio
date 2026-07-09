@@ -34,10 +34,6 @@ cloudinary.config({
 
 function instantiateProvider(name: ProviderName): BackgroundRemovalProvider {
   switch (name) {
-    case 'fal-birefnet': {
-      const { FalBirefnetProvider } = require('./fal-birefnet-provider')
-      return new FalBirefnetProvider()
-    }
     case 'removebg': {
       const { RemoveBgProvider } = require('./removebg-provider')
       return new RemoveBgProvider()

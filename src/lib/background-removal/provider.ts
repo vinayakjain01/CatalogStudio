@@ -15,4 +15,4 @@ export interface BackgroundRemovalProvider {
   removeBackground(imageBuffer: Buffer, sourceUrl?: string): Promise<Buffer>
 }
 
-export type ProviderName = 'cloudinary' | 'clipdrop' | 'removebg' | 'photoroom' | 'fal-birefnet'
+export type ProviderName = 'cloudinary' | 'clipdrop' | 'removebg' | 'photoroom'

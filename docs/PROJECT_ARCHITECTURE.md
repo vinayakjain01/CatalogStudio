@@ -82,7 +82,7 @@ Meta feed:  /api/feed/[storeId] (token-authed, public) streams products+generate
 | `src/components/templates/` | **Legacy/dead** — superseded editor components | `canvas-preview.tsx`, `layer-properties.tsx`, `toolbar.tsx` | Zero live imports except `delete-template-button.tsx`, which **is** used |
 | `src/components/rules/`, `src/components/products/`, `src/components/creatives/`, `src/components/drive/`, `src/components/meta/`, `src/components/settings/`, `src/components/dashboard/` | Feature-scoped UI for each dashboard section | | |
 | `src/components/ui/` | shadcn primitives | | Standard, lightly customized |
-| `src/lib/background-removal/` | Multi-provider abstraction + Cloudinary-backed cache | `index.ts`, `provider.ts`, `clipdrop-provider.ts`, `removebg-provider.ts`, `fal-birefnet-provider.ts`, `cloudinary-provider.ts` | `photoroom` is declared but unimplemented (dead union member) |
+| `src/lib/background-removal/` | Multi-provider abstraction + Cloudinary-backed cache | `index.ts`, `provider.ts`, `clipdrop-provider.ts`, `removebg-provider.ts`, `cloudinary-provider.ts` | `photoroom` is declared but unimplemented (dead union member). `fal-birefnet` was removed (fal.ai account locked) |
 | `src/lib/image-extend/` | Cloudinary generative-fill (AI outpaint) wrapper + cache | `index.ts` | |
 | `src/lib/catalog-import/` | Drive/Dropbox URL normalization + robust image download | `image-resolver.ts` | Shared by Drive import; vestige of a planned spreadsheet-based "line sheet" import that was never built |
 | `src/lib/compositor.ts` | **The core rendering engine** — `@napi-rs/canvas` based, draws all layer types, backgrounds, supersampling/downscale | | Second, independent renderer from the DOM-based live editor — must be kept pixel-compatible by hand |
@@ -192,7 +192,7 @@ fallback / Vercel cron drain) converges on generation-queue.runJob():
   6. Mark generation_jobs completed
 ```
 
-Background removal providers: `cloudinary` (default), `clipdrop`, `removebg`, `fal-birefnet`, with configurable fallback chain (`BG_REMOVAL_FALLBACK_PROVIDERS`). Image extend = Cloudinary Generative Fill (AI outpainting) to fit a product photo to the template's aspect ratio without cropping, skipped if AR is already within 1%.
+Background removal providers: `cloudinary` (default), `clipdrop`, `removebg`, with configurable fallback chain (`BG_REMOVAL_FALLBACK_PROVIDERS`). Image extend = Cloudinary Generative Fill (AI outpainting) to fit a product photo to the template's aspect ratio without cropping, skipped if AR is already within 1%.
 
 ## 10. Queue & Worker Architecture
 
@@ -253,7 +253,7 @@ BullMQ retry: 3 attempts, exponential backoff (5s base), no dead-letter queue. `
 | `WORKER_GENERATION_CONCURRENCY`, `WORKER_SYNC_CONCURRENCY`, `DB_POLL_INTERVAL_MS` | Worker tuning |
 | `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Cloudinary SDK |
 | `BG_REMOVAL_PROVIDER`, `BG_REMOVAL_FALLBACK_PROVIDERS` | Background-removal provider selection |
-| `CLIPDROP_API_KEY`, `REMOVEBG_API_KEY`, `FAL_API_KEY` | Individual background-removal provider credentials |
+| `CLIPDROP_API_KEY`, `REMOVEBG_API_KEY` | Individual background-removal provider credentials |
 | `GOOGLE_DRIVE_API_KEY` | Google Drive folder import |
 | `NODE_ENV` | Cookie `secure` flag branching in OAuth routes |
 
