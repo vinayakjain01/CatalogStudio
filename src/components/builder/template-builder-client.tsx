@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Save, ArrowLeft, Loader2, Layers, Sparkles, AlignVerticalJustifyStart } from 'lucide-react'
-import { CanvasData, AspectRatio, ASPECT_RATIOS } from '@/types/template'
+import { CanvasData, AspectRatio, ASPECT_RATIOS, PRODUCT_LAYER_ID } from '@/types/template'
 import Link from 'next/link'
 
 interface Props {
@@ -47,9 +47,11 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
   const [error, setError] = useState('')
   const [rightTab, setRightTab] = useState<RightPanelTab>('layers')
 
-  // Auto-switch to properties panel when a layer is selected
+  // Auto-switch panels on selection: the implicit product layer's controls
+  // live in the AI panel; regular layers use the properties panel.
   useEffect(() => {
-    if (selectedLayerId) setRightTab('properties')
+    if (selectedLayerId === PRODUCT_LAYER_ID) setRightTab('ai')
+    else if (selectedLayerId) setRightTab('properties')
   }, [selectedLayerId])
 
   useEffect(() => {

@@ -264,6 +264,34 @@ export function AiProductModePanel() {
                 onChange={v => setProductLayerSettings({ zIndex: v })}
               />
             </div>
+
+            {/* Flip / Lock — also available on the canvas contextual toolbar */}
+            <div className="flex items-center gap-1.5 pt-1">
+              <button
+                onClick={() => setProductLayerSettings({ flipH: !settings.flipH })}
+                className={`flex-1 py-1.5 text-xs rounded border transition-all ${
+                  settings.flipH ? 'border-primary bg-primary/5 text-primary font-medium' : 'border-border hover:border-muted-foreground/40'
+                }`}
+              >
+                Flip H
+              </button>
+              <button
+                onClick={() => setProductLayerSettings({ flipV: !settings.flipV })}
+                className={`flex-1 py-1.5 text-xs rounded border transition-all ${
+                  settings.flipV ? 'border-primary bg-primary/5 text-primary font-medium' : 'border-border hover:border-muted-foreground/40'
+                }`}
+              >
+                Flip V
+              </button>
+              <button
+                onClick={() => setProductLayerSettings({ locked: !settings.locked })}
+                className={`flex-1 py-1.5 text-xs rounded border transition-all ${
+                  settings.locked ? 'border-primary bg-primary/5 text-primary font-medium' : 'border-border hover:border-muted-foreground/40'
+                }`}
+              >
+                {settings.locked ? '🔒 Locked' : '🔓 Lock'}
+              </button>
+            </div>
           </div>
 
           <Separator />

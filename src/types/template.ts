@@ -248,7 +248,21 @@ export interface ProductLayerSettings {
   zIndex: number          // default 5
   // Padding inside bounding box
   padding: number         // %, default 0
+  // Manual (Canva-style) transforms — all optional so pre-existing saved
+  // templates (which lack them) read as falsy = identity, fully backward
+  // compatible. flip mirrors the cutout; locked disables canvas manipulation.
+  flipH?: boolean         // default false
+  flipV?: boolean         // default false
+  locked?: boolean        // default false
 }
+
+/**
+ * Sentinel selection id for the implicit product layer (ai_product mode). It's
+ * NOT an entry in canvasData.layers, so this id intentionally never matches
+ * canvasData.layers.find(...) — consumers that look up a real layer get
+ * undefined (and handle it), while selection/toolbar logic can still key off it.
+ */
+export const PRODUCT_LAYER_ID = '__product__'
 
 export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
   x: 10,
@@ -268,6 +282,9 @@ export const DEFAULT_PRODUCT_LAYER_SETTINGS: ProductLayerSettings = {
   glowBlur: 15,
   zIndex: 5,
   padding: 4,
+  flipH: false,
+  flipV: false,
+  locked: false,
 }
 
 // ─── Product Positioning ("Head Space") ──────────────────────────────────────

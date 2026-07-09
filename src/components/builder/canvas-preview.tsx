@@ -5,7 +5,7 @@ import { useBuilderStore } from '@/stores/builder-store'
 import {
   Layer, TextLayer, ImageLayer, RectangleLayer, BadgeLayer,
   LogoLayer, OverlayLayer, StickerLayer, resolveVariables,
-  DEFAULT_BACKGROUND_SETTINGS, DEFAULT_PRODUCT_LAYER_SETTINGS,
+  DEFAULT_BACKGROUND_SETTINGS, DEFAULT_PRODUCT_LAYER_SETTINGS, PRODUCT_LAYER_ID,
 } from '@/types/template'
 import { useSmartBackground } from './smart-background'
 import { useTransparentPreview } from './use-transparent-preview'
@@ -39,6 +39,110 @@ const SAMPLE_PRODUCT = {
 type DragKind =
   | { mode: 'move' }
   | { mode: 'resize'; corner: 'nw' | 'ne' | 'sw' | 'se' }
+
+interface BoxRect { x: number; y: number; width: number; height: number }
+
+/**
+ * Shared canvas drag/resize handler (percentage-space, live streaming).
+ * Used by both regular layers (LayerRenderer) and the manual product layer.
+ * `proportional` locks aspect ratio on corner-resize so the product cutout is
+ * never stretched/distorted — regular layers pass it false for free resize.
+ */
+function beginBoxDrag(
+  e: React.MouseEvent,
+  opts: {
+    canvasEl: HTMLDivElement | null
+    box: BoxRect
+    kind: DragKind
+    proportional?: boolean
+    onStart?: () => void
+    onChange: (updates: Partial<BoxRect>) => void
+  }
+) {
+  e.stopPropagation()
+  e.preventDefault()
+  opts.onStart?.()
+  const { canvasEl, box, kind, proportional, onChange } = opts
+  if (!canvasEl) return
+  const rect = canvasEl.getBoundingClientRect()
+  const startX = e.clientX, startY = e.clientY
+  const orig = { ...box }
+  const toPctX = (px: number) => (px / rect.width) * 100
+  const toPctY = (px: number) => (px / rect.height) * 100
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+  function onMove(ev: MouseEvent) {
+    const dx = toPctX(ev.clientX - startX)
+    const dy = toPctY(ev.clientY - startY)
+
+    if (kind.mode === 'move') {
+      onChange({
+        x: clamp(orig.x + dx, 0, 100 - orig.width),
+        y: clamp(orig.y + dy, 0, 100 - orig.height),
+      })
+      return
+    }
+
+    if (proportional) {
+      // Uniform scale anchored at the opposite corner, aspect preserved in
+      // canvas-percentage space (keeps the on-screen box shape constant).
+      const aspect = orig.width / orig.height
+      const outwardDx = kind.corner.includes('e') ? dx : kind.corner.includes('w') ? -dx : 0
+      const maxW = kind.corner.includes('w') ? orig.x + orig.width : 100 - orig.x
+      const maxH = kind.corner.includes('n') ? orig.y + orig.height : 100 - orig.y
+      let width = clamp(orig.width + outwardDx, 2, Math.min(maxW, maxH * aspect))
+      let height = width / aspect
+      const x = kind.corner.includes('w') ? orig.x + orig.width - width : orig.x
+      const y = kind.corner.includes('n') ? orig.y + orig.height - height : orig.y
+      onChange({ x, y, width, height })
+      return
+    }
+
+    let { x, y, width, height } = orig
+    if (kind.corner.includes('e')) width = clamp(orig.width + dx, 2, 100 - orig.x)
+    if (kind.corner.includes('s')) height = clamp(orig.height + dy, 2, 100 - orig.y)
+    if (kind.corner.includes('w')) {
+      width = clamp(orig.width - dx, 2, orig.x + orig.width)
+      x = clamp(orig.x + dx, 0, orig.x + orig.width - 2)
+    }
+    if (kind.corner.includes('n')) {
+      height = clamp(orig.height - dy, 2, orig.y + orig.height)
+      y = clamp(orig.y + dy, 0, orig.y + orig.height - 2)
+    }
+    onChange({ x, y, width, height })
+  }
+  function onUp() {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+/** Rotate handle: angle from box center to pointer (+90 so a straight-up handle = 0°). */
+function beginRotate(
+  e: React.MouseEvent,
+  opts: { canvasEl: HTMLDivElement | null; box: BoxRect; onStart?: () => void; onChange: (deg: number) => void }
+) {
+  e.stopPropagation()
+  e.preventDefault()
+  opts.onStart?.()
+  const { canvasEl, box, onChange } = opts
+  if (!canvasEl) return
+  const rect = canvasEl.getBoundingClientRect()
+  const cx = rect.left + ((box.x + box.width / 2) / 100) * rect.width
+  const cy = rect.top + ((box.y + box.height / 2) / 100) * rect.height
+  function onMove(ev: MouseEvent) {
+    const deg = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI + 90
+    onChange(Math.round(deg))
+  }
+  function onUp() {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
 
 // ─── AI Extend Image Layer Preview ───────────────────────────────────────────
 // Separate component so it can use hooks (rules of hooks: no hooks in callbacks
@@ -265,46 +369,13 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
   isAiMode: boolean
 }) {
   const startDrag = useCallback((e: React.MouseEvent, kind: DragKind) => {
-    e.stopPropagation()
-    e.preventDefault()
-    onSelect()
-    if (!canvasEl) return
-    const rect = canvasEl.getBoundingClientRect()
-    const startX = e.clientX, startY = e.clientY
-    const orig = { x: layer.x, y: layer.y, width: layer.width, height: layer.height }
-    const toPctX = (px: number) => (px / rect.width) * 100
-    const toPctY = (px: number) => (px / rect.height) * 100
-    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
-
-    function onMove(ev: MouseEvent) {
-      const dx = toPctX(ev.clientX - startX)
-      const dy = toPctY(ev.clientY - startY)
-      if (kind.mode === 'move') {
-        onChange({
-          x: clamp(orig.x + dx, 0, 100 - orig.width),
-          y: clamp(orig.y + dy, 0, 100 - orig.height),
-        } as Partial<Layer>)
-        return
-      }
-      let { x, y, width, height } = orig
-      if (kind.corner.includes('e')) width = clamp(orig.width + dx, 2, 100 - orig.x)
-      if (kind.corner.includes('s')) height = clamp(orig.height + dy, 2, 100 - orig.y)
-      if (kind.corner.includes('w')) {
-        width = clamp(orig.width - dx, 2, orig.x + orig.width)
-        x = clamp(orig.x + dx, 0, orig.x + orig.width - 2)
-      }
-      if (kind.corner.includes('n')) {
-        height = clamp(orig.height - dy, 2, orig.y + orig.height)
-        y = clamp(orig.y + dy, 0, orig.y + orig.height - 2)
-      }
-      onChange({ x, y, width, height } as Partial<Layer>)
-    }
-    function onUp() {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    beginBoxDrag(e, {
+      canvasEl,
+      box: { x: layer.x, y: layer.y, width: layer.width, height: layer.height },
+      kind,
+      onStart: onSelect,
+      onChange: (updates) => onChange(updates as Partial<Layer>),
+    })
   }, [layer.x, layer.y, layer.width, layer.height, canvasEl, onChange, onSelect])
 
   const style: React.CSSProperties = {
@@ -503,7 +574,7 @@ function ProductLayerPreview({
     top: `${settings.y + (settings.height * pad) / 2}%`,
     width: `${settings.width * (1 - pad)}%`,
     height: `${settings.height * (1 - pad)}%`,
-    transform: `rotate(${settings.rotation}deg)`,
+    transform: `rotate(${settings.rotation}deg) scaleX(${settings.flipH ? -1 : 1}) scaleY(${settings.flipV ? -1 : 1})`,
     opacity: settings.opacity,
     zIndex: settings.zIndex + 1,
     pointerEvents: 'none',
@@ -574,32 +645,42 @@ function AiModePositioning({
   scaleX,
   canvasW,
   canvasH,
+  canvasEl,
 }: {
   imageUrl: string | null
   storeId: string | null
   enabled: boolean
   settings: typeof DEFAULT_PRODUCT_LAYER_SETTINGS
-  positioningSettings: import('@/types/template').ProductPositioningSettings | undefined
+  positioningSettings: ProductPositioningSettings | undefined
   scaleX: number
   canvasW: number
   canvasH: number
+  canvasEl: HTMLDivElement | null
 }) {
-  // Positioning must run against the SAME transparent image the real
-  // generation pipeline uses — not the opaque original — otherwise
-  // classification would take the unreliable "no transparency" fallback path.
-  // Bounds are fetched once per image; everything below is instant local
-  // math, recomputed synchronously on every slider change with no API calls.
+  const { selectedLayerId, selectLayer, setProductLayerSettings } = useBuilderStore()
+
+  const positioningOn = Boolean(positioningSettings?.enabled)
+  // Manual (Canva-style) editing is the ai_product path when auto-positioning
+  // is OFF. When positioning is ON, the legacy render-time auto-fit owns the
+  // product (unchanged behavior) and manual drag is disabled.
+  const manualMode = enabled && !positioningOn
+  const selected = selectedLayerId === PRODUCT_LAYER_ID
+  const locked = Boolean(settings.locked)
+  const interactive = manualMode && !locked && Boolean(imageUrl)
+
+  // Bounds are fetched once per image (against the SAME transparent cutout the
+  // real generation pipeline uses). In auto mode this drives the live placement;
+  // in manual mode it powers the on-demand "Auto-arrange" button. Either way
+  // it's one fetch per image — everything downstream is instant local math.
   const { transparentUrl } = useTransparentPreview(imageUrl, storeId, enabled)
   const { bounds, error } = useProductBounds(
-    transparentUrl, storeId, enabled && Boolean(positioningSettings?.enabled)
+    transparentUrl, storeId, enabled && (positioningOn || interactive)
   )
   const result = computeLocalPositioning(bounds, positioningSettings, canvasW, canvasH)
 
   const effectiveSettings = (result?.apply && result.placement)
     ? placementToProductLayerSettings(result.placement, canvasW, canvasH, settings)
     : settings
-
-  const positioningOn = Boolean(positioningSettings?.enabled)
 
   const SHOT_LABELS: Record<ShotType, string> = {
     full_body: 'Full Body', half_body: 'Half Body', close_up: 'Close-up',
@@ -618,6 +699,18 @@ function AiModePositioning({
     }
   })() : null
 
+  const box: BoxRect = { x: settings.x, y: settings.y, width: settings.width, height: settings.height }
+
+  function autoArrange() {
+    if (!bounds) return
+    const { placement, wouldCrop } = calculatePlacement(bounds, canvasW, canvasH, positioningSettings ?? {
+      headSpacePx: 120, leftMarginPx: 40, rightMarginPx: 40, bottomMarginPx: 40,
+      autoCenterHorizontally: true, scaleMode: 'smart_fit', maxUpscale: 1.5,
+    } as ProductPositioningSettings)
+    if (wouldCrop) return
+    setProductLayerSettings(placementToProductLayerSettings(placement, canvasW, canvasH, settings))
+  }
+
   return (
     <>
       <ProductLayerPreview
@@ -627,6 +720,93 @@ function AiModePositioning({
         settings={effectiveSettings}
         scaleX={scaleX}
       />
+
+      {/* ── Manual (Canva-style) interaction overlay ─────────────────────────
+          Sits at the raw settings box, above the (pointer-events:none) visual.
+          Drag to move, corner handles to proportionally resize, top handle to
+          rotate — all pure store writes (instant, no API). Only in manual mode. */}
+      {interactive && (
+        <div
+          onMouseDown={(e) => beginBoxDrag(e, {
+            canvasEl, box, kind: { mode: 'move' },
+            onStart: () => selectLayer(PRODUCT_LAYER_ID),
+            onChange: (u) => setProductLayerSettings(u),
+          })}
+          style={{
+            position: 'absolute',
+            left: `${settings.x}%`, top: `${settings.y}%`,
+            width: `${settings.width}%`, height: `${settings.height}%`,
+            transform: `rotate(${settings.rotation}deg)`,
+            zIndex: settings.zIndex + 2,
+            cursor: 'move',
+            outline: selected ? '2px solid #6366f1' : '1px dashed rgba(99,102,241,0.5)',
+            outlineOffset: 1,
+            background: 'transparent',
+          }}
+        >
+          {selected && (['nw', 'ne', 'sw', 'se'] as const).map(c => (
+            <div key={c} onMouseDown={(e) => beginBoxDrag(e, {
+              canvasEl, box, kind: { mode: 'resize', corner: c }, proportional: true,
+              onChange: (u) => setProductLayerSettings(u),
+            })}
+              style={{
+                position: 'absolute', width: 10, height: 10, background: '#fff',
+                border: '2px solid #6366f1', borderRadius: 2, zIndex: 10000,
+                cursor: c === 'nw' || c === 'se' ? 'nwse-resize' : 'nesw-resize',
+                top: c.includes('n') ? -5 : undefined,
+                bottom: c.includes('s') ? -5 : undefined,
+                left: c.includes('w') ? -5 : undefined,
+                right: c.includes('e') ? -5 : undefined,
+              }} />
+          ))}
+          {selected && (
+            <div
+              onMouseDown={(e) => beginRotate(e, { canvasEl, box, onChange: (deg) => setProductLayerSettings({ rotation: deg }) })}
+              style={{
+                position: 'absolute', top: -24, left: '50%', width: 12, height: 12,
+                marginLeft: -6, background: '#fff', border: '2px solid #6366f1',
+                borderRadius: '50%', cursor: 'grab', zIndex: 10000,
+              }}
+              title="Rotate"
+            />
+          )}
+        </div>
+      )}
+
+      {/* ── Contextual toolbar (Canva-style) — Auto-arrange / Flip / Lock ──── */}
+      {manualMode && selected && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${settings.x}%`, top: `calc(${settings.y}% - 34px)`,
+            zIndex: 10001, display: 'flex', gap: 4, padding: 4,
+            background: 'rgba(255,255,255,0.96)', borderRadius: 8,
+            border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            whiteSpace: 'nowrap',
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <ToolbarButton label="✨ Auto-arrange" onClick={autoArrange} disabled={!bounds} primary />
+          <ToolbarButton label="Flip H" active={settings.flipH} onClick={() => setProductLayerSettings({ flipH: !settings.flipH })} />
+          <ToolbarButton label="Flip V" active={settings.flipV} onClick={() => setProductLayerSettings({ flipV: !settings.flipV })} />
+          <ToolbarButton label={locked ? '🔒' : '🔓'} onClick={() => setProductLayerSettings({ locked: !locked })} />
+        </div>
+      )}
+
+      {/* Locked-but-manual: still allow selecting to unlock via toolbar */}
+      {manualMode && locked && (
+        <div
+          onMouseDown={(e) => { e.stopPropagation(); selectLayer(PRODUCT_LAYER_ID) }}
+          style={{
+            position: 'absolute',
+            left: `${settings.x}%`, top: `${settings.y}%`,
+            width: `${settings.width}%`, height: `${settings.height}%`,
+            zIndex: settings.zIndex + 2, cursor: 'pointer',
+            outline: selected ? '2px solid #6366f1' : 'none',
+          }}
+        />
+      )}
+
       {/* Detected bounding box — visible only with guides on, never exported */}
       {positioningOn && positioningSettings?.showGuide && contentBox && (
         <div
@@ -640,7 +820,8 @@ function AiModePositioning({
           aria-hidden="true"
         />
       )}
-      {/* Auto-position indicator: what was detected and whether alignment applied */}
+
+      {/* Auto-position indicator (auto mode): what was detected + whether applied */}
       {positioningOn && (
         <div
           style={{
@@ -661,6 +842,26 @@ function AiModePositioning({
         </div>
       )}
     </>
+  )
+}
+
+function ToolbarButton({ label, onClick, active, primary, disabled }: {
+  label: string; onClick: () => void; active?: boolean; primary?: boolean; disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        fontSize: 11, lineHeight: 1, padding: '5px 8px', borderRadius: 6, cursor: disabled ? 'default' : 'pointer',
+        border: '1px solid ' + (active ? '#6366f1' : 'rgba(0,0,0,0.12)'),
+        background: primary ? '#6366f1' : active ? 'rgba(99,102,241,0.1)' : '#fff',
+        color: primary ? '#fff' : active ? '#4f46e5' : '#111',
+        opacity: disabled ? 0.5 : 1, fontWeight: 500,
+      }}
+    >
+      {label}
+    </button>
   )
 }
 
@@ -817,6 +1018,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
             scaleX={scaleX}
             canvasW={cW}
             canvasH={cH}
+            canvasEl={canvasRef.current}
           />
         )}
         {fgLayers.map(renderLayer)}

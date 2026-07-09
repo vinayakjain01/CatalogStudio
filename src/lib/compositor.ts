@@ -505,6 +505,15 @@ async function drawProductLayer(
     ctx.translate(-(x + w / 2), -(y + h / 2))
   }
 
+  // Apply horizontal/vertical flip around center (Canva-style mirror).
+  // Absent fields (older templates) → no-op. Composed inside the same
+  // centered frame as rotation so the two combine correctly.
+  if (settings.flipH || settings.flipV) {
+    ctx.translate(x + w / 2, y + h / 2)
+    ctx.scale(settings.flipH ? -1 : 1, settings.flipV ? -1 : 1)
+    ctx.translate(-(x + w / 2), -(y + h / 2))
+  }
+
   // Drop shadow
   if (settings.shadow) {
     ctx.shadowColor = settings.shadowColor
