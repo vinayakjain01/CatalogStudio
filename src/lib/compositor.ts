@@ -371,7 +371,7 @@ function drawCoverFit(ctx: any, imgNode: any, x: number, y: number, w: number, h
 async function serverRenderBackground(
   ctx: any,
   canvasData: CanvasData,
-  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null },
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null; transparentImageUrl?: string | null },
   W: number,
   H: number
 ): Promise<void> {
@@ -414,8 +414,19 @@ async function serverRenderBackground(
     return
   }
 
-  // For smart / blur-extend / gradient — load the product image as the source
-  const imgSrc = product.imageUrl
+  // For smart / blur-extend / gradient — load the colour/blur SOURCE image.
+  //
+  // CRITICAL (ai_product mode): never load the original photo here. In
+  // ai_product mode `product.imageUrl` still contains the model, and blurring
+  // or drawing it as the backdrop makes it reappear behind the transparent
+  // cutout as a "ghost" second model (the exact bug this guards against).
+  // We pass NO source image in ai_product mode — matching the live editor,
+  // which likewise passes `sampleSrc = null` for these modes in ai_product
+  // mode (canvas-preview.tsx). That keeps the generated background identical
+  // to the preview: solid for smart/blur-extend, user-stop gradient for
+  // gradient — always model-free.
+  const isAiProduct = Boolean(product.transparentImageUrl)
+  const imgSrc = isAiProduct ? null : product.imageUrl
   let imgNode: any = null
   if (imgSrc) {
     try { imgNode = await loadImageSafe(imgSrc) } catch {}
