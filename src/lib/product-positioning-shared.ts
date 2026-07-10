@@ -1,11 +1,17 @@
 /**
  * Client-safe pieces of Product Positioning ("Head Space" v2).
  *
+ * FILE: src/lib/product-positioning-shared.ts  (EXTENDED — append calculateSmartFitPlacement)
+ *
  * src/lib/product-positioning.ts imports @napi-rs/canvas (a native Node
  * addon) for bounds detection, so it can never be imported from client
  * components (e.g. the live editor's canvas preview). This file holds the
  * pure-math pieces that both the server module and client components need,
  * with zero server-only dependencies.
+ *
+ * CHANGE vs. original: ONE new function added at the bottom —
+ *   calculateSmartFitPlacement()
+ * Everything else is byte-identical to the original.
  */
 
 import type { ProductLayerSettings, ProductPositioningSettings, ShotType } from '@/types/template'
@@ -296,4 +302,71 @@ export function calculatePlacement(
     wouldCrop,
     clampedByMaxUpscale,
   }
+}
+
+// ─── NEW: Smart Fit 2.0 — placement from stored metadata ─────────────────────
+//
+// calculateSmartFitPlacement() is the Product Layer Engine version of
+// calculatePlacement(). Instead of receiving a live ProductBounds from a
+// detectProductBounds() call, it reads from the pre-stored ProductLayerMetadata
+// that getProductLayerBundle() already persisted in bg_removal_cache.metadata.
+//
+// Key difference vs. calculatePlacement():
+//  - headSpacePx measures from the TOP OF THE PRODUCT'S VISIBLE CONTENT
+//    (metadata.bbox.top), NOT from the image top. This is the semantic
+//    that "Head Space" always intended but couldn't reliably deliver for
+//    opaque JPEGs. With a transparent cutout whose bounds are stored,
+//    bbox.top IS the head pixel — not the image top edge.
+//  - safe_max_upscale from metadata is honoured as a quality ceiling on top
+//    of settings.maxUpscale, preventing source pixels from being blown up
+//    past their native resolution in bulk generation.
+//
+// Used by:
+//  - compositor.ts              → replaces resolveProductPositioning() in ai_product mode
+//  - canvas-preview.tsx         → instant local Head Space math from cached metadata
+
+import type { ProductLayerMetadata } from '@/types/product-layer'
+
+/**
+ * Compute the Product Layer's placement from cached metadata.
+ *
+ * This is the entry point for Smart Fit 2.0. It reads geometry from
+ * pre-stored metadata instead of running detectProductBounds() at job/render
+ * time, making every Head Space change a pure local computation.
+ *
+ * The Background Plate (if present) stays fixed at (0,0). This function
+ * only positions the TRANSPARENT CUTOUT on top of it.
+ */
+export function calculateSmartFitPlacement(
+  metadata: ProductLayerMetadata,
+  canvasW: number,
+  canvasH: number,
+  settings: Pick<ProductPositioningSettings,
+    'headSpacePx' | 'leftMarginPx' | 'rightMarginPx' | 'bottomMarginPx' |
+    'autoCenterHorizontally' | 'scaleMode' | 'maxUpscale'>
+): PlacementResult {
+  // Reconstruct a ProductBounds from stored metadata.
+  // hasTransparency is always true for the transparent cutout.
+  const bounds: ProductBounds = {
+    left:            metadata.bbox.left,
+    top:             metadata.bbox.top,
+    right:           metadata.bbox.right,
+    bottom:          metadata.bbox.bottom,
+    imageWidth:      metadata.image_width,
+    imageHeight:     metadata.image_height,
+    hasTransparency: true,
+  }
+
+  // Honour safe_max_upscale as a quality ceiling in addition to settings.maxUpscale.
+  // This ensures we never render at a scale where source pixels are so large they
+  // appear blurry — especially important for close-up/accessory shots in bulk runs.
+  const effectiveMaxUpscale = Math.min(
+    settings.maxUpscale,
+    metadata.safe_max_upscale
+  )
+
+  return calculatePlacement(bounds, canvasW, canvasH, {
+    ...settings,
+    maxUpscale: effectiveMaxUpscale,
+  })
 }

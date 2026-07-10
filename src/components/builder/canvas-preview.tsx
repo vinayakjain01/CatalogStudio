@@ -8,20 +8,22 @@ import {
   DEFAULT_BACKGROUND_SETTINGS, DEFAULT_PRODUCT_LAYER_SETTINGS, PRODUCT_LAYER_ID,
 } from '@/types/template'
 import { useSmartBackground } from './smart-background'
-import { useTransparentPreview } from './use-transparent-preview'
 import { useExtendPreview } from './use-extend-preview'
-import { useProductBounds } from './use-product-bounds'
-import { useBackgroundReconstructionPreview } from './use-background-reconstruction-preview'
+// CHANGED: replaced useTransparentPreview + useProductBounds + useBackgroundReconstructionPreview
+// with the unified useProductLayerBundle hook
+import { useProductLayerBundle } from './use-product-layer-bundle'
 import { ProductPositioningGuide } from './product-positioning-guide'
 import {
   placementToProductLayerSettings,
   calculatePlacement,
+  calculateSmartFitPlacement,
   computeClassificationSignals,
   classifyShotType,
   type ProductBounds,
   type HeadSpacePlacement,
 } from '@/lib/product-positioning-shared'
 import type { ProductPositioningSettings, ShotType } from '@/types/template'
+import type { ProductLayerMetadata } from '@/types/product-layer'
 import { Loader2, Sparkles, Wand2 } from 'lucide-react'
 
 const MAX_W = 580
@@ -42,12 +44,6 @@ type DragKind =
 
 interface BoxRect { x: number; y: number; width: number; height: number }
 
-/**
- * Shared canvas drag/resize handler (percentage-space, live streaming).
- * Used by both regular layers (LayerRenderer) and the manual product layer.
- * `proportional` locks aspect ratio on corner-resize so the product cutout is
- * never stretched/distorted — regular layers pass it false for free resize.
- */
 function beginBoxDrag(
   e: React.MouseEvent,
   opts: {
@@ -84,8 +80,6 @@ function beginBoxDrag(
     }
 
     if (proportional) {
-      // Uniform scale anchored at the opposite corner, aspect preserved in
-      // canvas-percentage space (keeps the on-screen box shape constant).
       const aspect = orig.width / orig.height
       const outwardDx = kind.corner.includes('e') ? dx : kind.corner.includes('w') ? -dx : 0
       const maxW = kind.corner.includes('w') ? orig.x + orig.width : 100 - orig.x
@@ -119,7 +113,6 @@ function beginBoxDrag(
   window.addEventListener('mouseup', onUp)
 }
 
-/** Rotate handle: angle from box center to pointer (+90 so a straight-up handle = 0°). */
 function beginRotate(
   e: React.MouseEvent,
   opts: { canvasEl: HTMLDivElement | null; box: BoxRect; onStart?: () => void; onChange: (deg: number) => void }
@@ -145,14 +138,9 @@ function beginRotate(
 }
 
 // ─── AI Extend Image Layer Preview ───────────────────────────────────────────
-// Separate component so it can use hooks (rules of hooks: no hooks in callbacks
-// or switch cases). Shows live generative-fill preview when objectFit='ai_extend'.
 
 function AiExtendImageLayer({
-  imageUrl,
-  storeId,
-  targetWidth,
-  targetHeight,
+  imageUrl, storeId, targetWidth, targetHeight,
 }: {
   imageUrl: string | null
   storeId: string | null
@@ -160,84 +148,48 @@ function AiExtendImageLayer({
   targetHeight: number
 }) {
   const { extendedUrl, loading, error, retry } = useExtendPreview(
-    imageUrl,
-    targetWidth,
-    targetHeight,
-    storeId,
-    Boolean(imageUrl && storeId)
+    imageUrl, targetWidth, targetHeight, storeId, Boolean(imageUrl && storeId)
   )
 
   if (loading) {
     return (
-      <div style={{
-        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: 6,
-        background: 'rgba(0,0,0,0.04)',
-      }}>
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 6, background: 'rgba(0,0,0,0.04)' }}>
         <Loader2 style={{ width: 18, height: 18, color: 'var(--primary)', animation: 'spin 1s linear infinite' }} />
         <span style={{ fontSize: 10, color: '#6b7280' }}>AI filling canvas…</span>
       </div>
     )
   }
-
   if (error) {
     return (
-      <div style={{
-        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: 4, padding: 8,
-        background: 'rgba(239,68,68,0.05)',
-      }}>
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 4, padding: 8, background: 'rgba(239,68,68,0.05)' }}>
         <Wand2 style={{ width: 14, height: 14, color: '#ef4444' }} />
         <span style={{ fontSize: 10, color: '#ef4444', textAlign: 'center' }}>{error}</span>
-        <button
-          onClick={retry}
-          style={{ fontSize: 10, color: '#6b7280', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}
-        >
-          Retry
-        </button>
+        <button onClick={retry} style={{ fontSize: 10, color: '#6b7280', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer' }}>Retry</button>
       </div>
     )
   }
-
   if (extendedUrl) {
-    return (
-      <img
-        src={extendedUrl}
-        alt=""
-        draggable={false}
-        style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
-      />
-    )
+    return <img src={extendedUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }} />
   }
-
-  // While waiting for first load, show original at half opacity
   if (imageUrl) {
-    return (
-      <img
-        src={imageUrl}
-        alt=""
-        draggable={false}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', opacity: 0.5 }}
-      />
-    )
+    return <img src={imageUrl} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', opacity: 0.5 }} />
   }
-
   return (
-    <div style={{
-      width: '100%', height: '100%', display: 'flex',
-      alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#9ca3af',
-    }}>
+    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#9ca3af' }}>
       AI Extend
     </div>
   )
 }
 
-// ─── Local (client-side) positioning compute ─────────────────────────────────
-// Bounds are fetched ONCE per image (useProductBounds); everything else —
-// classification + placement — is pure math from product-positioning-shared.ts,
-// recomputed synchronously during render on every slider change. This is what
-// makes the live preview instantaneous: zero API calls while dragging.
-// Mirrors the server's resolveProductPositioning() decision flow exactly.
+// ─── Local positioning compute ────────────────────────────────────────────────
+//
+// CHANGED (Product Layer Engine): computeLocalPositioning now accepts
+// ProductLayerMetadata in place of ProductBounds when metadata is available.
+// calculateSmartFitPlacement() is used when metadata is present; it reads from
+// the pre-stored head_y / feet_y / safe_max_upscale instead of recomputing.
+// Falls back to calculatePlacement(bounds) for standard mode (no metadata).
 
 interface LocalPositioning {
   apply: boolean
@@ -248,41 +200,58 @@ interface LocalPositioning {
   coverageRatio: number | null
 }
 
-function computeLocalPositioning(
+function computeLocalPositioningFromMetadata(
+  metadata: ProductLayerMetadata,
+  settings: ProductPositioningSettings,
+  canvasW: number,
+  canvasH: number
+): LocalPositioning {
+  if (!settings.enabled || !canvasW || !canvasH) {
+    return { apply: false, shotType: null, placement: null, wouldCrop: false, aspectRatio: null, coverageRatio: null }
+  }
+
+  const shotType = metadata.shot_type
+  const aspectRatio = metadata.product_height_px / Math.max(1, metadata.product_width_px)
+  const coverageRatio = (metadata.product_width_px * metadata.product_height_px) /
+    (metadata.image_width * metadata.image_height)
+
+  if (!settings.applyToShotTypes.includes(shotType)) {
+    return { apply: false, shotType, placement: null, wouldCrop: false, aspectRatio, coverageRatio }
+  }
+
+  const { placement, wouldCrop } = calculateSmartFitPlacement(metadata, canvasW, canvasH, settings)
+  if (wouldCrop) {
+    return { apply: false, shotType, placement: null, wouldCrop: true, aspectRatio, coverageRatio }
+  }
+  return { apply: true, shotType, placement, wouldCrop: false, aspectRatio, coverageRatio }
+}
+
+// Legacy fallback for standard mode (uses ProductBounds, same as before)
+function computeLocalPositioningFromBounds(
   bounds: ProductBounds | null,
   settings: ProductPositioningSettings | undefined,
   boxW: number,
   boxH: number
 ): LocalPositioning | null {
   if (!bounds || !settings?.enabled || !boxW || !boxH) return null
-
   const signals = computeClassificationSignals(bounds)
   const shotType = classifyShotType(signals)
   const base = { shotType, aspectRatio: signals.aspectRatio, coverageRatio: signals.coverageRatio }
-
   if (!settings.applyToShotTypes.includes(shotType)) {
     return { ...base, apply: false, placement: null, wouldCrop: false }
   }
-
   const { placement, wouldCrop } = calculatePlacement(bounds, boxW, boxH, settings)
-  if (wouldCrop) {
-    return { ...base, apply: false, placement: null, wouldCrop: true }
-  }
+  if (wouldCrop) return { ...base, apply: false, placement: null, wouldCrop: true }
   return { ...base, apply: true, placement, wouldCrop: false }
 }
 
-// ─── Product Positioning Image Layer Preview (standard mode) ─────────────────
-// Live-previews the actual computed reposition (move + scale within the
-// layer's own box, blurred backdrop filling any gap) — matches what the
-// server compositor now does for standard-mode templates.
+// ─── Standard mode: Positioned Product Image Layer ───────────────────────────
+// Same as before — used in standard mode (no transparent cutout).
+// Uses legacy bounds from a separate API call (not the bundle — the bundle
+// only runs in ai_product mode).
 
 function PositionedProductImageLayer({
-  imageUrl,
-  storeId,
-  positioningSettings,
-  boxPixelW,
-  boxPixelH,
-  fallbackObjectFit,
+  imageUrl, storeId, positioningSettings, boxPixelW, boxPixelH, fallbackObjectFit,
 }: {
   imageUrl: string | null
   storeId: string | null
@@ -291,32 +260,25 @@ function PositionedProductImageLayer({
   boxPixelH: number
   fallbackObjectFit: 'cover' | 'contain' | 'fill'
 }) {
-  // One network fetch per image; placement below is instant local math.
+  // In standard mode, we still need the old bounds-fetch approach since we
+  // don't have a transparent cutout. Import the old hook for this path only.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { useProductBounds } = require('./use-product-bounds')
   const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId))
-  const result = computeLocalPositioning(bounds, positioningSettings, Math.round(boxPixelW), Math.round(boxPixelH))
+  const result = computeLocalPositioningFromBounds(bounds, positioningSettings, Math.round(boxPixelW), Math.round(boxPixelH))
 
   if (!imageUrl) {
     return (
-      <div style={{
-        width: '100%', height: '100%', display: 'flex', alignItems: 'center',
-        justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
-      }}>
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
         Product Image
       </div>
     )
   }
 
-  // No placement yet (loading / bypassed / not applicable) — show the plain
-  // image with its normal fit so there's no flicker/empty state.
   if (!result?.apply || !result.placement) {
-    return (
-      <img
-        src={imageUrl}
-        alt=""
-        draggable={false}
-        style={{ width: '100%', height: '100%', objectFit: fallbackObjectFit, pointerEvents: 'none' }}
-      />
-    )
+    return <img src={imageUrl} alt="" draggable={false}
+      style={{ width: '100%', height: '100%', objectFit: fallbackObjectFit, pointerEvents: 'none' }} />
   }
 
   const { imgX, imgY, renderedW, renderedH } = result.placement
@@ -325,29 +287,17 @@ function PositionedProductImageLayer({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
-      {/* Blurred backdrop — same photo, fills any gap left by the reposition */}
-      <img
-        src={imageUrl}
-        alt=""
-        draggable={false}
-        style={{
-          position: 'absolute', inset: 0, width: '100%', height: '100%',
-          objectFit: 'cover', filter: 'blur(20px) saturate(1.1) brightness(0.95)',
-          transform: 'scale(1.15)', pointerEvents: 'none',
-        }}
-      />
-      {/* Sharp repositioned image at the exact computed placement */}
-      <img
-        src={imageUrl}
-        alt=""
-        draggable={false}
-        style={{
-          position: 'absolute',
-          left: pctX(imgX), top: pctY(imgY),
-          width: pctX(renderedW), height: pctY(renderedH),
-          objectFit: 'fill', pointerEvents: 'none',
-        }}
-      />
+      <img src={imageUrl} alt="" draggable={false} style={{
+        position: 'absolute', inset: 0, width: '100%', height: '100%',
+        objectFit: 'cover', filter: 'blur(20px) saturate(1.1) brightness(0.95)',
+        transform: 'scale(1.15)', pointerEvents: 'none',
+      }} />
+      <img src={imageUrl} alt="" draggable={false} style={{
+        position: 'absolute',
+        left: pctX(imgX), top: pctY(imgY),
+        width: pctX(renderedW), height: pctY(renderedH),
+        objectFit: 'fill', pointerEvents: 'none',
+      }} />
     </div>
   )
 }
@@ -380,10 +330,8 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
 
   const style: React.CSSProperties = {
     position: 'absolute',
-    left: `${layer.x}%`,
-    top: `${layer.y}%`,
-    width: `${layer.width}%`,
-    height: `${layer.height}%`,
+    left: `${layer.x}%`, top: `${layer.y}%`,
+    width: `${layer.width}%`, height: `${layer.height}%`,
     transform: `rotate(${layer.rotation}deg)`,
     opacity: layer.opacity,
     zIndex: layer.zIndex + 1,
@@ -399,17 +347,14 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
         position: 'absolute', width: 10, height: 10, background: '#fff',
         border: '2px solid #6366f1', borderRadius: 2, zIndex: 9999,
         cursor: c === 'nw' || c === 'se' ? 'nwse-resize' : 'nesw-resize',
-        top: c.includes('n') ? -5 : undefined,
-        bottom: c.includes('s') ? -5 : undefined,
-        left: c.includes('w') ? -5 : undefined,
-        right: c.includes('e') ? -5 : undefined,
+        top: c.includes('n') ? -5 : undefined, bottom: c.includes('s') ? -5 : undefined,
+        left: c.includes('w') ? -5 : undefined, right: c.includes('e') ? -5 : undefined,
       }} />
   )) : null
 
   const wrap = (inner: React.ReactNode, extra?: React.CSSProperties) => (
     <div style={{ ...style, ...extra }} onMouseDown={(e) => startDrag(e, { mode: 'move' })}>
-      {inner}
-      {handles}
+      {inner}{handles}
     </div>
   )
 
@@ -417,12 +362,10 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
     case 'rectangle': {
       const l = layer as RectangleLayer
       return wrap(null, {
-        backgroundColor: l.backgroundColor,
-        borderRadius: l.borderRadius,
+        backgroundColor: l.backgroundColor, borderRadius: l.borderRadius,
         border: l.borderWidth > 0 ? `${l.borderWidth}px solid ${l.borderColor}` : 'none',
       })
     }
-
     case 'text': {
       const l = layer as TextLayer
       return wrap(
@@ -437,71 +380,49 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
         }
       )
     }
-
     case 'image': {
       const l = layer as ImageLayer
       const isProductImage = l.src === '{{product_image}}'
       const realSrc = isProductImage ? product.imageUrl : l.src
 
-      // Product Positioning (standard mode): live-preview the actual computed
-      // reposition, matching what the server compositor now does.
       if (!isAiMode && isProductImage && positioningSettings?.enabled && product.imageUrl) {
         const boxPixelW = (layer.width / 100) * cW
         const boxPixelH = (layer.height / 100) * cH
         return wrap(
           <PositionedProductImageLayer
-            imageUrl={product.imageUrl}
-            storeId={storeId}
+            imageUrl={product.imageUrl} storeId={storeId}
             positioningSettings={positioningSettings}
-            boxPixelW={boxPixelW}
-            boxPixelH={boxPixelH}
+            boxPixelW={boxPixelW} boxPixelH={boxPixelH}
             fallbackObjectFit={l.objectFit === 'ai_extend' ? 'contain' : l.objectFit}
           />,
           { borderRadius: l.borderRadius, overflow: 'hidden' }
         )
       }
 
-      // AI Extend mode: use the dedicated component which has its own hook
       if (l.objectFit === 'ai_extend' && isProductImage) {
         const canvasW = canvasEl?.offsetWidth ?? 1080
         const canvasH = canvasEl?.offsetHeight ?? 1080
         const targetW = Math.round((layer.width / 100) * canvasW)
         const targetH = Math.round((layer.height / 100) * canvasH)
         return wrap(
-          <AiExtendImageLayer
-            imageUrl={product.imageUrl}
-            storeId={storeId}
-            targetWidth={targetW}
-            targetHeight={targetH}
-          />,
+          <AiExtendImageLayer imageUrl={product.imageUrl} storeId={storeId} targetWidth={targetW} targetHeight={targetH} />,
           { borderRadius: l.borderRadius, overflow: 'hidden' }
         )
       }
 
       return wrap(
         realSrc ? (
-          <img
-            src={realSrc}
-            alt=""
-            draggable={false}
-            style={{
-              width: '100%', height: '100%',
-              objectFit: l.objectFit === 'ai_extend' ? 'contain' : l.objectFit,
-              pointerEvents: 'none',
-            }}
-          />
+          <img src={realSrc} alt="" draggable={false}
+            style={{ width: '100%', height: '100%', objectFit: l.objectFit === 'ai_extend' ? 'contain' : l.objectFit, pointerEvents: 'none' }} />
         ) : (
-          <div style={{
-            width: '100%', height: '100%', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
-          }}>
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
             Product Image
           </div>
         ),
         { borderRadius: l.borderRadius, overflow: 'hidden', backgroundColor: realSrc ? undefined : '#e5e7eb' }
       )
     }
-
     case 'overlay': {
       const l = layer as OverlayLayer
       return wrap(
@@ -510,7 +431,6 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
         { overflow: 'hidden' }
       )
     }
-
     case 'logo':
     case 'sticker': {
       const l = layer as LogoLayer | StickerLayer
@@ -519,17 +439,14 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
           <img src={l.src} alt="" draggable={false}
             style={{ width: '100%', height: '100%', objectFit: l.objectFit, pointerEvents: 'none' }} />
         ) : (
-          <div style={{
-            width: '100%', height: '100%', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none',
-          }}>
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
             {layer.type === 'sticker' ? 'Sticker' : 'Logo'}
           </div>
         ),
         { borderRadius: l.borderRadius, overflow: 'hidden' }
       )
     }
-
     case 'badge': {
       const l = layer as BadgeLayer
       return wrap(
@@ -542,37 +459,37 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
         }
       )
     }
-
     default:
       return null
   }
 }
 
-// ─── AI Product Layer Preview ────────────────────────────────────────────────
+// ─── AI Product Layer Preview ─────────────────────────────────────────────────
+//
+// CHANGED: now receives transparentUrl directly (from the bundle) instead
+// of calling useTransparentPreview internally. The bundle fetch is done once
+// at the CanvasPreview level and passed down — no duplicate API calls.
 
 function ProductLayerPreview({
-  imageUrl,
-  storeId,
-  enabled,
-  settings,
-  scaleX,
+  transparentUrl, loading, error, retry, settings, enabled, imageUrl, scaleX,
 }: {
-  imageUrl: string | null
-  storeId: string | null
-  enabled: boolean
+  transparentUrl: string | null
+  loading: boolean
+  error: string | null
+  retry: () => void
   settings: typeof DEFAULT_PRODUCT_LAYER_SETTINGS
+  enabled: boolean
+  imageUrl: string | null
   scaleX: number
 }) {
-  const { transparentUrl, loading, error, retry } = useTransparentPreview(imageUrl, storeId, enabled)
-
   if (!enabled) return null
 
   const pad = settings.padding / 100
   const style: React.CSSProperties = {
     position: 'absolute',
-    left: `${settings.x + (settings.width * pad) / 2}%`,
-    top: `${settings.y + (settings.height * pad) / 2}%`,
-    width: `${settings.width * (1 - pad)}%`,
+    left:   `${settings.x + (settings.width  * pad) / 2}%`,
+    top:    `${settings.y + (settings.height * pad) / 2}%`,
+    width:  `${settings.width  * (1 - pad)}%`,
     height: `${settings.height * (1 - pad)}%`,
     transform: `rotate(${settings.rotation}deg) scaleX(${settings.flipH ? -1 : 1}) scaleY(${settings.flipV ? -1 : 1})`,
     opacity: settings.opacity,
@@ -600,7 +517,7 @@ function ProductLayerPreview({
     return (
       <div style={style} className="flex flex-col items-center justify-center gap-2 bg-muted/40 rounded-lg">
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
-        <p className="text-xs text-muted-foreground">Removing background…</p>
+        <p className="text-xs text-muted-foreground">Preparing product layer…</p>
       </div>
     )
   }
@@ -621,31 +538,23 @@ function ProductLayerPreview({
       src={transparentUrl}
       alt="Product (background removed)"
       draggable={false}
-      style={{
-        ...style,
-        objectFit: settings.objectFit,
-        filter: filters.length > 0 ? filters.join(' ') : undefined,
-      }}
+      style={{ ...style, objectFit: settings.objectFit, filter: filters.length > 0 ? filters.join(' ') : undefined }}
     />
   )
 }
 
-// ─── Product Positioning — live preview wrapper (ai_product mode) ────────────
-// Recomputes the real placement (via the server's product-positioning module,
-// since bounds detection needs @napi-rs/canvas) and overrides the settings fed
-// into ProductLayerPreview, so the editor shows the actual computed position
-// rather than a static guideline.
+// ─── AiModePositioning ────────────────────────────────────────────────────────
+//
+// CHANGED (Product Layer Engine):
+//  - Receives the bundle state from the parent instead of calling its own hooks
+//  - Uses metadata from the bundle for instant local Head Space computation
+//    via computeLocalPositioningFromMetadata() — zero API calls while dragging
+//  - Backgrounds are now rendered at the CanvasPreview level from backgroundUrl
 
 function AiModePositioning({
-  imageUrl,
-  storeId,
-  enabled,
-  settings,
-  positioningSettings,
-  scaleX,
-  canvasW,
-  canvasH,
-  canvasEl,
+  imageUrl, storeId, enabled, settings, positioningSettings, scaleX, canvasW, canvasH, canvasEl,
+  // NEW: bundle state passed from CanvasPreview
+  bundle,
 }: {
   imageUrl: string | null
   storeId: string | null
@@ -656,27 +565,22 @@ function AiModePositioning({
   canvasW: number
   canvasH: number
   canvasEl: HTMLDivElement | null
+  bundle: ReturnType<typeof useProductLayerBundle>
 }) {
   const { selectedLayerId, selectLayer, setProductLayerSettings } = useBuilderStore()
 
   const positioningOn = Boolean(positioningSettings?.enabled)
-  // Manual (Canva-style) editing is the ai_product path when auto-positioning
-  // is OFF. When positioning is ON, the legacy render-time auto-fit owns the
-  // product (unchanged behavior) and manual drag is disabled.
   const manualMode = enabled && !positioningOn
   const selected = selectedLayerId === PRODUCT_LAYER_ID
   const locked = Boolean(settings.locked)
   const interactive = manualMode && !locked && Boolean(imageUrl)
 
-  // Bounds are fetched once per image (against the SAME transparent cutout the
-  // real generation pipeline uses). In auto mode this drives the live placement;
-  // in manual mode it powers the on-demand "Auto-arrange" button. Either way
-  // it's one fetch per image — everything downstream is instant local math.
-  const { transparentUrl } = useTransparentPreview(imageUrl, storeId, enabled)
-  const { bounds, error } = useProductBounds(
-    transparentUrl, storeId, enabled && (positioningOn || interactive)
-  )
-  const result = computeLocalPositioning(bounds, positioningSettings, canvasW, canvasH)
+  // CHANGED: compute placement from metadata (zero network calls) when available
+  // Falls back to null (no repositioning) when metadata hasn't loaded yet
+  const result: ReturnType<typeof computeLocalPositioningFromMetadata> | null =
+    (positioningSettings?.enabled && bundle.metadata)
+      ? computeLocalPositioningFromMetadata(bundle.metadata, positioningSettings, canvasW, canvasH)
+      : null
 
   const effectiveSettings = (result?.apply && result.placement)
     ? placementToProductLayerSettings(result.placement, canvasW, canvasH, settings)
@@ -687,26 +591,32 @@ function AiModePositioning({
     detail: 'Detail', flat_lay: 'Flat Lay', accessory: 'Accessory',
   }
 
-  // Detected content box in canvas percentages — for the guide-mode
-  // bounding-box visualization (editor-only, never exported).
-  const contentBox = (result?.apply && result.placement && bounds) ? (() => {
-    const { imgX, imgY, scale } = result.placement!
+  const contentBox = (result?.apply && result.placement && bundle.metadata) ? (() => {
+    const m = bundle.metadata!
+    const p = result.placement!
+    // Reconstruct content box from stored metadata bbox
+    const bounds = { left: m.bbox.left, top: m.bbox.top, right: m.bbox.right, bottom: m.bbox.bottom }
     return {
-      left:   ((imgX + bounds.left * scale) / canvasW) * 100,
-      top:    ((imgY + bounds.top * scale) / canvasH) * 100,
-      width:  (((bounds.right - bounds.left) * scale) / canvasW) * 100,
-      height: (((bounds.bottom - bounds.top) * scale) / canvasH) * 100,
+      left:   ((p.imgX + bounds.left * p.scale) / canvasW) * 100,
+      top:    ((p.imgY + bounds.top  * p.scale) / canvasH) * 100,
+      width:  (((bounds.right - bounds.left) * p.scale) / canvasW) * 100,
+      height: (((bounds.bottom - bounds.top) * p.scale) / canvasH) * 100,
     }
   })() : null
 
   const box: BoxRect = { x: settings.x, y: settings.y, width: settings.width, height: settings.height }
 
   function autoArrange() {
-    if (!bounds) return
-    const { placement, wouldCrop } = calculatePlacement(bounds, canvasW, canvasH, positioningSettings ?? {
-      headSpacePx: 120, leftMarginPx: 40, rightMarginPx: 40, bottomMarginPx: 40,
-      autoCenterHorizontally: true, scaleMode: 'smart_fit', maxUpscale: 1.5,
-    } as ProductPositioningSettings)
+    if (!bundle.metadata) return
+    const { placement, wouldCrop } = calculateSmartFitPlacement(
+      bundle.metadata,
+      canvasW,
+      canvasH,
+      positioningSettings ?? {
+        headSpacePx: 120, leftMarginPx: 40, rightMarginPx: 40, bottomMarginPx: 40,
+        autoCenterHorizontally: true, scaleMode: 'smart_fit', maxUpscale: 1.5,
+      } as ProductPositioningSettings
+    )
     if (wouldCrop) return
     setProductLayerSettings(placementToProductLayerSettings(placement, canvasW, canvasH, settings))
   }
@@ -714,17 +624,16 @@ function AiModePositioning({
   return (
     <>
       <ProductLayerPreview
-        imageUrl={imageUrl}
-        storeId={storeId}
-        enabled={enabled}
+        transparentUrl={bundle.transparentUrl}
+        loading={bundle.loading}
+        error={bundle.error}
+        retry={bundle.retry}
         settings={effectiveSettings}
+        enabled={enabled}
+        imageUrl={imageUrl}
         scaleX={scaleX}
       />
 
-      {/* ── Manual (Canva-style) interaction overlay ─────────────────────────
-          Sits at the raw settings box, above the (pointer-events:none) visual.
-          Drag to move, corner handles to proportionally resize, top handle to
-          rotate — all pure store writes (instant, no API). Only in manual mode. */}
       {interactive && (
         <div
           onMouseDown={(e) => beginBoxDrag(e, {
@@ -737,11 +646,9 @@ function AiModePositioning({
             left: `${settings.x}%`, top: `${settings.y}%`,
             width: `${settings.width}%`, height: `${settings.height}%`,
             transform: `rotate(${settings.rotation}deg)`,
-            zIndex: settings.zIndex + 2,
-            cursor: 'move',
+            zIndex: settings.zIndex + 2, cursor: 'move',
             outline: selected ? '2px solid #6366f1' : '1px dashed rgba(99,102,241,0.5)',
-            outlineOffset: 1,
-            background: 'transparent',
+            outlineOffset: 1, background: 'transparent',
           }}
         >
           {selected && (['nw', 'ne', 'sw', 'se'] as const).map(c => (
@@ -753,10 +660,8 @@ function AiModePositioning({
                 position: 'absolute', width: 10, height: 10, background: '#fff',
                 border: '2px solid #6366f1', borderRadius: 2, zIndex: 10000,
                 cursor: c === 'nw' || c === 'se' ? 'nwse-resize' : 'nesw-resize',
-                top: c.includes('n') ? -5 : undefined,
-                bottom: c.includes('s') ? -5 : undefined,
-                left: c.includes('w') ? -5 : undefined,
-                right: c.includes('e') ? -5 : undefined,
+                top: c.includes('n') ? -5 : undefined, bottom: c.includes('s') ? -5 : undefined,
+                left: c.includes('w') ? -5 : undefined, right: c.includes('e') ? -5 : undefined,
               }} />
           ))}
           {selected && (
@@ -773,12 +678,10 @@ function AiModePositioning({
         </div>
       )}
 
-      {/* ── Contextual toolbar (Canva-style) — Auto-arrange / Flip / Lock ──── */}
       {manualMode && selected && (
         <div
           style={{
-            position: 'absolute',
-            left: `${settings.x}%`, top: `calc(${settings.y}% - 34px)`,
+            position: 'absolute', left: `${settings.x}%`, top: `calc(${settings.y}% - 34px)`,
             zIndex: 10001, display: 'flex', gap: 4, padding: 4,
             background: 'rgba(255,255,255,0.96)', borderRadius: 8,
             border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
@@ -786,20 +689,19 @@ function AiModePositioning({
           }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <ToolbarButton label="✨ Auto-arrange" onClick={autoArrange} disabled={!bounds} primary />
+          {/* Auto-arrange uses stored metadata — instant, no API call */}
+          <ToolbarButton label="✨ Auto-arrange" onClick={autoArrange} disabled={!bundle.metadata} primary />
           <ToolbarButton label="Flip H" active={settings.flipH} onClick={() => setProductLayerSettings({ flipH: !settings.flipH })} />
           <ToolbarButton label="Flip V" active={settings.flipV} onClick={() => setProductLayerSettings({ flipV: !settings.flipV })} />
           <ToolbarButton label={locked ? '🔒' : '🔓'} onClick={() => setProductLayerSettings({ locked: !locked })} />
         </div>
       )}
 
-      {/* Locked-but-manual: still allow selecting to unlock via toolbar */}
       {manualMode && locked && (
         <div
           onMouseDown={(e) => { e.stopPropagation(); selectLayer(PRODUCT_LAYER_ID) }}
           style={{
-            position: 'absolute',
-            left: `${settings.x}%`, top: `${settings.y}%`,
+            position: 'absolute', left: `${settings.x}%`, top: `${settings.y}%`,
             width: `${settings.width}%`, height: `${settings.height}%`,
             zIndex: settings.zIndex + 2, cursor: 'pointer',
             outline: selected ? '2px solid #6366f1' : 'none',
@@ -807,38 +709,35 @@ function AiModePositioning({
         />
       )}
 
-      {/* Detected bounding box — visible only with guides on, never exported */}
       {positioningOn && positioningSettings?.showGuide && contentBox && (
         <div
           style={{
             position: 'absolute',
             left: `${contentBox.left}%`, top: `${contentBox.top}%`,
             width: `${contentBox.width}%`, height: `${contentBox.height}%`,
-            border: '1px dashed rgba(16, 185, 129, 0.8)',
-            zIndex: 9998, pointerEvents: 'none',
+            border: '1px dashed rgba(16, 185, 129, 0.8)', zIndex: 9998, pointerEvents: 'none',
           }}
           aria-hidden="true"
         />
       )}
 
-      {/* Auto-position indicator (auto mode): what was detected + whether applied */}
       {positioningOn && (
-        <div
-          style={{
-            position: 'absolute', left: 6, bottom: 6, zIndex: 9999,
-            fontSize: 10, lineHeight: 1.3,
-            background: 'rgba(255,255,255,0.88)', color: '#111', padding: '2px 8px',
-            borderRadius: 999, pointerEvents: 'none', border: '1px solid rgba(0,0,0,0.08)',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.12)', whiteSpace: 'nowrap',
-          }}
-        >
-          {error
+        <div style={{
+          position: 'absolute', left: 6, bottom: 6, zIndex: 9999,
+          fontSize: 10, lineHeight: 1.3,
+          background: 'rgba(255,255,255,0.88)', color: '#111', padding: '2px 8px',
+          borderRadius: 999, pointerEvents: 'none', border: '1px solid rgba(0,0,0,0.08)',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.12)', whiteSpace: 'nowrap',
+        }}>
+          {bundle.error
             ? <span style={{ color: '#dc2626' }}>Detection failed — using manual layout</span>
-            : !bounds
-              ? 'Detecting product…'
-              : result?.apply
-                ? <>Detected: <b>{SHOT_LABELS[result.shotType!]}</b> · auto-aligned</>
-                : <>Detected: <b>{result?.shotType ? SHOT_LABELS[result.shotType] : '—'}</b> · skipped (not in Shot Types)</>}
+            : bundle.loading
+              ? 'Loading product layer…'
+              : !bundle.metadata
+                ? 'Detecting product…'
+                : result?.apply
+                  ? <>Detected: <b>{bundle.metadata.shot_type.replace('_', ' ')}</b> · Smart Fit 2.0</>
+                  : <>Detected: <b>{bundle.metadata.shot_type.replace('_', ' ')}</b> · skipped</>}
         </div>
       )}
     </>
@@ -850,10 +749,10 @@ function ToolbarButton({ label, onClick, active, primary, disabled }: {
 }) {
   return (
     <button
-      onClick={onClick}
-      disabled={disabled}
+      onClick={onClick} disabled={disabled}
       style={{
-        fontSize: 11, lineHeight: 1, padding: '5px 8px', borderRadius: 6, cursor: disabled ? 'default' : 'pointer',
+        fontSize: 11, lineHeight: 1, padding: '5px 8px', borderRadius: 6,
+        cursor: disabled ? 'default' : 'pointer',
         border: '1px solid ' + (active ? '#6366f1' : 'rgba(0,0,0,0.12)'),
         background: primary ? '#6366f1' : active ? 'rgba(99,102,241,0.1)' : '#fff',
         color: primary ? '#fff' : active ? '#4f46e5' : '#111',
@@ -882,14 +781,22 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const productLayerSettings = canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS
 
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
+
+  // CHANGED: single bundle hook replaces three separate hooks
+  // useTransparentPreview + useProductBounds + useBackgroundReconstructionPreview
+  const bundle = useProductLayerBundle(
+    product.imageUrl,
+    storeId ?? null,
+    isAiMode  // only fetch in AI product mode
+  )
+
   const sampleSrc = (() => {
     if (bgSettings.mode === 'solid' || bgSettings.mode === 'transparent') return null
     if (isAiMode) return null
     if (product.imageUrl) return product.imageUrl
     const imgLayer = canvasData.layers.find(
       l => (l.type === 'image' || l.type === 'overlay') &&
-        (l as any).src &&
-        (l as any).src !== '{{product_image}}'
+        (l as any).src && (l as any).src !== '{{product_image}}'
     )
     return imgLayer ? (imgLayer as any).src : null
   })()
@@ -903,29 +810,16 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
     solidColor: canvasData.backgroundColor,
   })
 
-  // 'original' mode: reconstruct the product's own studio backdrop (product
-  // region AI-inpainted) instead of any synthetic background. Only runs when
-  // explicitly opted into — useSmartBackground doesn't know this mode and
-  // no-ops for it (sampleSrc is already null in ai_product mode above), so
-  // this is a fully separate, additive source, resolved the same
-  // cache-then-generate way as the transparent cutout itself.
+  // CHANGED: 'original' mode background now comes from bundle.backgroundUrl
+  // (the pre-computed Background Plate) instead of a separate reconstruction call.
+  // This is instant after the first bundle fetch — no extra AI call.
   const useOriginalBackground = isAiMode && bgSettings.mode === 'original'
-  const { transparentUrl: transparentUrlForBg } = useTransparentPreview(
-    product.imageUrl, storeId ?? null, useOriginalBackground
-  )
-  const { backgroundUrl: reconstructedBackgroundUrl, loading: reconstructingBackground, error: reconstructionError } =
-    useBackgroundReconstructionPreview(product.imageUrl, transparentUrlForBg, storeId ?? null, useOriginalBackground)
+  const backgroundPlateUrl = useOriginalBackground ? bundle.backgroundUrl : null
 
   const transparentBg = bgSettings.mode === 'transparent'
     ? 'repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 0 0 / 16px 16px'
     : undefined
 
-  // Once background removal succeeds, the transparent cutout (rendered via
-  // AiModePositioning below) is the ONLY visual representation of the
-  // product — an 'image'-type layer still pointing at '{{product_image}}'
-  // (e.g. the default layer every new template starts with) would otherwise
-  // show the ORIGINAL, non-transparent photo underneath it. Mirrors the same
-  // exclusion in the server compositor.
   const isRawProductImageLayer = (l: Layer) =>
     l.type === 'image' && (l as any).src === '{{product_image}}'
 
@@ -969,23 +863,20 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
             Live AI preview
           </span>
         )}
-        {useOriginalBackground && reconstructingBackground && (
+        {/* Background plate status indicator */}
+        {useOriginalBackground && bundle.loading && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
-            Reconstructing background…
+            Loading background plate…
           </span>
         )}
-        {/* Temporary debug text — surfaces the real Cloudinary/API failure
-            reason instead of silently falling back, so a blank/white
-            background can be diagnosed from a screenshot. Remove once this
-            is confirmed working end-to-end. */}
-        {useOriginalBackground && !reconstructingBackground && (
-          <span className="text-xs font-mono" style={{ color: reconstructionError ? '#dc2626' : '#16a34a' }}>
-            {reconstructionError
-              ? `bg-reconstruction ERROR: ${reconstructionError}`
-              : reconstructedBackgroundUrl
-                ? 'bg-reconstruction: OK'
-                : 'bg-reconstruction: no result (check transparent cutout loaded)'}
+        {useOriginalBackground && !bundle.loading && (
+          <span className="text-xs font-mono" style={{ color: bundle.error ? '#dc2626' : backgroundPlateUrl ? '#16a34a' : '#d97706' }}>
+            {bundle.error
+              ? `Bundle error: ${bundle.error}`
+              : backgroundPlateUrl
+                ? 'Background plate: ready'
+                : 'Background plate: not yet available (partial bundle)'}
           </span>
         )}
       </div>
@@ -997,8 +888,10 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         style={{
           width: displayW, height: displayH,
           backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
+          // CHANGED: 'original' mode uses backgroundPlateUrl (from bundle) instead of
+          // reconstructed background (from separate service). All other modes unchanged.
           backgroundImage: useOriginalBackground
-            ? (reconstructedBackgroundUrl ? `url(${reconstructedBackgroundUrl})` : undefined)
+            ? (backgroundPlateUrl ? `url(${backgroundPlateUrl})` : undefined)
             : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined))),
           backgroundSize: 'cover',
           backgroundPosition: 'center',
@@ -1019,6 +912,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
             canvasW={cW}
             canvasH={cH}
             canvasEl={canvasRef.current}
+            bundle={bundle}
           />
         )}
         {fgLayers.map(renderLayer)}

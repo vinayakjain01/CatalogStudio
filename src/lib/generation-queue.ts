@@ -9,11 +9,12 @@ import {
 } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
-import { getTransparentProductImage } from '@/lib/background-removal'
-import { getReconstructedBackground } from '@/lib/background-reconstruction'
+// CHANGED: replaced getTransparentProductImage + getReconstructedBackground with getProductLayerBundle
+import { getProductLayerBundle } from '@/lib/product-layer-engine'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
+import type { CompositorBundle } from '@/types/product-layer'
 
 export function getAdminClient(): SupabaseClient {
   return createSupabaseAdmin(
@@ -103,7 +104,6 @@ export async function processBatch(
   concurrency = 4,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<{ claimed: number; completed: number; failed: number }> {
-  // Step 1: Find pending jobs
   const { data: pendingJobs, error: selectError } = await supabase
     .from('generation_jobs')
     .select('id')
@@ -116,8 +116,6 @@ export async function processBatch(
 
   const ids = pendingJobs.map((j: any) => j.id)
 
-  // Step 2: Atomically claim them by updating status pending->processing
-  // Only rows still 'pending' will be updated (concurrent workers won't double-claim)
   const { data: claimed, error: claimError } = await supabase
     .from('generation_jobs')
     .update({
@@ -168,7 +166,7 @@ export async function processGenerationJob(
         updated_at: new Date().toISOString(),
       })
       .eq('id', jobId)
-      .eq('status', 'pending')   // only claim if still pending — skips cancelled rows
+      .eq('status', 'pending')
       .select('*')
       .maybeSingle(),
     { jobId }
@@ -179,7 +177,6 @@ export async function processGenerationJob(
     throw new Error(error.message)
   }
   if (!job) {
-    // Could be cancelled, already processing, or completed — check actual status for clarity
     const { data: check } = await supabase
       .from('generation_jobs').select('status').eq('id', jobId).maybeSingle()
     console.warn(`[processGenerationJob] Job not claimable jobId=${jobId} current_status=${check?.status ?? 'not_found'} — skipping`)
@@ -214,7 +211,6 @@ function createJobContext(): JobContext {
 function getRulesForStore(storeId: string, context: JobContext) {
   const cached = context.rulesByStore.get(storeId)
   if (cached) return cached
-
   const promise = measureAsync(
     'supabase.template_rules.load',
     () => getActiveTemplateRules(storeId),
@@ -227,7 +223,6 @@ function getRulesForStore(storeId: string, context: JobContext) {
 function getTemplateCanvas(templateId: string, supabase: SupabaseClient, context: JobContext) {
   const cached = context.templatesById.get(templateId)
   if (cached) return cached
-
   const promise = measureAsync(
     'supabase.templates.load',
     async () => {
@@ -248,7 +243,7 @@ function getTemplateCanvas(templateId: string, supabase: SupabaseClient, context
 
 async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   const started = Date.now()
-  // Load product + image
+
   const { data: product, error: productError } = await measureAsync(
     'supabase.products.load_for_generation',
     () => supabase
@@ -262,7 +257,6 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   if (productError) throw new Error(productError.message)
   if (!product) throw new Error('Product not found')
 
-  // Resolve template (or use the one pinned on the job)
   const templateId = job.template_id || resolveTemplateFromRules(
     {
       id: product.id,
@@ -275,7 +269,6 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     await getRulesForStore(job.store_id, context)
   )
   if (!templateId) {
-    // No rule matched — mark completed-with-no-op so it doesn't retry forever.
     await supabase.from('generation_jobs')
       .update({ status: 'completed', error: 'no matching rule', updated_at: new Date().toISOString() })
       .eq('id', job.id)
@@ -287,29 +280,58 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   const primary = images.find((i: any) => i.is_primary) || images[0]
   const imageUrl: string | null = primary?.src || null
 
-  // ── AI Product Mode: background removal ──────────────────────────────────
-  // If the template uses ai_product mode, remove the product background.
-  // This is cached per source URL so it only runs once per unique product image.
   const templateMode: 'standard' | 'ai_product' = (canvasData as any).templateMode || 'standard'
-  let transparentImageUrl: string | null = null
+
+  // ── CHANGED: Product Layer Engine replaces the two separate AI calls ─────────
+  //
+  // Previously generation-queue.ts called:
+  //   1. getTransparentProductImage()   → transparent cutout
+  //   2. getReconstructedBackground()   → background plate (for 'original' mode only)
+  //
+  // Now it calls getProductLayerBundle() ONCE, which:
+  //   - Returns all 3 assets (transparent + backgroundUrl + metadata) from cache if available
+  //   - Runs AI only on first encounter of this source URL
+  //   - Stores everything in bg_removal_cache (extended by migration SQL)
+  //   - Is non-fatal: partial bundles (no backgroundUrl) still complete the job
+  //
+  // The compositor receives bundle.backgroundUrl via options.productLayerBundle,
+  // which it uses as the fixed Background Plate in serverRenderBackground().
+  // The compositor receives bundle.metadata via options.productLayerBundle,
+  // which calculateSmartFitPlacement() uses for instant Head Space math.
+
+  let productLayerBundle: CompositorBundle | null = null
 
   if (templateMode === 'ai_product' && imageUrl) {
     try {
-      const bgResult = await getTransparentProductImage(imageUrl, job.store_id, supabase)
-      transparentImageUrl = bgResult.transparentUrl
-      console.log(`[runJob] BG removal ${bgResult.fromCache ? 'cached' : 'fresh'} for jobId=${job.id}`)
+      const bundle = await measureAsync(
+        'product_layer_engine.get_bundle',
+        () => getProductLayerBundle(imageUrl, job.store_id, supabase),
+        { productId: product.id, templateId }
+      )
 
-      // Track bg removal status on the job row
+      productLayerBundle = {
+        transparentUrl: bundle.transparentUrl,
+        backgroundUrl:  bundle.backgroundUrl,
+        metadata:       bundle.metadata,
+      }
+
+      // Keep backward-compatible job tracking fields (existing dashboard reads these)
       await supabase.from('generation_jobs')
         .update({
-          bg_removal_status: bgResult.fromCache ? 'cached' : 'done',
-          transparent_url: transparentImageUrl,
-          updated_at: new Date().toISOString(),
+          bg_removal_status: bundle.fromCache ? 'cached' : 'done',
+          transparent_url:   bundle.transparentUrl,
+          updated_at:        new Date().toISOString(),
         })
         .eq('id', job.id)
-    } catch (bgErr: any) {
-      // BG removal failure is non-fatal: fall back to standard mode
-      console.error(`[runJob] BG removal failed for jobId=${job.id}, falling back to standard:`, bgErr.message)
+
+      console.log(
+        `[runJob] Product Layer Bundle ${bundle.fromCache ? 'cached' : 'fresh'} ` +
+        `status=${bundle.bundleStatus} shot=${bundle.metadata.shot_type} ` +
+        `bgPlate=${bundle.backgroundUrl ? 'yes' : 'no'} jobId=${job.id}`
+      )
+    } catch (bundleErr: any) {
+      // Non-fatal: fall back to standard mode (no transparent, no plate)
+      console.error(`[runJob] Product Layer Bundle failed, falling back to standard:`, bundleErr.message)
       await supabase.from('generation_jobs')
         .update({ bg_removal_status: 'failed', updated_at: new Date().toISOString() })
         .eq('id', job.id)
@@ -319,40 +341,30 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
       .update({ bg_removal_status: 'skipped', updated_at: new Date().toISOString() })
       .eq('id', job.id)
   }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // ── Background Reconstruction (opt-in) ────────────────────────────────────
-  // Only attempted when the template explicitly opted into backgroundSettings
-  // .mode === 'original' — everyone else pays zero extra cost/latency here.
-  // Never fatal: a null result just falls back to the solid background.
-  let reconstructedBackgroundUrl: string | null = null
-  if (transparentImageUrl && imageUrl && (canvasData as any).backgroundSettings?.mode === 'original') {
-    try {
-      const reconResult = await getReconstructedBackground(imageUrl, transparentImageUrl, job.store_id, supabase)
-      reconstructedBackgroundUrl = reconResult.backgroundUrl
-      console.log(`[runJob] Background reconstruction ${reconResult.backgroundUrl ? (reconResult.fromCache ? 'cached' : 'fresh') : `unavailable (${reconResult.error})`} for jobId=${job.id}`)
-    } catch (reconErr: any) {
-      console.error(`[runJob] Background reconstruction failed for jobId=${job.id}, falling back to solid:`, reconErr.message)
-    }
-  }
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── End Product Layer Engine block ───────────────────────────────────────────
 
   const productLayerSettings = (canvasData as any).productLayerSettings || undefined
+
   const buffer = await compositeImage(canvasData as any, {
-    title: product.title,
-    price: product.price,
+    title:           product.title,
+    price:           product.price,
     compare_at_price: product.compare_at_price,
-    vendor: product.vendor,
-    product_type: product.product_type,
+    vendor:          product.vendor,
+    product_type:    product.product_type,
     imageUrl,
-    transparentImageUrl,
-    shotTypeOverride: (product as any).shot_type_override ?? null,
-    reconstructedBackgroundUrl,
+    // transparentImageUrl: sourced from bundle when present
+    transparentImageUrl: productLayerBundle?.transparentUrl ?? null,
+    shotTypeOverride:    (product as any).shot_type_override ?? null,
+    // reconstructedBackgroundUrl: no longer needed — bundle.backgroundUrl handles this
+    // via options.productLayerBundle in the compositor. Pass null to avoid legacy path.
+    reconstructedBackgroundUrl: null,
   }, {
-    templateMode: transparentImageUrl ? 'ai_product' : 'standard',
+    templateMode:       productLayerBundle ? 'ai_product' : 'standard',
     productLayerSettings,
-    storeId: job.store_id,
+    storeId:            job.store_id,
     supabase,
+    // NEW: pass the full bundle so compositor can use Background Plate + Smart Fit 2.0
+    productLayerBundle: productLayerBundle ?? undefined,
   })
 
   // PNG master sanity check (0x89 0x50 'PNG')
@@ -371,13 +383,13 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     'supabase.generated_images.upsert',
     () => supabase.from('generated_images').upsert(
       {
-        product_id: product.id,
-        template_id: templateId,
-        creative_type: job.creative_type,
+        product_id:           product.id,
+        template_id:          templateId,
+        creative_type:        job.creative_type,
         cloudinary_public_id: cloudPublicId,
-        generated_url: deliveredUrl,
-        status: 'completed',
-        updated_at: new Date().toISOString(),
+        generated_url:        deliveredUrl,
+        status:               'completed',
+        updated_at:           new Date().toISOString(),
       },
       { onConflict: 'product_id,template_id,creative_type' }
     ),
@@ -400,9 +412,9 @@ async function failJob(job: any, message: string, supabase: SupabaseClient) {
   const willRetry = job.attempts < job.max_attempts
   await supabase.from('generation_jobs')
     .update({
-      status: willRetry ? 'pending' : 'failed',  // back to pending for retry
+      status:    willRetry ? 'pending' : 'failed',
       locked_at: null,
-      error: message?.slice(0, 500),
+      error:     message?.slice(0, 500),
       updated_at: new Date().toISOString(),
     })
     .eq('id', job.id)

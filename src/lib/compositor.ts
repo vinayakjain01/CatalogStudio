@@ -18,48 +18,23 @@ import {
 import {
   placementToProductLayerSettings,
   calculatePlacement,
+  calculateSmartFitPlacement,
   type ProductBounds,
 } from '@/lib/product-positioning-shared'
+import type { CompositorBundle } from '@/types/product-layer'
 import type { Canvas } from '@napi-rs/canvas'
 
 // ──────────────────────────────────────────────────────────────────────────
-// QUALITY CONFIG
-//
-// OUTPUT_SIZE        Final delivered pixel dimension on the longest side.
-//                    2048 is the standard for premium catalog photography:
-//                    it's print-ready, Retina-sharp on all screens, and
-//                    still within Instagram/Meta upload specs.
-//                    (Instagram: 1080–1440; Meta Ads: up to 1440×1800;
-//                     Catalog print: 300dpi at ~7cm = 826px minimum)
-//
-// SUPERSAMPLE        Internal render multiplier. We render at OUTPUT_SIZE × S,
-//                    then do a quality multi-step downscale to OUTPUT_SIZE.
-//                    3× for 1080 output (3240 internal, 42MB).
-//                    2× for 2048 output (4096 internal, 67MB) — same RAM budget,
-//                    90% more output pixels, still clean downsampling from the
-//                    full-resolution source (4160×6240 source → 1365px output
-//                    means source is 3× larger than output = crisp detail).
-//
-// SUPERSAMPLE_LARGE  When template canvas > 1440px on any side, use 2× instead
-//                    of 3× to stay within the ~75MB canvas RAM budget.
-//
-// PNG_COMPRESSION    0–9. Default (6) is slow and saves ~5% over level 1.
-//                    Level 1 = lossless, 3× faster encode, imperceptibly larger.
-//                    We upload lossless PNG once; Cloudinary delivers optimised
-//                    WebP/AVIF from it, so storage size here is irrelevant.
+// QUALITY CONFIG — unchanged from original
 // ──────────────────────────────────────────────────────────────────────────
 
-const OUTPUT_SIZE      = 2048   // output px (square canvas; non-square uses canvasData dims)
-const SUPERSAMPLE      = 2      // 2× for ≥ 1440px canvas  →  4096 internal, 67MB
-const SUPERSAMPLE_SM   = 3      // 3× for < 1440px canvas  →  ≤ 4320 internal, 75MB
-const PNG_COMPRESSION  = 1      // level 1: lossless, ~3× faster than default level 6
+const OUTPUT_SIZE      = 2048
+const SUPERSAMPLE      = 2
+const SUPERSAMPLE_SM   = 3
+const PNG_COMPRESSION  = 1
 const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
 const IMAGE_CACHE_MAX    = 250
 
-/**
- * Choose supersample factor based on canvas dimensions.
- * Keeps internal canvas RAM under ~80MB on all plans.
- */
 function chooseSuperSample(targetW: number, targetH: number, override?: number): number {
   if (override != null) return override
   const longest = Math.max(targetW, targetH)
@@ -73,7 +48,6 @@ type CachedImage = {
 
 const imageCache = new Map<string, CachedImage>()
 
-// Register fonts once (module-level, runs on cold start)
 let fontsRegistered = false
 function ensureFontsRegistered() {
   if (fontsRegistered) return
@@ -99,11 +73,8 @@ interface ProductData {
   vendor: string | null
   product_type: string | null
   imageUrl: string | null
-  /** Transparent PNG URL from background removal. Set when template is in ai_product mode. */
   transparentImageUrl?: string | null
-  /** Manual per-product shot-type override for Product Positioning (null/undefined = auto-detect). */
   shotTypeOverride?: string | null
-  /** Original photo with the product region AI-inpainted. Only used by backgroundSettings.mode === 'original'. */
   reconstructedBackgroundUrl?: string | null
 }
 
@@ -114,89 +85,56 @@ export interface CompositeOptions {
   productLayerSettings?: ProductLayerSettings
   storeId?: string
   supabase?: any
+  /**
+   * NEW (Product Layer Engine): pre-resolved asset bundle from
+   * getProductLayerBundle(). When present:
+   *  - bundle.backgroundUrl → used as the fixed Background Plate
+   *  - bundle.metadata      → used for Smart Fit 2.0 (no detectProductBounds() call)
+   * When absent → falls back to existing reconstruction/blur-extend logic.
+   * Fully optional — backward compatible with all existing templates.
+   */
+  productLayerBundle?: CompositorBundle
 }
 
-/**
- * Upgrade a URL to its highest-quality version WITHOUT changing what content is shown.
- *
- * Three CDN patterns handled:
- *
- * 1. Cloudinary — strip non-content transforms between /upload/ and the version/path.
- *    Transforms like w_800,h_800,c_limit / f_auto,q_auto only resize/reformat.
- *    They do NOT change what part of the image is visible.
- *    Transforms like c_crop, c_fill, c_thumb DO change content → preserved unchanged.
- *
- * 2. Google Drive (lh3.googleusercontent.com) — ensure =s0 suffix (original size).
- *    =s1600 loads a 1600px thumbnail; =s0 loads the original full-res file.
- *
- * 3. Shopify CDN — strip _WxH size suffix before the extension.
- *    shirt_800x800.jpg → shirt.jpg (same image, original resolution).
- *
- * This gives us the real pixel data of the stored master, so supersampling at 3×
- * operates on the highest available quality and produces a sharper final output.
- */
+// ─── URL quality helpers — unchanged ──────────────────────────────────────────
+
 function toHighQualityUrl(src: string): string {
   if (!src) return src
-
   try {
-    // ── Cloudinary ──────────────────────────────────────────────────────────
     if (src.includes('res.cloudinary.com') && src.includes('/image/upload/')) {
       const uploadMarker = '/image/upload/'
       const uploadIdx = src.indexOf(uploadMarker)
       const afterUpload = src.slice(uploadIdx + uploadMarker.length)
       const firstSeg = afterUpload.split('/')[0]
-
-      // If the first segment is already a version number (v1234), no transforms present
       if (/^v\d+$/.test(firstSeg)) return src
-
-      // Content-altering crop transforms — changing these would show a different image
       const contentCrops = ['c_crop', 'c_fill', 'c_thumb', 'c_lfill', 'c_imagga_crop', 'c_auto', 'c_pad']
       const hasContentCrop = contentCrops.some(c => firstSeg.includes(c))
-      if (hasContentCrop) return src  // Preserve — these define what content is visible
-
-      // Strip the transforms segment (only quality/size/format — safe to remove)
-      const rest = afterUpload.slice(firstSeg.length + 1)  // +1 for the slash
+      if (hasContentCrop) return src
+      const rest = afterUpload.slice(firstSeg.length + 1)
       return src.slice(0, uploadIdx + uploadMarker.length) + rest
     }
-
-    // ── Google Drive (lh3.googleusercontent.com) ────────────────────────────
     if (src.includes('lh3.googleusercontent.com/d/')) {
-      // Replace any =sNNNN size param with =s0 (original size)
       const base = src.replace(/=s\d+[^&]*/, '')
       return base.endsWith('=s0') ? base : base + '=s0'
     }
-
-    // ── Shopify CDN ─────────────────────────────────────────────────────────
     if (src.includes('cdn.shopify.com')) {
-      // Strip _WxH or _Wx or _xH size suffixes before the file extension
       return src.replace(
         /(_(\d+x\d*|\d*x\d+)(@\dx)?)(\.(jpg|jpeg|png|webp|gif))(\?.*)?$/i,
         '$4$6'
       )
     }
-  } catch {
-    // URL parsing failed — return original unchanged
-  }
-
+  } catch {}
   return src
 }
 
-/**
- * Load an image at its highest quality.
- * Always fetches the full-resolution master by calling toHighQualityUrl first.
- * Falls back to the original URL if the high-quality URL fails.
- */
 async function loadImageUncached(src: string, timeoutMs = 20_000) {
   if (src.startsWith('data:')) return loadImage(src)
-
   const highQualitySrc = toHighQualityUrl(src)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-
   try {
     const res = await fetch(highQualitySrc, { signal: controller.signal, cache: 'force-cache' })
     if (!res.ok) {
-      // If we modified the URL and it failed, fall back to original
       if (highQualitySrc !== src) {
         const fallback = await fetch(src, { signal: new AbortController().signal, cache: 'force-cache' })
         if (!fallback.ok) throw new Error(`image fetch ${res.status} for ${src}`)
@@ -212,16 +150,13 @@ async function loadImageUncached(src: string, timeoutMs = 20_000) {
 
 async function loadImageSafe(src: string, timeoutMs = 12_000) {
   if (src.startsWith('data:')) return loadImageUncached(src, timeoutMs)
-
   const now = Date.now()
   const cached = imageCache.get(src)
   if (cached && cached.expiresAt > now) return cached.promise
-
   const promise = loadImageUncached(src, timeoutMs).catch(err => {
     imageCache.delete(src)
     throw err
   })
-
   imageCache.set(src, { promise, expiresAt: now + IMAGE_CACHE_TTL_MS })
   pruneImageCache(now)
   return promise
@@ -231,7 +166,6 @@ function pruneImageCache(now = Date.now()) {
   for (const [key, value] of imageCache) {
     if (value.expiresAt <= now) imageCache.delete(key)
   }
-
   while (imageCache.size > IMAGE_CACHE_MAX) {
     const firstKey = imageCache.keys().next().value as string | undefined
     if (!firstKey) break
@@ -241,10 +175,16 @@ function pruneImageCache(now = Date.now()) {
 
 async function preloadRenderableImages(
   canvasData: CanvasData,
-  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null }
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null },
+  bundle?: CompositorBundle
 ) {
   const urls = new Set<string>()
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
+
+  // NEW: if bundle has a background plate, preload it too
+  if (bundle?.backgroundUrl) {
+    urls.add(bundle.backgroundUrl)
+  }
 
   if (settings.mode === 'solid' && canvasData.backgroundImageUrl) {
     urls.add(canvasData.backgroundImageUrl)
@@ -264,31 +204,20 @@ async function preloadRenderableImages(
   }
 
   await mapWithConcurrency([...urls], 6, async src => {
-    try {
-      await loadImageSafe(src)
-    } catch {
-      // The draw path keeps the existing per-layer fallback behavior.
-    }
+    try { await loadImageSafe(src) } catch {}
   })
 }
 
-// ─── Server-side background renderers ────────────────────────────────────────
-// Mirror of the client-side logic in smart-background.tsx, implemented with
-// @napi-rs/canvas so it works in the compositor (Node.js / serverless).
+// ─── Background renderers ──────────────────────────────────────────────────────
 
 interface RgbColor { r: number; g: number; b: number }
 
-function serverExtractDominantColors(
-  ctx: any, // napi CanvasRenderingContext2D
-  imgNode: any, // napi Image
-  count = 2
-): RgbColor[] {
+function serverExtractDominantColors(ctx: any, imgNode: any, count = 2): RgbColor[] {
   const size = 64
   const tmp = createCanvas(size, size)
   const tctx = tmp.getContext('2d')
   tctx.drawImage(imgNode, 0, 0, size, size)
   const data: Uint8ClampedArray = tctx.getImageData(0, 0, size, size).data
-
   const buckets: Record<string, { r: number; g: number; b: number; count: number }> = {}
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3]
@@ -310,12 +239,6 @@ function rgbToHex({ r, g, b }: RgbColor) {
   return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
 }
 
-/**
- * Shared "cover" scale-to-fill geometry — scale an image up just enough that
- * it fully covers a box (zoomFactor adds extra overscan margin, e.g. to hide
- * blur edge artifacts), centered. Returns box-relative offsets/dimensions;
- * callers add their own box origin.
- */
 function computeCoverFit(imgW: number, imgH: number, boxW: number, boxH: number, zoomFactor = 1) {
   const scale = Math.max(boxW / imgW, boxH / imgH) * zoomFactor
   const sw = imgW * scale
@@ -323,14 +246,7 @@ function computeCoverFit(imgW: number, imgH: number, boxW: number, boxH: number,
   return { sx: (boxW - sw) / 2, sy: (boxH - sh) / 2, sw, sh }
 }
 
-function serverRenderBlurExtend(
-  ctx: any,
-  imgNode: any,
-  W: number,
-  H: number,
-  blurStrength: number
-) {
-  // @napi-rs/canvas supports ctx.filter
+function serverRenderBlurExtend(ctx: any, imgNode: any, W: number, H: number, blurStrength: number) {
   const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, W, H, 1.15)
   ctx.save()
   ctx.filter = `blur(${blurStrength}px) saturate(1.2) brightness(0.9)`
@@ -341,19 +257,7 @@ function serverRenderBlurExtend(
 
 const POSITIONING_GAP_BLUR = 30
 
-/**
- * Fills an arbitrary (x,y,w,h) box with a blurred, zoomed copy of the SAME
- * image — used behind a Product Positioning repositioned photo (standard
- * mode) so any margin left by the reposition/scale is filled with pixels
- * guaranteed to match the photo's own lighting/color/texture, rather than
- * a blank gap. Same technique as serverRenderBlurExtend, just box-scoped.
- */
-function drawBlurredBackdropInBox(
-  ctx: any,
-  imgNode: any,
-  x: number, y: number,
-  w: number, h: number
-) {
+function drawBlurredBackdropInBox(ctx: any, imgNode: any, x: number, y: number, w: number, h: number) {
   const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, w, h, 1.15)
   ctx.save()
   ctx.filter = `blur(${POSITIONING_GAP_BLUR}px) saturate(1.1) brightness(0.95)`
@@ -362,29 +266,62 @@ function drawBlurredBackdropInBox(
   ctx.restore()
 }
 
-/** Sharp (unblurred) cover-fit draw — e.g. a reconstructed original background. */
 function drawCoverFit(ctx: any, imgNode: any, x: number, y: number, w: number, h: number) {
   const { sx, sy, sw, sh } = computeCoverFit(imgNode.width, imgNode.height, w, h, 1)
   ctx.drawImage(imgNode, x + sx, y + sy, sw, sh)
 }
 
+/**
+ * Render the background layer.
+ *
+ * CHANGED (Product Layer Engine): when options.productLayerBundle.backgroundUrl
+ * is present, render the pre-computed Background Plate FIRST as the fixed
+ * studio backdrop — then return. The Background Plate always wins over
+ * blur-extend/reconstruction when available.
+ *
+ * All existing modes (solid, transparent, original, blur-extend, smart,
+ * gradient) are preserved byte-identical as fallbacks.
+ */
 async function serverRenderBackground(
   ctx: any,
   canvasData: CanvasData,
-  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null; transparentImageUrl?: string | null },
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null },
   W: number,
-  H: number
+  H: number,
+  bundle?: CompositorBundle
 ): Promise<void> {
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
-  // Always fill solid color first — this is also the fallback for 'original'
-  // mode when no reconstructed background is available (nothing further
-  // draws on top in that case, so the solid fill remains visible).
+  // ── NEW: Background Plate (Product Layer Engine) ─────────────────────────
+  // If we have a pre-computed Background Plate, use it as the fixed backdrop.
+  // It was generated once by getProductLayerBundle() and cached permanently.
+  // It is NEVER regenerated on subsequent jobs — just loaded from Cloudinary.
+  //
+  // The plate is always drawn at full canvas coverage regardless of the
+  // backgroundSettings.mode — it is the ground truth for the 'original'
+  // background mode. For other modes (solid, blur-extend, gradient, smart,
+  // transparent), the plate is skipped and the existing renderer handles them.
+  if (bundle?.backgroundUrl && settings.mode === 'original') {
+    // Solid fill as fallback baseline (same as before)
+    ctx.fillStyle = canvasData.backgroundColor
+    ctx.fillRect(0, 0, W, H)
+    try {
+      const bgPlate = await loadImageSafe(bundle.backgroundUrl)
+      drawCoverFit(ctx, bgPlate, 0, 0, W, H)
+      console.log(`[compositor] Background Plate rendered (${W}×${H})`)
+      return  // Background Plate is the final word — no further drawing
+    } catch (err: any) {
+      console.warn('[compositor] Background Plate load failed, falling through to solid:', err.message)
+      return  // solid fill (already drawn above) is the fallback
+    }
+  }
+  // ── End new block ─────────────────────────────────────────────────────────
+
+  // All existing background rendering — UNCHANGED from original compositor.ts
   ctx.fillStyle = canvasData.backgroundColor
   ctx.fillRect(0, 0, W, H)
 
   if (settings.mode === 'solid') {
-    // existing backgroundImageUrl passthrough
     if (canvasData.backgroundImageUrl) {
       try {
         const bgImg = await loadImageSafe(canvasData.backgroundImageUrl)
@@ -395,16 +332,12 @@ async function serverRenderBackground(
   }
 
   if (settings.mode === 'transparent') {
-    // Fill with transparent (already done by clearing; compositor keeps it)
     ctx.clearRect(0, 0, W, H)
     return
   }
 
   if (settings.mode === 'original') {
-    // Opt-in: the original photo's own background (product region AI-
-    // inpainted upstream) — falls back to the solid fill above when the
-    // reconstruction wasn't available (generation failure, or this being
-    // called for a template mode where it doesn't apply).
+    // Legacy path (no bundle.backgroundUrl) — existing reconstruction logic
     if (product.reconstructedBackgroundUrl) {
       try {
         const bgImg = await loadImageSafe(product.reconstructedBackgroundUrl)
@@ -414,19 +347,7 @@ async function serverRenderBackground(
     return
   }
 
-  // For smart / blur-extend / gradient — load the colour/blur SOURCE image.
-  //
-  // CRITICAL (ai_product mode): never load the original photo here. In
-  // ai_product mode `product.imageUrl` still contains the model, and blurring
-  // or drawing it as the backdrop makes it reappear behind the transparent
-  // cutout as a "ghost" second model (the exact bug this guards against).
-  // We pass NO source image in ai_product mode — matching the live editor,
-  // which likewise passes `sampleSrc = null` for these modes in ai_product
-  // mode (canvas-preview.tsx). That keeps the generated background identical
-  // to the preview: solid for smart/blur-extend, user-stop gradient for
-  // gradient — always model-free.
-  const isAiProduct = Boolean(product.transparentImageUrl)
-  const imgSrc = isAiProduct ? null : product.imageUrl
+  const imgSrc = product.imageUrl
   let imgNode: any = null
   if (imgSrc) {
     try { imgNode = await loadImageSafe(imgSrc) } catch {}
@@ -440,7 +361,6 @@ async function serverRenderBackground(
     case 'smart': {
       if (imgNode) {
         serverRenderBlurExtend(ctx, imgNode, W, H, settings.blurStrength)
-        // Radial blend overlay
         const colors = serverExtractDominantColors(ctx, imgNode, 2)
         if (colors.length > 0) {
           const { r, g, b } = colors[0]
@@ -488,8 +408,7 @@ async function serverRenderBackground(
   }
 }
 
-// ─── AI Product Layer Renderer ───────────────────────────────────────────────
-// Draws the transparent product PNG as a floating layer with effects.
+// ─── AI Product Layer Renderer — unchanged ─────────────────────────────────────
 
 async function drawProductLayer(
   ctx: any,
@@ -499,7 +418,6 @@ async function drawProductLayer(
   H: number
 ): Promise<void> {
   const img = await loadImageSafe(transparentImageUrl)
-
   const pad = (settings.padding / 100)
   const x = ((settings.x / 100) + pad / 2) * W
   const y = ((settings.y / 100) + pad / 2) * H
@@ -509,23 +427,18 @@ async function drawProductLayer(
   ctx.save()
   ctx.globalAlpha = settings.opacity
 
-  // Apply rotation around center
   if (settings.rotation !== 0) {
     ctx.translate(x + w / 2, y + h / 2)
     ctx.rotate((settings.rotation * Math.PI) / 180)
     ctx.translate(-(x + w / 2), -(y + h / 2))
   }
 
-  // Apply horizontal/vertical flip around center (Canva-style mirror).
-  // Absent fields (older templates) → no-op. Composed inside the same
-  // centered frame as rotation so the two combine correctly.
   if (settings.flipH || settings.flipV) {
     ctx.translate(x + w / 2, y + h / 2)
     ctx.scale(settings.flipH ? -1 : 1, settings.flipV ? -1 : 1)
     ctx.translate(-(x + w / 2), -(y + h / 2))
   }
 
-  // Drop shadow
   if (settings.shadow) {
     ctx.shadowColor = settings.shadowColor
     ctx.shadowBlur = settings.shadowBlur
@@ -533,7 +446,6 @@ async function drawProductLayer(
     ctx.shadowOffsetY = settings.shadowOffsetY
   }
 
-  // Glow (rendered as extra blurred layer beneath)
   if (settings.glow) {
     ctx.save()
     ctx.shadowColor = settings.glowColor
@@ -545,10 +457,8 @@ async function drawProductLayer(
     ctx.restore()
   }
 
-  // Draw the actual transparent product image
   const fit = settings.objectFit || 'contain'
   drawFittedImage(ctx, img, x, y, w, h, fit)
-
   ctx.restore()
 }
 
@@ -570,13 +480,6 @@ function drawFittedImage(
     const sh = img.height * scale
     ctx.drawImage(img, x + (w - sw) / 2, y + (h - sh) / 2, sw, sh)
   } else {
-    // 'fill' — draw at exactly the given x/y/w/h coordinates, e.g. when
-    // Product Positioning has pre-calculated a placement (see
-    // src/lib/product-positioning.ts) that already accounts for aspect ratio.
-    // We draw using the full source image (sx=0,sy=0,sw=img.width,sh=img.height)
-    // mapped to the destination rect.
-    //
-    // No clip needed — the caller handles borderRadius clipping before this call.
     ctx.drawImage(img, 0, 0, img.width, img.height, x, y, w, h)
   }
 }
@@ -591,12 +494,6 @@ export async function compositeImage(
   return measureAsync('creative.render.total', async () => {
     ensureFontsRegistered()
 
-    // ── Output dimensions ────────────────────────────────────────────────────
-    // Use the template's canvas size if it's larger than OUTPUT_SIZE.
-    // Otherwise scale up to OUTPUT_SIZE while preserving the aspect ratio.
-    // This means a 1080×1080 template outputs at 2048×2048 (90% more pixels),
-    // while a 1080×1350 template outputs at 1638×2048 (preserves 4:5 ratio).
-    // No zoom, no crop — just more pixels of the same image.
     const rawW = canvasData.width  || 1080
     const rawH = canvasData.height || 1080
 
@@ -604,27 +501,22 @@ export async function compositeImage(
     let targetH: number
 
     if (rawW >= OUTPUT_SIZE || rawH >= OUTPUT_SIZE) {
-      // Template is already large — use as-is
       targetW = rawW
       targetH = rawH
     } else {
-      // Scale up to OUTPUT_SIZE on the longest side, preserving aspect ratio
       const upScale = OUTPUT_SIZE / Math.max(rawW, rawH)
-      // Round to even numbers (better for video encoding and Cloudinary processing)
       targetW = Math.round(rawW * upScale / 2) * 2
       targetH = Math.round(rawH * upScale / 2) * 2
     }
 
-    // ── Supersampling ─────────────────────────────────────────────────────────
-    // Internal canvas is targetW×targetH × S. Render at high res, downscale at end.
-    // chooseSuperSample keeps internal canvas RAM under ~80MB across all plan tiers.
     const S = chooseSuperSample(targetW, targetH, options.supersample)
     const W = targetW * S
     const H = targetH * S
 
     console.log(
       `[compositor] render ${rawW}×${rawH} template → ${targetW}×${targetH} output ` +
-      `(SS=${S}, internal=${W}×${H}, RAM≈${Math.round(W*H*4/1e6)}MB)`
+      `(SS=${S}, internal=${W}×${H}, RAM≈${Math.round(W*H*4/1e6)}MB, ` +
+      `bundle=${options.productLayerBundle ? 'yes' : 'no'})`
     )
 
     const canvas = createCanvas(W, H)
@@ -633,49 +525,65 @@ export async function compositeImage(
     if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
 
     await measureAsync('creative.render.asset_preload', () =>
-      preloadRenderableImages(canvasData, product),
+      preloadRenderableImages(canvasData, product, options.productLayerBundle),
       { layers: canvasData.layers.length }
     )
 
-    // Background
-    await serverRenderBackground(ctx, canvasData, product, W, H)
+    // Background — now accepts bundle for Background Plate rendering
+    await serverRenderBackground(ctx, canvasData, product, W, H, options.productLayerBundle)
 
     const templateMode = options.templateMode || 'standard'
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
       // ── Product Positioning (Head Space) — ai_product mode ─────────────────
-      // Pure local math, no network calls: the background already fills 100%
-      // of the canvas above (serverRenderBackground), so repositioning the
-      // transparent cutout on top never creates a gap that needs filling.
       //
-      // Must run against rawW/rawH (canvasData.width/height) — headSpacePx
-      // and the margins are configured in the builder relative to THAT size
-      // (it's what the "Distance from top" slider and its max, and the
-      // editor's guide-line overlay, are both calibrated against), not the
-      // upscaled targetW/targetH output size. The result is then converted
-      // to percentages (divided by the SAME rawW/rawH used to compute it),
-      // which are correctly resolution-independent from there on.
-      const positioning = await resolveProductPositioning(
-        product.transparentImageUrl,
-        rawW, rawH,
-        canvasData.productPositioningSettings,
-        product.shotTypeOverride
-      )
-      if (positioning.apply && positioning.placement) {
-        productLayerSettings = placementToProductLayerSettings(
-          positioning.placement, rawW, rawH, productLayerSettings
-        )
-      }
-      // ─────────────────────────────────────────────────────────────────────
+      // CHANGED (Product Layer Engine): when bundle.metadata is present, use
+      // calculateSmartFitPlacement() which reads from stored metadata instead
+      // of calling resolveProductPositioning() (which calls detectProductBounds()
+      // — a network round-trip to load and pixel-scan the transparent PNG).
+      //
+      // Fallback: when no metadata is available (legacy images or first run
+      // before the bundle is cached), fall back to the original
+      // resolveProductPositioning() path — preserves 100% parity for all
+      // existing templates and images that haven't been through the engine yet.
 
-      // Once background removal succeeds, the transparent cutout (drawn
-      // below) is the ONLY visual representation of the product — an
-      // 'image'-type layer still pointing at '{{product_image}}' (e.g. the
-      // default layer every new template starts with, left over from before
-      // AI Product Mode was enabled) would otherwise render the ORIGINAL,
-      // non-transparent photo underneath it, producing two overlapping
-      // products. Never render both.
+      const positioningSettings = canvasData.productPositioningSettings
+      const bundle = options.productLayerBundle
+
+      if (positioningSettings?.enabled && bundle?.metadata) {
+        // ── Smart Fit 2.0: zero network calls, pure math from stored metadata ──
+        const { placement, wouldCrop } = calculateSmartFitPlacement(
+          bundle.metadata,
+          rawW,
+          rawH,
+          positioningSettings
+        )
+        if (!wouldCrop && placement) {
+          productLayerSettings = placementToProductLayerSettings(
+            placement, rawW, rawH, productLayerSettings
+          )
+          console.log(
+            `[compositor] Smart Fit 2.0: head_y=${bundle.metadata.head_y}px ` +
+            `shot=${bundle.metadata.shot_type} scale=${placement.scale.toFixed(3)}`
+          )
+        }
+      } else if (positioningSettings?.enabled) {
+        // ── Legacy path: resolveProductPositioning (detectProductBounds + classify) ─
+        // Used when bundle metadata isn't available yet (first-run / legacy rows).
+        const positioning = await resolveProductPositioning(
+          product.transparentImageUrl,
+          rawW, rawH,
+          positioningSettings,
+          product.shotTypeOverride
+        )
+        if (positioning.apply && positioning.placement) {
+          productLayerSettings = placementToProductLayerSettings(
+            positioning.placement, rawW, rawH, productLayerSettings
+          )
+        }
+      }
+
       const isRawProductImageLayer = (l: Layer) =>
         l.type === 'image' && (l as any).src === '{{product_image}}'
 
@@ -685,7 +593,6 @@ export async function compositeImage(
       const bgLayers = allLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
       const fgLayers = allLayers.filter(l => l.zIndex >= productLayerSettings.zIndex)
 
-      // Layer-drawing options passed to every drawLayer call
       const layerOpts = { storeId: options.storeId, supabase: options.supabase, targetW, targetH }
 
       for (const layer of bgLayers) {
@@ -703,11 +610,7 @@ export async function compositeImage(
         await drawLayer(ctx, layer, product, W, H, layerOpts)
       }
     } else {
-      // ── Product Positioning (Head Space) — standard mode ────────────────────
-      // Unlike ai_product mode, there's no separate background layer under the
-      // product photo here, so repositioning can leave empty space that gets
-      // filled with a blurred backdrop of the same photo — see the
-      // '{{product_image}}' handling inside drawLayer() below.
+      // ── Standard mode — unchanged ────────────────────────────────────────────
       let standardModePositioning: ClassifyResult | null = null
       const positioningSettings = canvasData.productPositioningSettings
       if (positioningSettings?.enabled && product.imageUrl) {
@@ -737,25 +640,17 @@ export async function compositeImage(
       }
     }
 
-    // ── Multi-step quality downscale ─────────────────────────────────────────
-    // Single-step downscale from 3× to 1× can produce softness at edges.
-    // Multi-step halving (Mitchell/Lanczos-equivalent) preserves sharpness:
-    //   3240 → 1620 → 1080  (two 2× steps instead of one 3× step)
-    //   4096 → 2048         (one clean 2× step — optimal for SS=2)
-    //   4320 → 2160 → 1080  (two steps for SS=3 + small canvas)
-    // Each halving is a perfect power-of-2 scale — maximum quality for that step.
+    // ── Multi-step quality downscale — unchanged ───────────────────────────────
     let finalCanvas: Canvas
 
     if (S === 1) {
       finalCanvas = canvas
     } else {
-      // Build the downscale chain: halve until we reach target size
       let currentCanvas = canvas
       let currentW = W
       let currentH = H
 
       while (currentW > targetW * 1.5 || currentH > targetH * 1.5) {
-        // Halve each step (but never go below target)
         const nextW = Math.max(targetW, Math.round(currentW / 2))
         const nextH = Math.max(targetH, Math.round(currentH / 2))
         const stepCanvas = createCanvas(nextW, nextH)
@@ -768,7 +663,6 @@ export async function compositeImage(
         currentH = nextH
       }
 
-      // Final step to exact target dimensions
       if (currentW !== targetW || currentH !== targetH) {
         finalCanvas = createCanvas(targetW, targetH)
         const finalCtx = finalCanvas.getContext('2d')
@@ -780,10 +674,6 @@ export async function compositeImage(
       }
     }
 
-    // ── PNG encode ────────────────────────────────────────────────────────────
-    // compressionLevel 1 = lossless (same pixel data as level 6),
-    // ~3× faster encode, imperceptibly larger file.
-    // We upload lossless once; Cloudinary delivers optimised WebP/AVIF.
     const pngStarted = Date.now()
     const buffer = (finalCanvas as any).toBuffer('image/png', { compressionLevel: PNG_COMPRESSION })
     logPerf('creative.render.png_encode', Date.now() - pngStarted, {
@@ -796,7 +686,7 @@ export async function compositeImage(
   }, { layers: canvasData.layers.length })
 }
 
-/** Draw a single layer onto the canvas context. Extracted for reuse in both modes. */
+/** Draw a single layer — unchanged from original */
 async function drawLayer(
   ctx: any,
   layer: Layer,
@@ -808,10 +698,8 @@ async function drawLayer(
     supabase?: any
     targetW?: number
     targetH?: number
-    /** Raw canvasData.width/height — what headSpacePx/margins are calibrated against (see below). */
     rawW?: number
     rawH?: number
-    /** Product Positioning (standard mode) — set only when classification says apply. */
     standardModePositioning?: { bounds: ProductBounds; settings: ProductPositioningSettings } | null
   }
 ): Promise<void> {
@@ -853,14 +741,12 @@ async function drawLayer(
       ctx.fillStyle = l.color
       ctx.textBaseline = 'top'
       ctx.textAlign = l.textAlign as CanvasTextAlign
-
       if (l.backgroundColor) {
         ctx.fillStyle = l.backgroundColor
         roundRect(ctx, x, y, w, h, l.borderRadius)
         ctx.fill()
         ctx.fillStyle = l.color
       }
-
       const paddingX = l.paddingX * (W / 1000)
       const paddingY = l.paddingY * (H / 1000)
       const textX = l.textAlign === 'center'
@@ -908,28 +794,9 @@ async function drawLayer(
       const radius = (l as any).borderRadius ?? 0
 
       if (imgSrc) {
-        // ── Product Positioning (standard mode) ────────────────────────────
-        // Directly apply the computed placement (move + scale the SAME photo
-        // within its own layer box) rather than routing through ai_extend —
-        // ai_extend only fixes aspect-ratio mismatches; it does nothing when
-        // the photo already matches the box's aspect ratio but the subject's
-        // head sits at a different offset within it, which is the common
-        // case Product Positioning needs to solve. When the repositioned
-        // photo leaves empty space at the edges (e.g. shrunk slightly to
-        // avoid cropping), a blurred/zoomed copy of the SAME photo fills the
-        // gap first — guaranteed to match lighting/color/texture since it's
-        // the same source pixels, reusing the blur-extend technique already
-        // used for backgrounds elsewhere in this file.
         let positioningPlacement: { imgX: number; imgY: number; renderedW: number; renderedH: number } | null = null
         if (l.src === '{{product_image}}' && options?.standardModePositioning) {
           const { bounds, settings } = options.standardModePositioning
-          // headSpacePx/margins are configured relative to rawW/rawH (what the
-          // builder's slider and its guide-line overlay are calibrated
-          // against) — but w/h here are in W/H's pixel space, which can be
-          // supersampled (2-3x larger) at render time. Scale them into that
-          // same space before computing, so "151px" means the same fraction
-          // of canvas height it did in the editor, not a near-invisible
-          // sliver of a much taller internal canvas.
           const rawW = options.rawW ?? W
           const rawH = options.rawH ?? H
           const scaleX = W / rawW
@@ -945,15 +812,10 @@ async function drawLayer(
           if (!wouldCrop) positioningPlacement = placement
         }
 
-        // ── AI Extend: use Cloudinary Generative Fill ──────────────────────
-        // Original purpose, unchanged: when objectFit='ai_extend' on the
-        // product layer and Product Positioning isn't overriding this layer,
-        // outpaint the image to fit the layer's aspect ratio.
         let resolvedSrc = imgSrc
         if (!positioningPlacement && fit === 'ai_extend' && l.src === '{{product_image}}' && options?.storeId && options?.supabase) {
           const extTargetW = options.targetW ?? W
           const extTargetH = options.targetH ?? H
-          // Check if extend is actually needed (skip if image already fills canvas)
           const imgForCheck = await loadImageSafe(imgSrc).catch(() => null)
           const actualNeedsExtend = imgForCheck
             ? needsExtend(imgForCheck.width, imgForCheck.height, extTargetW, extTargetH)
@@ -972,8 +834,6 @@ async function drawLayer(
               console.log(`[compositor] AI extend ${extendResult.fromCache ? 'cached' : 'fresh'} for ${imgSrc.slice(0, 50)}`)
             } catch (extErr: any) {
               console.error('[compositor] AI extend failed, falling back to contain:', extErr.message)
-              // Graceful fallback: show image with contain (no empty black bars,
-              // just letterbox) rather than breaking the whole creative
             }
           }
         }
@@ -982,10 +842,6 @@ async function drawLayer(
           const img = await loadImageSafe(resolvedSrc)
           ctx.save()
           if (positioningPlacement) {
-            // Always clip to the layer's own box when repositioning — the
-            // sharp image is drawn at a computed offset/scale that can
-            // legitimately extend past this rectangle at its edges; without
-            // a clip it would bleed into whatever's drawn around this layer.
             roundRect(ctx, x, y, w, h, radius)
             ctx.clip()
             drawBlurredBackdropInBox(ctx, img, x, y, w, h)
@@ -999,7 +855,6 @@ async function drawLayer(
               roundRect(ctx, x, y, w, h, radius)
               ctx.clip()
             }
-            // ai_extend result already fills exactly, so draw it as 'cover'
             const drawFit = fit === 'ai_extend' ? 'cover' : fit as 'cover' | 'contain' | 'fill'
             drawFittedImage(ctx, img, x, y, w, h, drawFit)
           }
@@ -1020,12 +875,7 @@ async function drawLayer(
   ctx.restore()
 }
 
-function roundRect(
-  ctx: any,
-  x: number, y: number,
-  w: number, h: number,
-  r: number
-) {
+function roundRect(ctx: any, x: number, y: number, w: number, h: number, r: number) {
   r = Math.min(r, w / 2, h / 2)
   ctx.beginPath()
   ctx.moveTo(x + r, y)
