@@ -863,20 +863,28 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
             Live AI preview
           </span>
         )}
-        {/* Background plate status indicator */}
-        {useOriginalBackground && bundle.loading && (
+        {/* Background plate status — shown whenever we're in AI mode so the user
+            knows the Original Background option is available (or loading).
+            Shows regardless of which background mode is currently selected. */}
+        {isAiMode && bundle.loading && (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             Loading background plate…
           </span>
         )}
-        {useOriginalBackground && !bundle.loading && (
-          <span className="text-xs font-mono" style={{ color: bundle.error ? '#dc2626' : backgroundPlateUrl ? '#16a34a' : '#d97706' }}>
-            {bundle.error
-              ? `Bundle error: ${bundle.error}`
-              : backgroundPlateUrl
-                ? 'Background plate: ready'
-                : 'Background plate: not yet available (partial bundle)'}
+        {isAiMode && !bundle.loading && bundle.backgroundUrl && (
+          <span className="text-xs" style={{ color: '#16a34a' }}>
+            Background plate: ready
+          </span>
+        )}
+        {isAiMode && !bundle.loading && !bundle.backgroundUrl && !bundle.error && bundle.transparentUrl && (
+          <span className="text-xs" style={{ color: '#d97706' }}>
+            Background plate: generating…
+          </span>
+        )}
+        {isAiMode && bundle.error && (
+          <span className="text-xs" style={{ color: '#dc2626' }}>
+            {bundle.error}
           </span>
         )}
       </div>
@@ -888,11 +896,13 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         style={{
           width: displayW, height: displayH,
           backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
-          // CHANGED: 'original' mode uses backgroundPlateUrl (from bundle) instead of
-          // reconstructed background (from separate service). All other modes unchanged.
+          // For 'original' mode we render the background plate as a positioned <img>
+          // child element (see below) instead of CSS backgroundImage.
+          // This avoids CSS url() parsing issues with Cloudinary URLs that contain
+          // parentheses (e.g., gen_remove:region_((x_;y_;w_;h_)) in the path).
           backgroundImage: useOriginalBackground
-            ? (backgroundPlateUrl ? `url(${backgroundPlateUrl})` : undefined)
-            : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url(${canvasData.backgroundImageUrl})` : undefined))),
+            ? undefined  // handled by the <img> child below
+            : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url("${canvasData.backgroundImageUrl}")` : undefined))),
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           position: 'relative', overflow: 'hidden', flexShrink: 0,
@@ -900,6 +910,41 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         }}
         onMouseDown={(e) => { if (e.target === e.currentTarget) selectLayer(null) }}
       >
+        {/* ── Background Plate (Original Background mode) ──────────────────────
+            Rendered as a positioned <img> instead of CSS backgroundImage so that
+            Cloudinary URLs with special characters (parentheses in gen_remove
+            transformation strings) are handled correctly by the browser.
+            Sits at z-index 0 behind all layers. */}
+        {useOriginalBackground && backgroundPlateUrl && (
+          <img
+            src={backgroundPlateUrl}
+            alt=""
+            draggable={false}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              objectPosition: 'center',
+              zIndex: 0,
+              pointerEvents: 'none',
+            }}
+          />
+        )}
+        {/* Fallback: while background plate is loading in 'original' mode,
+            show a subtle loading shimmer so the user knows it's coming */}
+        {useOriginalBackground && !backgroundPlateUrl && bundle.loading && (
+          <div
+            style={{
+              position: 'absolute', inset: 0, zIndex: 0,
+              background: 'linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%)',
+              backgroundSize: '200% 100%',
+              animation: 'shimmer 1.5s infinite',
+              pointerEvents: 'none',
+            }}
+          />
+        )}
         {bgLayers.map(renderLayer)}
         {isAiMode && (
           <AiModePositioning
