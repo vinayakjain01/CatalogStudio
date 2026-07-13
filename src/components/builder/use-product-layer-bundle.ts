@@ -148,6 +148,8 @@ export function useProductLayerBundle(
 
         const data = await res.json()
 
+        if (requestIdRef.current !== requestId) return  // superseded while parsing response
+
         if (!res.ok) {
           throw new Error(data.error || `HTTP ${res.status}`)
         }

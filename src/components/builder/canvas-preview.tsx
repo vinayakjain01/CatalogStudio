@@ -878,9 +878,14 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
           </span>
         )}
         {isAiMode && !bundle.loading && !bundle.backgroundUrl && !bundle.error && bundle.transparentUrl && (
-          <span className="text-xs" style={{ color: '#d97706' }}>
-            Background plate: generating…
-          </span>
+          <button
+            type="button"
+            onClick={() => bundle.retry()}
+            className="text-xs underline"
+            style={{ color: '#d97706', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+          >
+            Background plate unavailable — Retry
+          </button>
         )}
         {isAiMode && bundle.error && (
           <span className="text-xs" style={{ color: '#dc2626' }}>
@@ -944,6 +949,31 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
               pointerEvents: 'none',
             }}
           />
+        )}
+        {/* Terminal partial failure: background plate generation failed server-side
+            (bundleStatus === 'partial', no error thrown). Distinct from the loading
+            shimmer above — this state does not resolve on its own, so surface a
+            retry instead of silently rendering nothing (which was indistinguishable
+            from "still loading"). */}
+        {useOriginalBackground && !backgroundPlateUrl && !bundle.loading && !bundle.error && bundle.transparentUrl && (
+          <div
+            style={{
+              position: 'absolute', inset: 0, zIndex: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              pointerEvents: 'none',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => bundle.retry()}
+              style={{
+                pointerEvents: 'auto', fontSize: 12, color: '#d97706',
+                textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer',
+              }}
+            >
+              Background unavailable — Retry
+            </button>
+          </div>
         )}
         {bgLayers.map(renderLayer)}
         {isAiMode && (

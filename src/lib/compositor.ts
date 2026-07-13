@@ -285,11 +285,18 @@ function drawCoverFit(ctx: any, imgNode: any, x: number, y: number, w: number, h
 async function serverRenderBackground(
   ctx: any,
   canvasData: CanvasData,
-  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null },
+  product: { imageUrl: string | null; reconstructedBackgroundUrl?: string | null; transparentImageUrl?: string | null },
   W: number,
   H: number,
-  bundle?: CompositorBundle
+  bundle?: CompositorBundle,
+  templateMode?: 'standard' | 'ai_product'
 ): Promise<void> {
+  // In ai_product mode with a resolved cutout, the original photo (with the
+  // model still in it) must never be loaded as the backdrop — mirrors the
+  // client preview's `sampleSrc = null` guard in canvas-preview.tsx. Without
+  // this, blur-extend/smart/gradient modes draw the original photo behind the
+  // sharp cutout, producing a visible duplicate product.
+  const isAiProduct = templateMode === 'ai_product' && Boolean(product.transparentImageUrl)
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
 
   // ── NEW: Background Plate (Product Layer Engine) ─────────────────────────
@@ -347,7 +354,7 @@ async function serverRenderBackground(
     return
   }
 
-  const imgSrc = product.imageUrl
+  const imgSrc = isAiProduct ? null : product.imageUrl
   let imgNode: any = null
   if (imgSrc) {
     try { imgNode = await loadImageSafe(imgSrc) } catch {}
@@ -529,10 +536,11 @@ export async function compositeImage(
       { layers: canvasData.layers.length }
     )
 
-    // Background — now accepts bundle for Background Plate rendering
-    await serverRenderBackground(ctx, canvasData, product, W, H, options.productLayerBundle)
-
     const templateMode = options.templateMode || 'standard'
+
+    // Background — now accepts bundle for Background Plate rendering
+    await serverRenderBackground(ctx, canvasData, product, W, H, options.productLayerBundle, templateMode)
+
     let productLayerSettings = options.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
 
     if (templateMode === 'ai_product' && product.transparentImageUrl) {
@@ -585,7 +593,8 @@ export async function compositeImage(
       }
 
       const isRawProductImageLayer = (l: Layer) =>
-        l.type === 'image' && (l as any).src === '{{product_image}}'
+        (l.type === 'image' || l.type === 'overlay' || l.type === 'logo' || l.type === 'sticker') &&
+        (l as any).src === '{{product_image}}'
 
       const allLayers = [...canvasData.layers]
         .filter(l => !isRawProductImageLayer(l))
