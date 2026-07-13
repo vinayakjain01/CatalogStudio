@@ -4,8 +4,7 @@ import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
-import { getTransparentProductImage } from '@/lib/background-removal'
-import { getReconstructedBackground } from '@/lib/background-reconstruction'
+import { getProductLayerBundle } from '@/lib/product-layer-engine'
 
 export const runtime = 'nodejs'
 // Was 60s; bumped since the optional Background Reconstruction step
@@ -96,27 +95,29 @@ export async function POST(request: NextRequest) {
     // re-calls the AI provider.
     const canvasData = template.canvas_data as any
     const templateMode: 'standard' | 'ai_product' = canvasData.templateMode || 'standard'
-    let transparentImageUrl: string | null = null
+
+    // ── Product Layer Bundle (matches generation-queue pipeline exactly) ───────
+    // Use the same getProductLayerBundle() call as the worker queue so that
+    // preview generation and bulk generation always produce identical results.
+    // Passing a `productLayerBundle` to the compositor provides:
+    //   1. transparentUrl  — cutout PNG for drawProductLayer
+    //   2. backgroundUrl   — Background Plate (AI-removed backdrop) for serverRenderBackground
+    //   3. metadata        — head/feet coords for Smart Fit 2.0 positioning
+    // Without this, the single route used getTransparentProductImage() + getReconstructedBackground()
+    // separately, which could produce different background rendering than the worker.
+    let productLayerBundle: import('@/types/product-layer').ProductLayerBundle | null = null
 
     if (templateMode === 'ai_product' && imageUrl) {
       try {
-        const bgResult = await getTransparentProductImage(imageUrl, storeId, adminSupabase)
-        transparentImageUrl = bgResult.transparentUrl
-        console.log(`[generate/single] BG removal ${bgResult.fromCache ? 'cached' : 'fresh'} for productId=${product.id}`)
-      } catch (bgErr: any) {
-        console.error(`[generate/single] BG removal failed for productId=${product.id}, falling back to standard:`, bgErr.message)
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // ── Background Reconstruction (opt-in) ────────────────────────────────────
-    let reconstructedBackgroundUrl: string | null = null
-    if (transparentImageUrl && imageUrl && canvasData.backgroundSettings?.mode === 'original') {
-      try {
-        const reconResult = await getReconstructedBackground(imageUrl, transparentImageUrl, storeId, adminSupabase)
-        reconstructedBackgroundUrl = reconResult?.backgroundUrl ?? null
-      } catch (reconErr: any) {
-        console.error(`[generate/single] Background reconstruction failed for productId=${product.id}, falling back to solid:`, reconErr.message)
+        const bundle = await getProductLayerBundle(imageUrl, storeId, adminSupabase)
+        productLayerBundle = bundle
+        console.log(
+          `[generate/single] Bundle ${bundle.fromCache ? 'cached' : 'fresh'} ` +
+          `status=${bundle.bundleStatus} shot=${bundle.metadata?.shot_type} ` +
+          `bgPlate=${bundle.backgroundUrl ? 'yes' : 'no'} productId=${product.id}`
+        )
+      } catch (bundleErr: any) {
+        console.error(`[generate/single] Bundle failed, falling back to standard:`, bundleErr.message)
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -129,14 +130,15 @@ export async function POST(request: NextRequest) {
       vendor: product.vendor,
       product_type: product.product_type,
       imageUrl,
-      transparentImageUrl,
+      transparentImageUrl: productLayerBundle?.transparentUrl ?? null,
       shotTypeOverride: (product as any).shot_type_override ?? null,
-      reconstructedBackgroundUrl,
+      reconstructedBackgroundUrl: null,   // handled by bundle.backgroundUrl now
     }, {
-      templateMode: transparentImageUrl ? 'ai_product' : 'standard',
+      templateMode:       productLayerBundle ? 'ai_product' : 'standard',
       productLayerSettings,
       storeId,
-      supabase: adminSupabase,
+      supabase:           adminSupabase,
+      productLayerBundle: productLayerBundle ?? undefined,
     })
 
     if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
