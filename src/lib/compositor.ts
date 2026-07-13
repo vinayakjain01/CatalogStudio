@@ -29,8 +29,10 @@ import type { Canvas } from '@napi-rs/canvas'
 // ──────────────────────────────────────────────────────────────────────────
 
 const OUTPUT_SIZE      = 2048
-const SUPERSAMPLE      = 2
-const SUPERSAMPLE_SM   = 3
+const SUPERSAMPLE      = 2   // 2× for large canvases (≥1440px longest side)
+const SUPERSAMPLE_SM   = 2   // 2× for small canvases too — was 3×, which OOM-kills 1GB worker
+                              // Memory at 3× 1080px canvas: 3240×3240×4 = 40MB × 4 concurrent = 160MB
+                              // Memory at 2× 1080px canvas: 2160×2160×4 = 18MB × 4 concurrent = 72MB
 const PNG_COMPRESSION  = 1
 const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
 const IMAGE_CACHE_MAX    = 250

@@ -144,13 +144,19 @@ export async function processBatch(
   const context = createJobContext()
 
   await mapWithConcurrency(claimed, concurrency, async job => {
+    // Write a "started" timestamp so errors during crash can be diagnosed from logs
+    await supabase.from('generation_jobs')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', job.id)
+
     try {
       await runJob(job, supabase, context)
       completed++
     } catch (err: any) {
       failed++
-      console.error(`[processBatch] Job failed jobId=${job.id} productId=${job.product_id}:`, err.message)
-      await failJob(job, err.message, supabase)
+      const errMsg = err?.message ?? String(err)
+      console.error(`[processBatch] Job failed jobId=${job.id} productId=${job.product_id}: ${errMsg}`)
+      await failJob(job, errMsg, supabase)
     }
   })
 
