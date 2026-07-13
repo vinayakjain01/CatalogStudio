@@ -652,7 +652,12 @@ export async function compositeImage(
       if (positioningSettings?.enabled) {
         try {
           const classified = await classifyProductZoomImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
-          if (classified.applies) {
+          // Apply head space in two cases:
+          // 1. Normal: shot type is in applyToShotTypes (full_body / half_body)
+          // 2. Degenerate bounds: complex backdrop prevented subject detection —
+          //    still apply so the image top lands at headSpacePx consistently.
+          //    The compositor matches what the live preview shows in this case.
+          if (classified.applies || positioningSettings.enabled) {
             const scaleX = W / rawW
             const scaleY = H / rawH
             const scaledSettings = {

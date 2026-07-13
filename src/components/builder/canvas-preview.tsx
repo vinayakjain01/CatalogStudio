@@ -338,10 +338,10 @@ function ProductZoomImageLayer({
     )
   }
 
-  if (!result?.apply || !result.placement || degenerate) {
-    // Not configured / doesn't apply to this shot type / would crop — plain
-    // contain-fit to the full canvas, matching the compositor's fallback.
-    // Never crops, never stretches.
+  // When positioning is not configured, doesn't apply to this shot type,
+  // or would crop — fall back to plain contain-fit. Only truly skip when
+  // there's no valid placement at all.
+  if (!result?.apply || !result.placement) {
     return (
       <img src={imageUrl} alt="" draggable={false} style={{
         position: 'absolute', inset: 0, width: '100%', height: '100%',
@@ -349,6 +349,12 @@ function ProductZoomImageLayer({
       }} />
     )
   }
+
+  // NOTE: we intentionally do NOT skip on degenerate bounds here.
+  // detectZoomSubjectBounds returns fullImageRect() when the backdrop is
+  // complex/textured — bounds = full image. In that case, head space still
+  // moves the image top to headSpacePx, which gives consistent framing even
+  // without precise subject detection. The compositor matches this behaviour.
 
   const { imgX, imgY, renderedW, renderedH } = result.placement
   const pctX = (v: number) => `${(v / canvasW) * 100}%`
