@@ -26,7 +26,7 @@
 import crypto from 'crypto'
 import { v2 as cloudinary } from 'cloudinary'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { detectProductBounds } from '@/lib/image-bounds'
+import { detectProductBounds, verifyRegionChanged } from '@/lib/image-bounds'
 import {
   computeClassificationSignals,
   classifyShotType,
@@ -293,6 +293,19 @@ async function generateBackgroundPlate(
     throw new Error(
       `Cloudinary Generative Remove timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`
     )
+  }
+
+  // Cloudinary can report "success" while barely touching the removal region
+  // (silent no-op / partial inpaint) — verify the region actually changed
+  // before trusting this as a product-free plate. Otherwise the compositor
+  // draws the sharp cutout on top of a plate that still shows the product,
+  // producing a visible duplicate.
+  const changed = await verifyRegionChanged(sourceUrl, eagerResult.secure_url, {
+    x: regionX, y: regionY, w: regionW, h: regionH,
+  }).catch(() => true) // verification itself failing shouldn't block a plausibly-good plate
+
+  if (!changed) {
+    throw new Error('Generative Remove returned an unchanged region — product likely still visible')
   }
 
   return {

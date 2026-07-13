@@ -36,7 +36,7 @@
 import crypto from 'crypto'
 import { v2 as cloudinary } from 'cloudinary'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { detectProductBounds } from '@/lib/image-bounds'
+import { detectProductBounds, verifyRegionChanged } from '@/lib/image-bounds'
 
 cloudinary.config({
   cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
@@ -185,6 +185,20 @@ export async function getReconstructedBackground(
 
     const backgroundUrl = eagerResult.secure_url
     const cloudinaryId = publicId
+
+    // Cloudinary can report "success" while barely touching the removal
+    // region (silent no-op / partial inpaint) — verify the region actually
+    // changed before trusting this as a product-free plate. Otherwise the
+    // compositor draws the sharp cutout on top of a plate that still shows
+    // the product, producing a visible duplicate.
+    const changed = await verifyRegionChanged(sourceUrl, backgroundUrl, {
+      x: regionX, y: regionY, w: regionW, h: regionH,
+    }).catch(() => true)
+
+    if (!changed) {
+      console.warn('[background-reconstruction] Generative Remove returned an unchanged region, bypassing')
+      return { backgroundUrl: null, cloudinaryId: null, fromCache: false, error: 'Generative Remove returned an unchanged region — product likely still visible' }
+    }
 
     // 5. Cache
     await supabase

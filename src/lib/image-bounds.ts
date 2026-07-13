@@ -95,3 +95,49 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
     hasTransparency,
   }
 }
+
+const VERIFY_SAMPLE_SIZE = 48
+const MIN_MEAN_DIFF = 10 // out of 255 per channel
+
+/**
+ * Cloudinary Generative Remove can return an HTTP-200 "success" whose eager
+ * transform barely touched the requested region — there's no status field
+ * for "the call succeeded but the object is still visible". Sample the
+ * removal region from both the original and the result at low resolution and
+ * compare; if they're nearly identical, the product almost certainly wasn't
+ * actually removed, and the caller should treat this as a failure rather
+ * than trust it as a clean background plate.
+ */
+export async function verifyRegionChanged(
+  originalUrl: string,
+  resultUrl: string,
+  region: { x: number; y: number; w: number; h: number }
+): Promise<boolean> {
+  const [origImg, resultImg] = await Promise.all([
+    loadImage(originalUrl),
+    loadImage(resultUrl),
+  ])
+
+  const sample = (img: any) => {
+    const canvas = createCanvas(VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE)
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(
+      img,
+      region.x, region.y, region.w, region.h,
+      0, 0, VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE
+    )
+    return ctx.getImageData(0, 0, VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE).data
+  }
+
+  const a = sample(origImg)
+  const b = sample(resultImg)
+
+  let totalDiff = 0
+  const pixelCount = VERIFY_SAMPLE_SIZE * VERIFY_SAMPLE_SIZE
+  for (let i = 0; i < a.length; i += 4) {
+    totalDiff += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2])
+  }
+  const meanDiff = totalDiff / (pixelCount * 3)
+
+  return meanDiff >= MIN_MEAN_DIFF
+}
