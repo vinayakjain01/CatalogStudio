@@ -191,7 +191,7 @@ export async function getReconstructedBackground(
     // changed before trusting this as a product-free plate. Otherwise the
     // compositor draws the sharp cutout on top of a plate that still shows
     // the product, producing a visible duplicate.
-    const changed = await verifyRegionChanged(sourceUrl, backgroundUrl, {
+    const changed = await verifyRegionChanged(uploadResult.secure_url, backgroundUrl, {
       x: regionX, y: regionY, w: regionW, h: regionH,
     }).catch(() => true)
 

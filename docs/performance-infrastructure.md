@@ -21,11 +21,13 @@ SUPABASE_SERVICE_ROLE_KEY=...
 NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
-WORKER_GENERATION_CONCURRENCY=4
+WORKER_GENERATION_CONCURRENCY=1
 WORKER_SYNC_CONCURRENCY=1
 ```
 
 Keep the existing Vercel env vars. If `REDIS_URL` is absent, generation still uses the Supabase `generation_jobs` queue drained by `/api/cron/generate`.
+
+`WORKER_GENERATION_CONCURRENCY` must be sized to the Droplet's RAM, not just CPU count. Each generation job decodes several full-resolution images (original photo, transparent cutout, background plate) into in-memory canvas buffers — on a 1GB Droplet, running 4 of these concurrently reliably triggers the OOM killer (worker exits with code 137, jobs get stuck in `processing` and are reset on restart, and no job ever completes). Keep this at `1` on a 1GB host; only raise it on a host with several GB of headroom, and watch memory under load before committing to a higher value.
 
 ## Deploy Steps
 

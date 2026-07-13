@@ -12,7 +12,11 @@ if (!connection) {
   process.exit(1)
 }
 
-const generationConcurrency = parseInt(process.env.WORKER_GENERATION_CONCURRENCY || '4', 10)
+// Each generation job decodes several full-resolution images (original,
+// transparent cutout, background plate) and holds multi-megapixel canvas
+// buffers in memory — concurrency=4 reliably OOM-kills a 1GB worker host.
+// Default to 1 and let bigger hosts opt into more via the env var.
+const generationConcurrency = parseInt(process.env.WORKER_GENERATION_CONCURRENCY || '1', 10)
 const syncConcurrency = parseInt(process.env.WORKER_SYNC_CONCURRENCY || '1', 10)
 const DB_POLL_INTERVAL_MS = parseInt(process.env.DB_POLL_INTERVAL_MS || '3000', 10)
 

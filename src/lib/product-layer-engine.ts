@@ -300,7 +300,7 @@ async function generateBackgroundPlate(
   // before trusting this as a product-free plate. Otherwise the compositor
   // draws the sharp cutout on top of a plate that still shows the product,
   // producing a visible duplicate.
-  const changed = await verifyRegionChanged(sourceUrl, eagerResult.secure_url, {
+  const changed = await verifyRegionChanged(uploadResult.secure_url, eagerResult.secure_url, {
     x: regionX, y: regionY, w: regionW, h: regionH,
   }).catch(() => true) // verification itself failing shouldn't block a plausibly-good plate
 

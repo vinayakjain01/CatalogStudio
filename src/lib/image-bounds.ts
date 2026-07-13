@@ -108,29 +108,72 @@ const MIN_MEAN_DIFF = 10 // out of 255 per channel
  * actually removed, and the caller should treat this as a failure rather
  * than trust it as a clean background plate.
  */
+/**
+ * Both callers pass Cloudinary-hosted URLs (the uploaded base image and its
+ * eager-transform result) — insert a crop+scale transformation so we fetch
+ * and decode a ~48x48 sample directly instead of the full-resolution image.
+ * Generation jobs already hold several full-res canvases in memory at once;
+ * decoding two more multi-megapixel images just to diff a tiny region is
+ * avoidable memory pressure on constrained worker hosts.
+ */
+function cloudinaryCroppedUrl(
+  url: string,
+  region: { x: number; y: number; w: number; h: number },
+  size: number
+): string | null {
+  if (!url.includes('/upload/')) return null
+  const transform =
+    `c_crop,x_${Math.max(0, Math.round(region.x))},y_${Math.max(0, Math.round(region.y))},` +
+    `w_${Math.max(1, Math.round(region.w))},h_${Math.max(1, Math.round(region.h))}` +
+    `/c_scale,w_${size},h_${size}`
+  return url.replace('/upload/', `/upload/${transform}/`)
+}
+
+function readSample(img: any, size: number) {
+  const canvas = createCanvas(size, size)
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(img, 0, 0, size, size)
+  return ctx.getImageData(0, 0, size, size).data
+}
+
+function sampleRegionFullRes(
+  img: any,
+  region: { x: number; y: number; w: number; h: number },
+  size: number
+) {
+  const canvas = createCanvas(size, size)
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(img, region.x, region.y, region.w, region.h, 0, 0, size, size)
+  return ctx.getImageData(0, 0, size, size).data
+}
+
 export async function verifyRegionChanged(
   originalUrl: string,
   resultUrl: string,
   region: { x: number; y: number; w: number; h: number }
 ): Promise<boolean> {
-  const [origImg, resultImg] = await Promise.all([
-    loadImage(originalUrl),
-    loadImage(resultUrl),
-  ])
+  const croppedOriginal = cloudinaryCroppedUrl(originalUrl, region, VERIFY_SAMPLE_SIZE)
+  const croppedResult = cloudinaryCroppedUrl(resultUrl, region, VERIFY_SAMPLE_SIZE)
 
-  const sample = (img: any) => {
-    const canvas = createCanvas(VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE)
-    const ctx = canvas.getContext('2d')
-    ctx.drawImage(
-      img,
-      region.x, region.y, region.w, region.h,
-      0, 0, VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE
-    )
-    return ctx.getImageData(0, 0, VERIFY_SAMPLE_SIZE, VERIFY_SAMPLE_SIZE).data
+  let a: any
+  let b: any
+
+  if (croppedOriginal && croppedResult) {
+    const [origSample, resultSample] = await Promise.all([
+      loadImage(croppedOriginal),
+      loadImage(croppedResult),
+    ])
+    a = readSample(origSample, VERIFY_SAMPLE_SIZE)
+    b = readSample(resultSample, VERIFY_SAMPLE_SIZE)
+  } else {
+    // Fallback for non-Cloudinary URLs — decodes full images.
+    const [origImg, resultImg] = await Promise.all([
+      loadImage(originalUrl),
+      loadImage(resultUrl),
+    ])
+    a = sampleRegionFullRes(origImg, region, VERIFY_SAMPLE_SIZE)
+    b = sampleRegionFullRes(resultImg, region, VERIFY_SAMPLE_SIZE)
   }
-
-  const a = sample(origImg)
-  const b = sample(resultImg)
 
   let totalDiff = 0
   const pixelCount = VERIFY_SAMPLE_SIZE * VERIFY_SAMPLE_SIZE
