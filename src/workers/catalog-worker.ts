@@ -28,10 +28,29 @@ const admin = getAdminClient()
 // or was restarted before completing. Without this they stay stuck forever.
 // ─────────────────────────────────────────────────────────────────────────────
 async function resetStuckJobs() {
+  // Permanently fail jobs that have exhausted their retries (attempts >= max_attempts)
+  // so they never loop forever on OOM-crashing jobs.
+  const { data: exhausted } = await admin
+    .from('generation_jobs')
+    .update({
+      status:    'failed',
+      locked_at: null,
+      error:     'Max attempts reached — permanently failed (likely OOM or repeated crash)',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('status', 'processing')
+    .gte('attempts', 3)   // default max_attempts = 3
+    .select('id')
+
+  if (exhausted && exhausted.length > 0) {
+    console.warn(`[worker:startup] Permanently failed ${exhausted.length} exhausted jobs`)
+  }
+
+  // Reset remaining stuck jobs (still have retries left) back to pending
   const { data, error } = await admin
     .from('generation_jobs')
     .update({
-      status: 'pending',
+      status:    'pending',
       locked_at: null,
       updated_at: new Date().toISOString(),
     })
@@ -43,7 +62,7 @@ async function resetStuckJobs() {
   } else {
     const count = data?.length ?? 0
     if (count > 0) {
-      console.log(`[worker:startup] Reset ${count} stuck 'processing' jobs back to 'pending'`)
+      console.log(`[worker:startup] Reset ${count} stuck processing jobs back to pending`)
     } else {
       console.log('[worker:startup] No stuck jobs found — clean start')
     }

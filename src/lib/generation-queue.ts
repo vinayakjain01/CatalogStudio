@@ -116,11 +116,12 @@ export async function processBatch(
 
   const ids = pendingJobs.map((j: any) => j.id)
 
+  // Step 1: Claim the jobs (mark processing)
   const { data: claimed, error: claimError } = await supabase
     .from('generation_jobs')
     .update({
-      status: 'processing',
-      locked_at: new Date().toISOString(),
+      status:     'processing',
+      locked_at:  new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .in('id', ids)
@@ -129,6 +130,12 @@ export async function processBatch(
 
   if (claimError) throw new Error(claimError.message)
   if (!claimed || claimed.length === 0) return { claimed: 0, completed: 0, failed: 0 }
+
+  // Step 2: Increment attempts immediately after claiming.
+  // This ensures that OOM crashes (where failJob never runs) still count as
+  // an attempt — preventing infinite retry loops on jobs that always crash.
+  const claimedIds = claimed.map((j: any) => j.id)
+  await supabase.rpc('increment_job_attempts', { job_ids: claimedIds }).throwOnError()
 
   console.log(`[processBatch] Claimed ${claimed.length} jobs from DB`)
 
@@ -409,7 +416,17 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
 }
 
 async function failJob(job: any, message: string, supabase: SupabaseClient) {
-  const willRetry = job.attempts < job.max_attempts
+  // Re-read current attempts from DB (may have been incremented at claim time)
+  const { data: current } = await supabase
+    .from('generation_jobs')
+    .select('attempts, max_attempts')
+    .eq('id', job.id)
+    .maybeSingle()
+
+  const attempts   = current?.attempts    ?? job.attempts
+  const maxAttempts = current?.max_attempts ?? job.max_attempts
+  const willRetry  = attempts < maxAttempts
+
   await supabase.from('generation_jobs')
     .update({
       status:    willRetry ? 'pending' : 'failed',
@@ -418,4 +435,8 @@ async function failJob(job: any, message: string, supabase: SupabaseClient) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', job.id)
+
+  if (!willRetry) {
+    console.warn(`[generation-queue] Job permanently failed after ${attempts}/${maxAttempts} attempts: ${job.id}`)
+  }
 }
