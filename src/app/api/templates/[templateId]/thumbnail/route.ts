@@ -66,9 +66,16 @@ export async function POST(
   }
 
   try {
-    const buffer = await compositeImage(template.canvas_data as any, {
+    const canvasData = template.canvas_data as any
+    const buffer = await compositeImage(canvasData, {
       ...sampleProduct,
       imageUrl: sampleImage,
+    }, {
+      // Without this, compositeImage() defaults templateMode to 'standard'
+      // regardless of what the template is actually configured as — meaning
+      // Product Zoom (and AI Product) templates would always render their
+      // thumbnail as Standard Mode, ignoring the saved template values.
+      templateMode: canvasData.templateMode || 'standard',
     })
 
     const { deliveredUrl: url } = await uploadBuffer(buffer, `thumbnail_${templateId}`)

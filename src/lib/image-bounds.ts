@@ -117,17 +117,54 @@ export async function detectProductBounds(imageUrl: string): Promise<ProductBoun
 // cost class as detectProductBounds.
 //
 // Falls back to the same "full image rect" shape as detectProductBounds
-// whenever it isn't confident (non-uniform backdrop, or the color split
-// looks wrong) — callers must treat that fallback as "don't trust these
-// bounds" (see isDegenerateBounds in product-positioning-shared.ts), not
-// silently apply Head Space against it and reproduce the padding bug.
+// whenever it isn't confident (backdrop can't be modeled smoothly, or the
+// color split looks wrong) — callers must treat that fallback as "don't
+// trust these bounds" (see isDegenerateBounds in
+// product-positioning-shared.ts), not silently apply Head Space against it
+// and reproduce the padding bug.
+//
+// v2: the backdrop is modeled as a smooth bilinear gradient across the 4
+// corners rather than one flat average color. A single global average (v1)
+// treated any lighting falloff/vignette — which is present in virtually all
+// real studio photography, even on an otherwise "plain" backdrop — as
+// texture/noise and bailed out to the safe fallback almost every time,
+// silently no-opping the whole feature on real photos. Modeling the gradient
+// means only genuine local contrast (the actual subject, or real texture/
+// pattern the gradient model can't explain) trips detection.
 
-const BG_BORDER_FRACTION = 0.02      // ring thickness, as a fraction of the shorter analysis-space side
+const BG_CORNER_FRACTION = 0.06      // corner sample patch size, as a fraction of each dimension
+const BG_MIN_CORNER_PX = 3
+const BG_BORDER_FRACTION = 0.015     // ring thickness (for the residual/confidence check), fraction of shorter side
 const BG_MIN_BORDER_PX = 2
-const BG_COLOR_DISTANCE_THRESHOLD = 42  // 0–441 (max possible RGB Euclidean distance)
-const BG_MAX_BORDER_STDDEV = 18         // border must look fairly uniform to trust the estimate
+const BG_COLOR_DISTANCE_THRESHOLD = 36  // 0–441 (max possible RGB Euclidean distance)
+const BG_MAX_RESIDUAL_STDDEV = 14       // border pixels must fit the modeled gradient this closely to trust it
 const MIN_FOREGROUND_FRACTION = 0.005   // below this, treat as "nothing confidently detected"
-const MAX_FOREGROUND_FRACTION = 0.98    // above this, backdrop estimate was probably wrong
+const MAX_FOREGROUND_FRACTION = 0.98    // above this, backdrop model was probably wrong
+
+interface RgbTriple { r: number; g: number; b: number }
+
+function averageCornerColor(data: Uint8ClampedArray, w: number, x0: number, y0: number, x1: number, y1: number): RgbTriple {
+  let r = 0, g = 0, b = 0, n = 0
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * w + x) * 4
+      r += data[i]; g += data[i + 1]; b += data[i + 2]
+      n++
+    }
+  }
+  return n > 0 ? { r: r / n, g: g / n, b: b / n } : { r: 0, g: 0, b: 0 }
+}
+
+/** Bilinear blend of the 4 corner colors at normalized position (u, v) in [0, 1]. */
+function bilerpColor(tl: RgbTriple, tr: RgbTriple, bl: RgbTriple, br: RgbTriple, u: number, v: number): RgbTriple {
+  const topR = tl.r + (tr.r - tl.r) * u, topG = tl.g + (tr.g - tl.g) * u, topB = tl.b + (tr.b - tl.b) * u
+  const botR = bl.r + (br.r - bl.r) * u, botG = bl.g + (br.g - bl.g) * u, botB = bl.b + (br.b - bl.b) * u
+  return {
+    r: topR + (botR - topR) * v,
+    g: topG + (botG - topG) * v,
+    b: topB + (botB - topB) * v,
+  }
+}
 
 export async function detectZoomSubjectBounds(imageUrl: string): Promise<ProductBounds> {
   const normalizedUrl = stripResizeParams(imageUrl)
@@ -151,46 +188,56 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
     hasTransparency: false,
   })
 
-  // ── Step 1: estimate the studio backdrop color from a thin border ring ────
+  // ── Step 1: model the backdrop as a smooth bilinear gradient ──────────────
+  // Sample a small patch at each corner — the 4 spots least likely to contain
+  // the subject in typical catalog framing — and treat everything between
+  // them as a smooth blend. This absorbs lighting falloff/vignettes for free.
+  const patchW = Math.max(BG_MIN_CORNER_PX, Math.round(analysisW * BG_CORNER_FRACTION))
+  const patchH = Math.max(BG_MIN_CORNER_PX, Math.round(analysisH * BG_CORNER_FRACTION))
+  const tl = averageCornerColor(data, analysisW, 0, 0, patchW, patchH)
+  const tr = averageCornerColor(data, analysisW, analysisW - patchW, 0, analysisW, patchH)
+  const bl = averageCornerColor(data, analysisW, 0, analysisH - patchH, patchW, analysisH)
+  const br = averageCornerColor(data, analysisW, analysisW - patchW, analysisH - patchH, analysisW, analysisH)
+
+  // ── Step 2: confidence check — does a thin border ring actually FIT the ───
+  // modeled gradient, or is there real texture/pattern the model can't
+  // explain? (A residual check, not a raw-variance check — a smooth gradient
+  // has high raw variance corner-to-corner but near-zero residual once the
+  // model is subtracted out.)
   const borderPx = Math.max(BG_MIN_BORDER_PX, Math.round(Math.min(analysisW, analysisH) * BG_BORDER_FRACTION))
-  let rSum = 0, gSum = 0, bSum = 0, n = 0
-  const samples: number[] = []
-  const addSample = (x: number, y: number) => {
+  let residualSumSq = 0, residualN = 0
+  const addResidual = (x: number, y: number) => {
     const i = (y * analysisW + x) * 4
-    const r = data[i], g = data[i + 1], b = data[i + 2]
-    rSum += r; gSum += g; bSum += b
-    samples.push(r, g, b)
-    n++
+    const expected = bilerpColor(tl, tr, bl, br, x / (analysisW - 1), y / (analysisH - 1))
+    const dr = data[i] - expected.r, dg = data[i + 1] - expected.g, db = data[i + 2] - expected.b
+    residualSumSq += dr * dr + dg * dg + db * db
+    residualN++
   }
   for (let x = 0; x < analysisW; x++) {
-    for (let t = 0; t < borderPx; t++) { addSample(x, t); addSample(x, analysisH - 1 - t) }
+    for (let t = 0; t < borderPx; t++) { addResidual(x, t); addResidual(x, analysisH - 1 - t) }
   }
   for (let y = 0; y < analysisH; y++) {
-    for (let t = 0; t < borderPx; t++) { addSample(t, y); addSample(analysisW - 1 - t, y) }
+    for (let t = 0; t < borderPx; t++) { addResidual(t, y); addResidual(analysisW - 1 - t, y) }
   }
-  if (n === 0) return fullImageRect()
+  if (residualN === 0) return fullImageRect()
 
-  const bgR = rSum / n, bgG = gSum / n, bgB = bSum / n
-
-  // ── Step 2: confidence check — is the border actually a plain backdrop? ───
-  let varSum = 0
-  for (let i = 0; i < samples.length; i += 3) {
-    const dr = samples[i] - bgR, dg = samples[i + 1] - bgG, db = samples[i + 2] - bgB
-    varSum += dr * dr + dg * dg + db * db
-  }
-  const stddev = Math.sqrt(varSum / (samples.length / 3))
-  if (stddev > BG_MAX_BORDER_STDDEV) {
-    // Textured/busy backdrop, or the subject bleeds to the frame edge — a
-    // color-distance split can't be trusted here. Safe no-op fallback.
+  const residualStddev = Math.sqrt(residualSumSq / residualN)
+  if (residualStddev > BG_MAX_RESIDUAL_STDDEV) {
+    // Textured/patterned backdrop the gradient model can't explain, or the
+    // subject bleeds into the border/corners — can't trust a color split.
     return fullImageRect()
   }
 
-  // ── Step 3: bounding box of pixels that differ from the backdrop color ────
+  // ── Step 3: bounding box of pixels that differ from their local modeled ───
+  // background color.
   let minX = analysisW, minY = analysisH, maxX = 0, maxY = 0, fgCount = 0
   for (let y = 0; y < analysisH; y++) {
+    const v = y / (analysisH - 1)
     for (let x = 0; x < analysisW; x++) {
+      const u = x / (analysisW - 1)
+      const expected = bilerpColor(tl, tr, bl, br, u, v)
       const i = (y * analysisW + x) * 4
-      const dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB
+      const dr = data[i] - expected.r, dg = data[i + 1] - expected.g, db = data[i + 2] - expected.b
       if (Math.sqrt(dr * dr + dg * dg + db * db) > BG_COLOR_DISTANCE_THRESHOLD) {
         fgCount++
         if (x < minX) minX = x
