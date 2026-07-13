@@ -29,19 +29,20 @@ import {
   computeClassificationSignals,
   classifyShotType,
   CLASSIFICATION_THRESHOLDS,
+  isDegenerateBounds,
   type ClassificationSignals,
   type HeadSpacePlacement,
   type PlacementResult,
   type ProductBounds,
 } from '@/lib/product-positioning-shared'
-import { detectProductBounds } from '@/lib/image-bounds'
+import { detectProductBounds, detectZoomSubjectBounds } from '@/lib/image-bounds'
 
 export {
   placementToProductLayerSettings, calculatePlacement,
   computeClassificationSignals, classifyShotType, CLASSIFICATION_THRESHOLDS,
   type ClassificationSignals,
   type HeadSpacePlacement, type PlacementResult,
-  type ProductBounds, detectProductBounds,
+  type ProductBounds, detectProductBounds, detectZoomSubjectBounds,
 }
 
 // Classification (CLASSIFICATION_THRESHOLDS / computeClassificationSignals /
@@ -80,6 +81,34 @@ export async function classifyProductImage(
   const override = isValidShotType(manualShotTypeOverride) ? manualShotTypeOverride : null
   const shotType = override ?? classifyShotType(signals)
   return { shotType, bounds, applies: settings.applyToShotTypes.includes(shotType), signals }
+}
+
+// ─── Product Zoom Mode's classification entry point ──────────────────────────
+//
+// Parallel to classifyProductImage() above (which is Standard Mode's and
+// stays untouched) — same ClassifyResult contract, but backed by
+// detectZoomSubjectBounds() (backdrop-contrast detection for opaque photos)
+// instead of detectProductBounds() (alpha-channel only). See
+// image-bounds.ts's detectZoomSubjectBounds for why opaque photos need a
+// different detector.
+//
+// A low-confidence detection (isDegenerateBounds — "this is just the full
+// image, not a real subject box") always sets applies:false, regardless of
+// the shot-type guess or applyToShotTypes allow-list: forcing Head Space
+// against bounds we don't trust would just reproduce the padding bug on that
+// one photo, so Product Zoom bypasses to a plain contain-fit for it instead.
+
+export async function classifyProductZoomImage(
+  imageUrl: string,
+  settings: Pick<ProductPositioningSettings, 'applyToShotTypes'>,
+  manualShotTypeOverride?: ShotType | string | null
+): Promise<ClassifyResult> {
+  const bounds = await detectZoomSubjectBounds(imageUrl)
+  const signals = computeClassificationSignals(bounds)
+  const override = isValidShotType(manualShotTypeOverride) ? manualShotTypeOverride : null
+  const shotType = override ?? classifyShotType(signals)
+  const applies = !isDegenerateBounds(bounds) && settings.applyToShotTypes.includes(shotType)
+  return { shotType, bounds, applies, signals }
 }
 
 // ─── Orchestration — ai_product mode's single entry point ────────────────────

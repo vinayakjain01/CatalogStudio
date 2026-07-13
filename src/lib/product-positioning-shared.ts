@@ -68,6 +68,22 @@ export interface PlacementResult {
   clampedByMaxUpscale: boolean
 }
 
+/**
+ * True when bounds are exactly the full image rect — the "no confident
+ * detection" fallback shape both detectProductBounds() and
+ * detectZoomSubjectBounds() return when they have nothing trustworthy to
+ * report. Product Zoom Mode uses this to bypass Head Space entirely on a
+ * low-confidence photo rather than positioning against a bounding box that's
+ * really just "the whole image," which would reproduce the "photo shifts
+ * down by Head Space" padding bug on that one photo.
+ */
+export function isDegenerateBounds(bounds: ProductBounds): boolean {
+  return (
+    bounds.left === 0 && bounds.top === 0 &&
+    bounds.right === bounds.imageWidth - 1 && bounds.bottom === bounds.imageHeight - 1
+  )
+}
+
 // ─── Shot-type classification (pure — no @napi-rs/canvas) ────────────────────
 //
 // Heuristic-only (no AI/ML call) — computed purely from a ProductBounds.

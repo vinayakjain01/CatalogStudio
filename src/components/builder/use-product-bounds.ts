@@ -27,7 +27,8 @@ interface UseProductBoundsResult {
 export function useProductBounds(
   imageUrl: string | null,
   storeId: string | null,
-  enabled: boolean
+  enabled: boolean,
+  mode: 'alpha' | 'zoom' = 'alpha'
 ): UseProductBoundsResult {
   const [bounds, setBounds] = useState<ProductBounds | null>(null)
   const [loading, setLoading] = useState(false)
@@ -41,7 +42,7 @@ export function useProductBounds(
       return
     }
 
-    const cacheKey = `${storeId}:${imageUrl}`
+    const cacheKey = `${storeId}:${imageUrl}:${mode}`
     const cached = sessionCache.get(cacheKey)
     if (cached) {
       setBounds(cached)
@@ -55,8 +56,9 @@ export function useProductBounds(
 
     async function run() {
       try {
+        const modeParam = mode === 'zoom' ? '&mode=zoom' : ''
         const res = await fetch(
-          `/api/product-positioning/bounds?imageUrl=${encodeURIComponent(imageUrl!)}&storeId=${storeId}`
+          `/api/product-positioning/bounds?imageUrl=${encodeURIComponent(imageUrl!)}&storeId=${storeId}${modeParam}`
         )
         const data = await res.json()
         if (requestIdRef.current !== requestId) return
@@ -76,7 +78,7 @@ export function useProductBounds(
     }
 
     run()
-  }, [imageUrl, storeId, enabled])
+  }, [imageUrl, storeId, enabled, mode])
 
   return { bounds, loading, error }
 }

@@ -13,6 +13,7 @@ import { getExtendedImage, needsExtend } from '@/lib/image-extend'
 import {
   resolveProductPositioning,
   classifyProductImage,
+  classifyProductZoomImage,
   type ClassifyResult,
 } from '@/lib/product-positioning'
 import {
@@ -650,7 +651,7 @@ export async function compositeImage(
 
       if (positioningSettings?.enabled) {
         try {
-          const classified = await classifyProductImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
+          const classified = await classifyProductZoomImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
           if (classified.applies) {
             const scaleX = W / rawW
             const scaleY = H / rawH

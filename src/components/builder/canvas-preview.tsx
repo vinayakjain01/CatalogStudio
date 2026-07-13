@@ -19,6 +19,7 @@ import {
   calculateSmartFitPlacement,
   computeClassificationSignals,
   classifyShotType,
+  isDegenerateBounds,
   type ProductBounds,
   type HeadSpacePlacement,
 } from '@/lib/product-positioning-shared'
@@ -321,8 +322,12 @@ function ProductZoomImageLayer({
 }) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { useProductBounds } = require('./use-product-bounds')
-  const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId))
+  const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId), 'zoom')
   const result = computeLocalPositioningFromBounds(bounds, positioningSettings, Math.round(canvasW), Math.round(canvasH))
+  // Low-confidence detection (backdrop wasn't plain/uniform enough to trust)
+  // — bypass Head Space entirely rather than position against bounds that are
+  // really just "the whole image," which would reproduce the padding bug.
+  const degenerate = Boolean(bounds && isDegenerateBounds(bounds))
 
   if (!imageUrl) {
     return (
@@ -333,7 +338,7 @@ function ProductZoomImageLayer({
     )
   }
 
-  if (!result?.apply || !result.placement) {
+  if (!result?.apply || !result.placement || degenerate) {
     // Not configured / doesn't apply to this shot type / would crop — plain
     // contain-fit to the full canvas, matching the compositor's fallback.
     // Never crops, never stretches.
