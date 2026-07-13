@@ -293,7 +293,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   const primary = images.find((i: any) => i.is_primary) || images[0]
   const imageUrl: string | null = primary?.src || null
 
-  const templateMode: 'standard' | 'ai_product' = (canvasData as any).templateMode || 'standard'
+  const templateMode: 'standard' | 'ai_product' | 'product_zoom' = (canvasData as any).templateMode || 'standard'
 
   // ── CHANGED: Product Layer Engine replaces the two separate AI calls ─────────
   //
@@ -349,7 +349,9 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
         .update({ bg_removal_status: 'failed', updated_at: new Date().toISOString() })
         .eq('id', job.id)
     }
-  } else if (templateMode === 'standard') {
+  } else if (templateMode === 'standard' || templateMode === 'product_zoom') {
+    // product_zoom: no cutout is ever needed — the original photo is drawn
+    // as a single unit (see compositor.ts's product_zoom branch).
     await supabase.from('generation_jobs')
       .update({ bg_removal_status: 'skipped', updated_at: new Date().toISOString() })
       .eq('id', job.id)
@@ -372,7 +374,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     // via options.productLayerBundle in the compositor. Pass null to avoid legacy path.
     reconstructedBackgroundUrl: null,
   }, {
-    templateMode:       productLayerBundle ? 'ai_product' : 'standard',
+    templateMode,
     productLayerSettings,
     storeId:            job.store_id,
     supabase,

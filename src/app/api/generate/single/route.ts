@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
     // Cached per source image URL — re-generating the same product never
     // re-calls the AI provider.
     const canvasData = template.canvas_data as any
-    const templateMode: 'standard' | 'ai_product' = canvasData.templateMode || 'standard'
+    const templateMode: 'standard' | 'ai_product' | 'product_zoom' = canvasData.templateMode || 'standard'
 
     // ── Product Layer Bundle (matches generation-queue pipeline exactly) ───────
     // Use the same getProductLayerBundle() call as the worker queue so that
@@ -134,7 +134,7 @@ export async function POST(request: NextRequest) {
       shotTypeOverride: (product as any).shot_type_override ?? null,
       reconstructedBackgroundUrl: null,   // handled by bundle.backgroundUrl now
     }, {
-      templateMode:       productLayerBundle ? 'ai_product' : 'standard',
+      templateMode,
       productLayerSettings,
       storeId,
       supabase:           adminSupabase,

@@ -13,6 +13,8 @@ import {
   Maximize2,
   Info,
   Palette,
+  ZoomIn,
+  AlignVerticalJustifyStart,
 } from 'lucide-react'
 
 const QUICK_BACKGROUNDS = [
@@ -40,6 +42,7 @@ export function AiProductModePanel() {
   const settings = canvasData.productLayerSettings || DEFAULT_PRODUCT_LAYER_SETTINGS
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
   const isAiMode = mode === 'ai_product'
+  const isZoomMode = mode === 'product_zoom'
 
   function applyQuickBackground(color: string) {
     // Quick presets always use a flat solid fill — the clean, predictable
@@ -53,11 +56,11 @@ export function AiProductModePanel() {
       {/* Mode Toggle */}
       <div className="space-y-2">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Template Mode</p>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button
             onClick={() => setTemplateMode('standard')}
             className={`p-3 rounded-lg border text-left transition-all ${
-              !isAiMode
+              !isAiMode && !isZoomMode
                 ? 'border-primary bg-primary/5 text-primary'
                 : 'border-border hover:border-muted-foreground/40'
             }`}
@@ -79,8 +82,41 @@ export function AiProductModePanel() {
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">Remove background</p>
           </button>
+          <button
+            onClick={() => setTemplateMode('product_zoom')}
+            className={`p-3 rounded-lg border text-left transition-all ${
+              isZoomMode
+                ? 'border-primary bg-primary/5 text-primary'
+                : 'border-border hover:border-muted-foreground/40'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <p className="text-xs font-semibold">Product Zoom</p>
+              <ZoomIn className="h-3 w-3" />
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">Zoom original photo</p>
+          </button>
         </div>
       </div>
+
+      {isZoomMode && (
+        <div className="space-y-3">
+          <div className="flex gap-2 p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <p className="text-xs leading-snug">
+              The original photo (background + product together) is never modified —
+              no background removal, no cutout. It&apos;s only ever zoomed and
+              repositioned as a single image to hit your configured Head Space and
+              Bottom Space.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <AlignVerticalJustifyStart className="h-3.5 w-3.5" />
+            Configure Head Space, Bottom Space, Scale Limits, Safe Margin and
+            Which Shot Types to Apply in the <span className="font-medium text-foreground">Space</span> tab.
+          </div>
+        </div>
+      )}
 
       {isAiMode && (
         <>

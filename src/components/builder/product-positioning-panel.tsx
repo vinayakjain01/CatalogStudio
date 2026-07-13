@@ -29,6 +29,7 @@ export function ProductPositioningPanel() {
 
   const settings = canvasData.productPositioningSettings ?? DEFAULT_PRODUCT_POSITIONING_SETTINGS
   const isAiMode = canvasData.templateMode === 'ai_product'
+  const isZoomMode = canvasData.templateMode === 'product_zoom'
   const maxHeadSpace = Math.round((canvasData.height || 1080) * 0.4)
 
   function toggleShotType(type: ShotType) {
@@ -77,15 +78,15 @@ export function ProductPositioningPanel() {
         <>
           {/* Info banner */}
           <div className={`flex gap-2 p-2.5 rounded-lg ${
-            isAiMode
+            isAiMode || isZoomMode
               ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
               : 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300'
           }`}>
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <p className="text-xs leading-snug">
-              Applied automatically to full-body and half-body shots. Flat lays, close-ups, detail
-              shots, and accessories are detected and left exactly as-is. You can correct a
-              misdetection per-product from the product page.
+              {isZoomMode
+                ? "Product Zoom mode positions the photo itself — no cutout, no background removal. Applied automatically to full-body and half-body shots by default; check off every shot type below (flat lay, close-up, detail, accessory) you also want normalized, since Product Zoom's whole point is consistent framing across all product types."
+                : 'Applied automatically to full-body and half-body shots. Flat lays, close-ups, detail shots, and accessories are detected and left exactly as-is. You can correct a misdetection per-product from the product page.'}
             </p>
           </div>
 

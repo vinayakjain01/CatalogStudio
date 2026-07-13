@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Save, ArrowLeft, Loader2, Layers, Sparkles, AlignVerticalJustifyStart } from 'lucide-react'
+import { Save, ArrowLeft, Loader2, Layers, Sparkles, AlignVerticalJustifyStart, ZoomIn } from 'lucide-react'
 import { CanvasData, AspectRatio, ASPECT_RATIOS, PRODUCT_LAYER_ID } from '@/types/template'
 import Link from 'next/link'
 
@@ -116,6 +116,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
   }
 
   const isAiMode = canvasData.templateMode === 'ai_product'
+  const isZoomMode = canvasData.templateMode === 'product_zoom'
 
   return (
     <div className="flex flex-col h-screen -m-6">
@@ -171,6 +172,12 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
               <span className="text-xs font-medium">AI Mode</span>
             </div>
           )}
+          {isZoomMode && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-primary/10 text-primary">
+              <ZoomIn className="h-3 w-3" />
+              <span className="text-xs font-medium">Zoom Mode</span>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -219,7 +226,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
               onClick={() => setRightTab('ai')}
               icon={<Sparkles className="h-3.5 w-3.5" />}
               label="AI"
-              highlight={isAiMode}
+              highlight={isAiMode || isZoomMode}
             />
             <TabButton
               active={rightTab === 'positioning'}

@@ -302,6 +302,63 @@ function PositionedProductImageLayer({
   )
 }
 
+// ─── Product Zoom Mode: whole-photo preview ──────────────────────────────────
+//
+// Mirrors PositionedProductImageLayer's bounds-fetch + calculatePlacement, but
+// renders ONLY the sharp positioned image — no blurred backdrop duplicate —
+// matching the compositor's product_zoom branch (no separate rendering of
+// background + product, ever). Always occupies the full canvas, since the
+// original photo IS the canvas content in this mode.
+
+function ProductZoomImageLayer({
+  imageUrl, storeId, positioningSettings, canvasW, canvasH,
+}: {
+  imageUrl: string | null
+  storeId: string | null
+  positioningSettings: ProductPositioningSettings | undefined
+  canvasW: number
+  canvasH: number
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { useProductBounds } = require('./use-product-bounds')
+  const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId))
+  const result = computeLocalPositioningFromBounds(bounds, positioningSettings, Math.round(canvasW), Math.round(canvasH))
+
+  if (!imageUrl) {
+    return (
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
+        Product Image
+      </div>
+    )
+  }
+
+  if (!result?.apply || !result.placement) {
+    // Not configured / doesn't apply to this shot type / would crop — plain
+    // contain-fit to the full canvas, matching the compositor's fallback.
+    // Never crops, never stretches.
+    return (
+      <img src={imageUrl} alt="" draggable={false} style={{
+        position: 'absolute', inset: 0, width: '100%', height: '100%',
+        objectFit: 'contain', pointerEvents: 'none',
+      }} />
+    )
+  }
+
+  const { imgX, imgY, renderedW, renderedH } = result.placement
+  const pctX = (v: number) => `${(v / canvasW) * 100}%`
+  const pctY = (v: number) => `${(v / canvasH) * 100}%`
+
+  return (
+    <img src={imageUrl} alt="" draggable={false} style={{
+      position: 'absolute',
+      left: pctX(imgX), top: pctY(imgY),
+      width: pctX(renderedW), height: pctY(renderedH),
+      objectFit: 'fill', pointerEvents: 'none',
+    }} />
+  )
+}
+
 // ─── Layer Renderer ───────────────────────────────────────────────────────────
 
 function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, onChange, positioningSettings, storeId, cW, cH, isAiMode }: {
@@ -778,6 +835,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
   const scaleX = displayW / 1000
 
   const isAiMode = canvasData.templateMode === 'ai_product'
+  const isZoomMode = canvasData.templateMode === 'product_zoom'
   const productLayerSettings = canvasData.productLayerSettings ?? DEFAULT_PRODUCT_LAYER_SETTINGS
 
   const bgSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
@@ -792,7 +850,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
 
   const sampleSrc = (() => {
     if (bgSettings.mode === 'solid' || bgSettings.mode === 'transparent') return null
-    if (isAiMode) return null
+    if (isAiMode || isZoomMode) return null
     if (product.imageUrl) return product.imageUrl
     const imgLayer = canvasData.layers.find(
       l => (l.type === 'image' || l.type === 'overlay') &&
@@ -824,7 +882,7 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
     l.type === 'image' && (l as any).src === '{{product_image}}'
 
   const sortedLayers = [...canvasData.layers]
-    .filter(l => !(isAiMode && isRawProductImageLayer(l)))
+    .filter(l => !((isAiMode || isZoomMode) && isRawProductImageLayer(l)))
     .sort((a, b) => a.zIndex - b.zIndex)
   const bgLayers = isAiMode
     ? sortedLayers.filter(l => l.zIndex < productLayerSettings.zIndex)
@@ -900,14 +958,21 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
         }}
         style={{
           width: displayW, height: displayH,
-          backgroundColor: bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor,
+          // Product Zoom mode always solid-fills — the compositor's product_zoom
+          // branch never reads backgroundSettings.mode/backgroundImageUrl, so the
+          // preview must match by ignoring them here too.
+          backgroundColor: isZoomMode
+            ? canvasData.backgroundColor
+            : (bgSettings.mode === 'transparent' ? 'transparent' : canvasData.backgroundColor),
           // For 'original' mode we render the background plate as a positioned <img>
           // child element (see below) instead of CSS backgroundImage.
           // This avoids CSS url() parsing issues with Cloudinary URLs that contain
           // parentheses (e.g., gen_remove:region_((x_;y_;w_;h_)) in the path).
-          backgroundImage: useOriginalBackground
-            ? undefined  // handled by the <img> child below
-            : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url("${canvasData.backgroundImageUrl}")` : undefined))),
+          backgroundImage: isZoomMode
+            ? undefined
+            : useOriginalBackground
+              ? undefined  // handled by the <img> child below
+              : (backgroundImageCss ?? (transparentBg ?? (canvasData.backgroundImageUrl ? `url("${canvasData.backgroundImageUrl}")` : undefined))),
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           position: 'relative', overflow: 'hidden', flexShrink: 0,
@@ -974,6 +1039,15 @@ export function CanvasPreview({ storeId }: { storeId?: string | null } = {}) {
               Background unavailable — Retry
             </button>
           </div>
+        )}
+        {isZoomMode && (
+          <ProductZoomImageLayer
+            imageUrl={product.imageUrl}
+            storeId={storeId ?? null}
+            positioningSettings={canvasData.productPositioningSettings}
+            canvasW={cW}
+            canvasH={cH}
+          />
         )}
         {bgLayers.map(renderLayer)}
         {isAiMode && (

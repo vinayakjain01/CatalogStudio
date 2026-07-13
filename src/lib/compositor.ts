@@ -83,7 +83,7 @@ interface ProductData {
 export interface CompositeOptions {
   targetSize?: number
   supersample?: number
-  templateMode?: 'standard' | 'ai_product'
+  templateMode?: 'standard' | 'ai_product' | 'product_zoom'
   productLayerSettings?: ProductLayerSettings
   storeId?: string
   supabase?: any
@@ -291,7 +291,7 @@ async function serverRenderBackground(
   W: number,
   H: number,
   bundle?: CompositorBundle,
-  templateMode?: 'standard' | 'ai_product'
+  templateMode?: 'standard' | 'ai_product' | 'product_zoom'
 ): Promise<void> {
   // In ai_product mode with a resolved cutout, the original photo (with the
   // model still in it) must never be loaded as the backdrop — mirrors the
@@ -300,6 +300,19 @@ async function serverRenderBackground(
   // sharp cutout, producing a visible duplicate product.
   const isAiProduct = templateMode === 'ai_product' && Boolean(product.transparentImageUrl)
   const settings: BackgroundSettings = canvasData.backgroundSettings ?? DEFAULT_BACKGROUND_SETTINGS
+
+  // ── NEW: Product Zoom Mode — solid fill only ──────────────────────────────
+  // The original photo already includes its own studio backdrop and is drawn
+  // as a single unit below (see compositeImage()'s product_zoom branch). Any
+  // letterbox gap left by satisfying Head Space/Bottom Space must be flat
+  // color, never a second rendering pass of the photo (no blur-extend/smart/
+  // gradient sampling of the same image behind itself).
+  if (templateMode === 'product_zoom') {
+    ctx.fillStyle = canvasData.backgroundColor
+    ctx.fillRect(0, 0, W, H)
+    return
+  }
+  // ── End new block ─────────────────────────────────────────────────────────
 
   // ── NEW: Background Plate (Product Layer Engine) ─────────────────────────
   // If we have a pre-computed Background Plate, use it as the fixed backdrop.
@@ -619,6 +632,70 @@ export async function compositeImage(
       await drawProductLayer(ctx, product.transparentImageUrl, scaledSettings, W, H)
       for (const layer of fgLayers) {
         await drawLayer(ctx, layer, product, W, H, layerOpts)
+      }
+    } else if (templateMode === 'product_zoom' && product.imageUrl) {
+      // ── Product Zoom Mode — whole original photo, zoomed/positioned as one unit ──
+      //
+      // No background removal, no cutout, no separate background layer: the
+      // original photo (background + product together) is drawn exactly once.
+      // Head Space / Bottom Space reuse the exact same classify+placement math
+      // as Standard Mode's Head Space feature (classifyProductImage /
+      // calculatePlacement, already imported above) — the only difference is
+      // there is no blurred-backdrop gap fill and no per-layer clip box: the
+      // photo always occupies the full canvas, and any letterbox gap left by
+      // satisfying both guides shows the plain background color already
+      // painted by serverRenderBackground() above.
+      const positioningSettings = canvasData.productPositioningSettings
+      let zoomPlacement: { imgX: number; imgY: number; renderedW: number; renderedH: number } | null = null
+
+      if (positioningSettings?.enabled) {
+        try {
+          const classified = await classifyProductImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
+          if (classified.applies) {
+            const scaleX = W / rawW
+            const scaleY = H / rawH
+            const scaledSettings = {
+              ...positioningSettings,
+              headSpacePx:    positioningSettings.headSpacePx    * scaleY,
+              leftMarginPx:   positioningSettings.leftMarginPx   * scaleX,
+              rightMarginPx:  positioningSettings.rightMarginPx  * scaleX,
+              bottomMarginPx: positioningSettings.bottomMarginPx * scaleY,
+            }
+            const { placement: computed, wouldCrop } = calculatePlacement(classified.bounds, W, H, scaledSettings)
+            if (!wouldCrop) zoomPlacement = computed
+          }
+        } catch (err: any) {
+          console.warn('[product-positioning] product_zoom classification failed, bypassing:', err?.message)
+        }
+      }
+
+      try {
+        const img = await loadImageSafe(product.imageUrl)
+        if (zoomPlacement) {
+          ctx.drawImage(
+            img, 0, 0, img.width, img.height,
+            zoomPlacement.imgX, zoomPlacement.imgY, zoomPlacement.renderedW, zoomPlacement.renderedH
+          )
+        } else {
+          // No positioning configured / doesn't apply / would crop — plain
+          // contain-fit to the full canvas. Never crops, never stretches.
+          drawFittedImage(ctx, img, 0, 0, W, H, 'contain')
+        }
+      } catch (err: any) {
+        console.error('[compositor] product_zoom image load failed:', err?.message)
+      }
+
+      const isRawProductImageLayerZoom = (l: Layer) =>
+        (l.type === 'image' || l.type === 'overlay' || l.type === 'logo' || l.type === 'sticker') &&
+        (l as any).src === '{{product_image}}'
+
+      const decorativeLayers = [...canvasData.layers]
+        .filter(l => !isRawProductImageLayerZoom(l))
+        .sort((a, b) => a.zIndex - b.zIndex)
+
+      const zoomLayerOpts = { storeId: options.storeId, supabase: options.supabase, targetW, targetH }
+      for (const layer of decorativeLayers) {
+        await drawLayer(ctx, layer, product, W, H, zoomLayerOpts)
       }
     } else {
       // ── Standard mode — unchanged ────────────────────────────────────────────

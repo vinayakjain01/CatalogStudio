@@ -221,8 +221,14 @@ export interface CanvasData {
 // ─── AI Product Mode ─────────────────────────────────────────────────────────
 // When templateMode = 'ai_product', background removal runs on the product image.
 // The transparent product is placed as an independent floating layer.
+//
+// templateMode = 'product_zoom': no background removal, no cutout. The
+// original photo (background + model + product) is treated as a single,
+// unmodified image that is only ever zoomed/panned as one rigid unit to hit
+// the configured Head Space / Bottom Space — see compositor.ts's
+// `product_zoom` branch and product-positioning.ts (reused as-is).
 
-export type TemplateMode = 'standard' | 'ai_product'
+export type TemplateMode = 'standard' | 'ai_product' | 'product_zoom'
 
 export interface ProductLayerSettings {
   // Position (percentage of canvas)
