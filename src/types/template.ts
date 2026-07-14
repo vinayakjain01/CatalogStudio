@@ -321,6 +321,7 @@ export interface ProductPositioningSettings {
   maxUpscale: number               // default 1.5 — never zoom more than this far beyond plain "contain"
   applyToShotTypes: ShotType[]     // default ['full_body', 'half_body']
   showGuide: boolean               // default true — editor-only static guide overlay toggle
+  aiExtend?: boolean               // default true — extend exposed canvas areas with AI when enabled
 }
 
 export const DEFAULT_PRODUCT_POSITIONING_SETTINGS: ProductPositioningSettings = {

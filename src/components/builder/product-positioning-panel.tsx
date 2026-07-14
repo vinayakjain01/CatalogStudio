@@ -6,90 +6,84 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import {
   AlignVerticalJustifyStart,
-  ZoomIn,
-  Move,
-  Info,
+  AlignVerticalJustifyEnd,
+  Sparkles,
   Eye,
   EyeOff,
   RotateCcw,
-  Tags,
+  Crop,
 } from 'lucide-react'
-
-const SHOT_TYPE_LABELS: Record<ShotType, string> = {
-  full_body: 'Full Body',
-  half_body: 'Half Body',
-  close_up: 'Close-up',
-  detail: 'Detail',
-  flat_lay: 'Flat Lay',
-  accessory: 'Accessory',
-}
 
 export function ProductPositioningPanel() {
   const { canvasData, setProductPositioningSettings } = useBuilderStore()
 
   const settings = canvasData.productPositioningSettings ?? DEFAULT_PRODUCT_POSITIONING_SETTINGS
-  const isAiMode = canvasData.templateMode === 'ai_product'
-  const isZoomMode = canvasData.templateMode === 'product_zoom'
   const maxHeadSpace = Math.round((canvasData.height || 1080) * 0.7)
+  const maxBottomSpace = 600
 
-  function toggleShotType(type: ShotType) {
-    const current = settings.applyToShotTypes
-    const next = current.includes(type)
-      ? current.filter(t => t !== type)
-      : [...current, type]
-    setProductPositioningSettings({ applyToShotTypes: next })
+  function enable() {
+    setProductPositioningSettings({
+      ...DEFAULT_PRODUCT_POSITIONING_SETTINGS,
+      enabled: true,
+      scaleMode: 'fill',
+      headSpacePx: settings.headSpacePx,
+      bottomMarginPx: settings.bottomMarginPx,
+      showGuide: settings.showGuide ?? true,
+      aiExtend: settings.aiExtend ?? true,
+      autoCenterHorizontally: true,
+      leftMarginPx: 0,
+      rightMarginPx: 0,
+      // apply to ALL shot types so every product photo is normalized
+      applyToShotTypes: [...SHOT_TYPES] as ShotType[],
+    })
+  }
+
+  function disable() {
+    setProductPositioningSettings({ enabled: false })
   }
 
   return (
     <div className="space-y-4 p-4">
-      {/* Enable/disable */}
-      <div className="space-y-2">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Product Positioning</p>
-        <p className="text-xs text-muted-foreground">
-          Align every product at the same head position — like Zara, H&amp;M, Myntra.
-        </p>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => setProductPositioningSettings({ enabled: false })}
-            className={`p-3 rounded-lg border text-left transition-all ${
-              !settings.enabled
-                ? 'border-primary bg-primary/5 text-primary'
-                : 'border-border hover:border-muted-foreground/40'
-            }`}
-          >
-            <p className="text-xs font-semibold">Off</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Use manual layout</p>
-          </button>
-          <button
-            onClick={() => setProductPositioningSettings({ enabled: true })}
-            className={`p-3 rounded-lg border text-left transition-all ${
-              settings.enabled
-                ? 'border-primary bg-primary/5 text-primary'
-                : 'border-border hover:border-muted-foreground/40'
-            }`}
-          >
-            <p className="text-xs font-semibold">On</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Auto-align products</p>
-          </button>
+      {/* Header */}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5">
+          <Crop className="h-3.5 w-3.5 text-muted-foreground" />
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Auto Framing</p>
         </div>
+        <p className="text-xs text-muted-foreground leading-snug">
+          Zoom and crop every product so the model's head and feet hit the guide lines exactly.
+          Background gets cropped from the sides — the product always fills the frame.
+        </p>
+      </div>
+
+      {/* On / Off */}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={disable}
+          className={`p-3 rounded-lg border text-left transition-all ${
+            !settings.enabled
+              ? 'border-primary bg-primary/5 text-primary'
+              : 'border-border hover:border-muted-foreground/40'
+          }`}
+        >
+          <p className="text-xs font-semibold">Off</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Manual layout</p>
+        </button>
+        <button
+          onClick={enable}
+          className={`p-3 rounded-lg border text-left transition-all ${
+            settings.enabled
+              ? 'border-primary bg-primary/5 text-primary'
+              : 'border-border hover:border-muted-foreground/40'
+          }`}
+        >
+          <p className="text-xs font-semibold">On</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Auto-frame all products</p>
+        </button>
       </div>
 
       {settings.enabled && (
         <>
-          {/* Info banner */}
-          <div className={`flex gap-2 p-2.5 rounded-lg ${
-            isAiMode || isZoomMode
-              ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
-              : 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300'
-          }`}>
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <p className="text-xs leading-snug">
-              {isZoomMode
-                ? "Product Zoom mode positions the photo itself — no cutout, no background removal. Applied automatically to full-body and half-body shots by default; check off every shot type below (flat lay, close-up, detail, accessory) you also want normalized, since Product Zoom's whole point is consistent framing across all product types."
-                : 'Applied automatically to full-body and half-body shots. Flat lays, close-ups, detail shots, and accessories are detected and left exactly as-is. You can correct a misdetection per-product from the product page.'}
-            </p>
-          </div>
-
           <Separator />
 
           {/* Head Space */}
@@ -97,143 +91,57 @@ export function ProductPositioningPanel() {
             <div className="flex items-center gap-1.5">
               <AlignVerticalJustifyStart className="h-3.5 w-3.5 text-muted-foreground" />
               <p className="text-xs font-medium">Head Space</p>
+              <p className="text-xs text-muted-foreground ml-auto">distance from top</p>
             </div>
             <SliderField
-              label="Distance from top"
               value={settings.headSpacePx}
               min={0} max={maxHeadSpace}
               onChange={v => setProductPositioningSettings({ headSpacePx: v })}
               unit="px"
             />
-          </div>
-
-          <Separator />
-
-          {/* Scale Mode */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <ZoomIn className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-medium">Scale Mode</p>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              <button
-                onClick={() => setProductPositioningSettings({ scaleMode: 'fit' })}
-                className={`py-1.5 text-xs rounded border transition-all ${
-                  settings.scaleMode === 'fit'
-                    ? 'border-primary bg-primary/5 text-primary font-medium'
-                    : 'border-border hover:border-muted-foreground/40'
-                }`}
-              >
-                Fit
-              </button>
-              <button
-                onClick={() => setProductPositioningSettings({ scaleMode: 'smart_fit' })}
-                className={`py-1.5 text-xs rounded border transition-all ${
-                  settings.scaleMode === 'smart_fit'
-                    ? 'border-primary bg-primary/5 text-primary font-medium'
-                    : 'border-border hover:border-muted-foreground/40'
-                }`}
-              >
-                Smart Fit
-              </button>
-              <button
-                onClick={() => setProductPositioningSettings({ scaleMode: 'fill' })}
-                className={`py-1.5 text-xs rounded border transition-all ${
-                  settings.scaleMode === 'fill'
-                    ? 'border-primary bg-primary/5 text-primary font-medium'
-                    : 'border-border hover:border-muted-foreground/40'
-                }`}
-              >
-                Fill
-              </button>
-            </div>
             <p className="text-xs text-muted-foreground">
-              {settings.scaleMode === 'fill'
-                ? 'Always zooms so the head AND the bottom guide are both hit exactly — cropping background from the sides if needed. Use this if Smart Fit is leaving a gap above or below the product.'
-                : settings.scaleMode === 'smart_fit'
-                ? 'Moves the product to hit the head-space target first, scaling only as much as needed. Never crops — so it can leave a gap at the bottom guide if the product is wide relative to the canvas.'
-                : 'Plain contain scaling — moves the product without zooming.'}
-            </p>
-            <SliderField
-              label={settings.scaleMode === 'fill' ? 'Max upscale (quality warning only)' : 'Max upscale'}
-              value={settings.maxUpscale}
-              min={1} max={3} step={0.1}
-              onChange={v => setProductPositioningSettings({ maxUpscale: v })}
-              unit="×"
-            />
-            <p className="text-xs text-muted-foreground">
-              {settings.scaleMode === 'fill'
-                ? "Fill always zooms enough to hit both guides, even past this value — it will never leave a gap because of it. This number only flags (in the console) when a photo is being zoomed further than you'd normally want, so you know which source photos to re-shoot tighter."
-                : 'Caps how far Smart Fit may zoom in beyond a plain fit, so tightly-cropped photos never blow up into blur.'}
+              The model&apos;s head will touch this line. Space above is filled by the photo&apos;s own backdrop.
             </p>
           </div>
 
           <Separator />
 
-          {/* Margins */}
+          {/* Bottom Space */}
           <div className="space-y-3">
             <div className="flex items-center gap-1.5">
-              <Move className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-medium">Safe Area Margins</p>
+              <AlignVerticalJustifyEnd className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-medium">Bottom Space</p>
+              <p className="text-xs text-muted-foreground ml-auto">distance from bottom</p>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <SliderField
-                label="Left"
-                value={settings.leftMarginPx}
-                min={0} max={200}
-                onChange={v => setProductPositioningSettings({ leftMarginPx: v })}
-                unit="px"
-              />
-              <SliderField
-                label="Right"
-                value={settings.rightMarginPx}
-                min={0} max={200}
-                onChange={v => setProductPositioningSettings({ rightMarginPx: v })}
-                unit="px"
-              />
-              <SliderField
-                label="Bottom"
-                value={settings.bottomMarginPx}
-                min={0} max={600}
-                onChange={v => setProductPositioningSettings({ bottomMarginPx: v })}
-                unit="px"
-              />
-            </div>
-            <div className="flex items-center justify-between pt-1">
-              <p className="text-xs text-muted-foreground">Auto-center horizontally</p>
-              <ToggleButton
-                active={settings.autoCenterHorizontally}
-                onToggle={() => setProductPositioningSettings({ autoCenterHorizontally: !settings.autoCenterHorizontally })}
-              />
-            </div>
+            <SliderField
+              value={settings.bottomMarginPx}
+              min={0} max={maxBottomSpace}
+              onChange={v => setProductPositioningSettings({ bottomMarginPx: v })}
+              unit="px"
+            />
+            <p className="text-xs text-muted-foreground">
+              The model&apos;s feet (or hem) will touch this line. Set to 0 to push feet to the canvas edge.
+            </p>
           </div>
 
           <Separator />
 
-          {/* Shot types */}
+          {/* AI Extend */}
           <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <Tags className="h-3.5 w-3.5 text-muted-foreground" />
-              <p className="text-xs font-medium">Shot Types to Apply</p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
+                <p className="text-xs font-medium">AI Extend</p>
+              </div>
+              <ToggleButton
+                active={settings.aiExtend !== false}
+                onToggle={() => setProductPositioningSettings({ aiExtend: !(settings.aiExtend !== false) })}
+              />
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {SHOT_TYPES.map(type => (
-                <button
-                  key={type}
-                  onClick={() => toggleShotType(type)}
-                  className={`text-xs px-2 py-1 rounded-full border transition-all ${
-                    settings.applyToShotTypes.includes(type)
-                      ? 'border-primary bg-primary/5 text-primary font-medium'
-                      : 'border-border text-muted-foreground hover:border-muted-foreground/40'
-                  }`}
-                >
-                  {SHOT_TYPE_LABELS[type]}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Detected automatically per product. Override a single product&apos;s detected shot type
-              from its product detail page.
+            <p className="text-xs text-muted-foreground leading-snug">
+              {settings.aiExtend !== false
+                ? 'When the zoomed photo doesn\'t fully cover the canvas (e.g. narrow portrait on a wide canvas), Cloudinary Generative Fill extends the background seamlessly. Adds ~5s to generation.'
+                : 'AI Extend is off — any gaps outside the photo edges will show the canvas background color.'}
             </p>
           </div>
 
@@ -262,7 +170,12 @@ export function ProductPositioningPanel() {
             variant="outline"
             size="sm"
             className="w-full text-xs gap-1.5"
-            onClick={() => setProductPositioningSettings(DEFAULT_PRODUCT_POSITIONING_SETTINGS)}
+            onClick={() => setProductPositioningSettings({
+              ...DEFAULT_PRODUCT_POSITIONING_SETTINGS,
+              enabled: true,
+              scaleMode: 'fill',
+              applyToShotTypes: [...SHOT_TYPES] as ShotType[],
+            })}
           >
             <RotateCcw className="h-3 w-3" />
             Reset to defaults
@@ -273,12 +186,11 @@ export function ProductPositioningPanel() {
   )
 }
 
-// ─── Sub-components (same pattern as ai-product-mode-panel.tsx) ──────────────
+// ─── Sub-components ──────────────────────────────────────────────────────────
 
 function SliderField({
-  label, value, min, max, step = 1, onChange, unit = '',
+  value, min, max, step = 1, onChange, unit = '',
 }: {
-  label: string
   value: number
   min: number
   max: number
@@ -295,7 +207,15 @@ function SliderField({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">{label}</p>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={e => onChange(Number(e.target.value))}
+          className="flex-1 h-1.5 accent-primary cursor-pointer"
+        />
         <span className="flex items-center gap-0.5">
           <input
             type="number"
@@ -311,15 +231,6 @@ function SliderField({
           <span className="text-xs font-mono text-muted-foreground">{unit}</span>
         </span>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        className="w-full h-1.5 accent-primary cursor-pointer"
-      />
     </div>
   )
 }

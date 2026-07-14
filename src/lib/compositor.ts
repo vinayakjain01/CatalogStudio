@@ -19,7 +19,6 @@ import {
 import {
   placementToProductLayerSettings,
   calculatePlacement,
-  calculatePlacementNoLetterbox,
   calculateSmartFitPlacement,
   type ProductBounds,
 } from '@/lib/product-positioning-shared'
@@ -653,13 +652,14 @@ export async function compositeImage(
       if (positioningSettings?.enabled) {
         try {
           const classified = await classifyProductZoomImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
-          // Apply head space when the shot type is in the allow-list.
-          // A low-confidence ("degenerate") detection no longer disables
-          // positioning outright — see calculatePlacementNoLetterbox below —
-          // it just uses the full image as the content box instead of a
-          // detected silhouette, so every eligible product still fills the
-          // canvas consistently even when the backdrop was hard to model.
-          if (classified.applies) {
+          // Apply placement in two situations:
+          // 1. Detection succeeded: classified.applies = true (subject found, shot type allowed)
+          // 2. Fill mode regardless of detection quality: fill always produces a useful result —
+          //    at worst (degenerate bounds), the image fills the guides area with no white gaps,
+          //    which is better than a plain contain-fit that leaves visible white space.
+          //    Smart_fit/fit modes stay gated on classified.applies because with degenerate bounds
+          //    those modes shift the image top to headSpacePx (wrong "head" position).
+          if (classified.applies || positioningSettings.scaleMode === 'fill') {
             const scaleX = W / rawW
             const scaleY = H / rawH
             const scaledSettings = {
@@ -669,22 +669,7 @@ export async function compositeImage(
               rightMarginPx:  positioningSettings.rightMarginPx  * scaleX,
               bottomMarginPx: positioningSettings.bottomMarginPx * scaleY,
             }
-            // FIX: a low-confidence ("degenerate") detection used to be
-            // treated as "bypass Head Space for this one image" — that's
-            // exactly the bug where one product in a bulk run comes out
-            // letterboxed while its neighbors fill the frame. Now it still
-            // gets zoomed to satisfy both guides, just using the full image
-            // as the content box (calculatePlacementNoLetterbox) instead of
-            // a detected silhouette.
-            const placementFn = classified.isDegenerate ? calculatePlacementNoLetterbox : calculatePlacement
-            const { placement: computed, wouldCrop, clampedByMaxUpscale } = placementFn(classified.bounds, W, H, scaledSettings)
-            if (positioningSettings.scaleMode === 'fill' && clampedByMaxUpscale) {
-              console.warn(
-                `[product-positioning] Fill mode zoomed to ${computed.scale.toFixed(2)}x, past the ` +
-                `configured max upscale of ${positioningSettings.maxUpscale}x, to hit both guides on ` +
-                `${product.imageUrl} — consider a tighter source crop for this photo.`
-              )
-            }
+            const { placement: computed, wouldCrop } = calculatePlacement(classified.bounds, W, H, scaledSettings)
             if (!wouldCrop) zoomPlacement = computed
           }
         } catch (err: any) {
@@ -711,7 +696,7 @@ export async function compositeImage(
             imgY + renderedH < H - 1 ||
             imgX + renderedW < W - 1
 
-          if (hasExposedArea && options.storeId && options.supabase) {
+          if (hasExposedArea && positioningSettings?.aiExtend !== false && options.storeId && options.supabase) {
             try {
               // Convert supersampled coordinates back to 1× for the extend call
               // (getExtendedImagePositioned works in 1× space, compositor handles scaling)
