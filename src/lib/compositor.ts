@@ -652,14 +652,17 @@ export async function compositeImage(
       if (positioningSettings?.enabled) {
         try {
           const classified = await classifyProductZoomImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
-          // Apply placement in two situations:
-          // 1. Detection succeeded: classified.applies = true (subject found, shot type allowed)
-          // 2. Fill mode regardless of detection quality: fill always produces a useful result —
-          //    at worst (degenerate bounds), the image fills the guides area with no white gaps,
-          //    which is better than a plain contain-fit that leaves visible white space.
-          //    Smart_fit/fit modes stay gated on classified.applies because with degenerate bounds
-          //    those modes shift the image top to headSpacePx (wrong "head" position).
-          if (classified.applies || positioningSettings.scaleMode === 'fill') {
+          // Apply placement only when detection succeeded AND the shot type is in the
+          // user's allow-list. Both checks are already folded into classified.applies:
+          //   classified.applies = !isDegenerateBounds(bounds) && applyToShotTypes.includes(shotType)
+          //
+          // Do NOT override this with a fill-mode bypass. Fill mode changes HOW the image
+          // is scaled (height-first, may crop sides), NOT which shots get framed.
+          // Bypassing the shot type check with "|| scaleMode === 'fill'" was the direct
+          // cause of half-body/close-up shots being zoomed into extreme closeups:
+          // a half-body photo has no feet, so "fill" used the waist as the bottom guide
+          // and blew the image up 3× into a closeup of fabric/skin.
+          if (classified.applies) {
             const scaleX = W / rawW
             const scaleY = H / rawH
             const scaledSettings = {

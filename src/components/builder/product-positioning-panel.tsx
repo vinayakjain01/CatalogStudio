@@ -12,14 +12,27 @@ import {
   EyeOff,
   RotateCcw,
   Crop,
+  Tags,
 } from 'lucide-react'
+
+const SHOT_TYPE_LABELS: Record<ShotType, string> = {
+  full_body:  'Full Body',
+  half_body:  'Half Body',
+  close_up:   'Close-up',
+  detail:     'Detail',
+  flat_lay:   'Flat Lay',
+  accessory:  'Accessory',
+}
+
+// Only full-body shots are safe to auto-frame with head+feet detection.
+// Half-body shots have no feet in frame — fill mode would zoom 3× into the waist.
+const SAFE_DEFAULT_SHOT_TYPES: ShotType[] = ['full_body']
 
 export function ProductPositioningPanel() {
   const { canvasData, setProductPositioningSettings } = useBuilderStore()
 
   const settings = canvasData.productPositioningSettings ?? DEFAULT_PRODUCT_POSITIONING_SETTINGS
   const maxHeadSpace = Math.round((canvasData.height || 1080) * 0.7)
-  const maxBottomSpace = 600
 
   function enable() {
     setProductPositioningSettings({
@@ -33,13 +46,22 @@ export function ProductPositioningPanel() {
       autoCenterHorizontally: true,
       leftMarginPx: 0,
       rightMarginPx: 0,
-      // apply to ALL shot types so every product photo is normalized
-      applyToShotTypes: [...SHOT_TYPES] as ShotType[],
+      applyToShotTypes: settings.applyToShotTypes?.length
+        ? settings.applyToShotTypes
+        : SAFE_DEFAULT_SHOT_TYPES,
     })
   }
 
   function disable() {
     setProductPositioningSettings({ enabled: false })
+  }
+
+  function toggleShotType(type: ShotType) {
+    const current = settings.applyToShotTypes ?? SAFE_DEFAULT_SHOT_TYPES
+    const next = current.includes(type)
+      ? current.filter(t => t !== type)
+      : [...current, type]
+    setProductPositioningSettings({ applyToShotTypes: next })
   }
 
   return (
@@ -51,8 +73,8 @@ export function ProductPositioningPanel() {
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Auto Framing</p>
         </div>
         <p className="text-xs text-muted-foreground leading-snug">
-          Zoom and crop every product so the model's head and feet hit the guide lines exactly.
-          Background gets cropped from the sides — the product always fills the frame.
+          Zoom and crop every full-body product so the model's head and feet
+          hit the guide lines exactly. Other shot types are generated as-is.
         </p>
       </div>
 
@@ -78,7 +100,7 @@ export function ProductPositioningPanel() {
           }`}
         >
           <p className="text-xs font-semibold">On</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Auto-frame all products</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Auto-frame products</p>
         </button>
       </div>
 
@@ -91,7 +113,7 @@ export function ProductPositioningPanel() {
             <div className="flex items-center gap-1.5">
               <AlignVerticalJustifyStart className="h-3.5 w-3.5 text-muted-foreground" />
               <p className="text-xs font-medium">Head Space</p>
-              <p className="text-xs text-muted-foreground ml-auto">distance from top</p>
+              <span className="text-xs text-muted-foreground ml-auto">distance from top</span>
             </div>
             <SliderField
               value={settings.headSpacePx}
@@ -100,7 +122,7 @@ export function ProductPositioningPanel() {
               unit="px"
             />
             <p className="text-xs text-muted-foreground">
-              The model&apos;s head will touch this line. Space above is filled by the photo&apos;s own backdrop.
+              Model's head aligns to this line. The photo backdrop fills the space above it.
             </p>
           </div>
 
@@ -111,16 +133,52 @@ export function ProductPositioningPanel() {
             <div className="flex items-center gap-1.5">
               <AlignVerticalJustifyEnd className="h-3.5 w-3.5 text-muted-foreground" />
               <p className="text-xs font-medium">Bottom Space</p>
-              <p className="text-xs text-muted-foreground ml-auto">distance from bottom</p>
+              <span className="text-xs text-muted-foreground ml-auto">distance from bottom</span>
             </div>
             <SliderField
               value={settings.bottomMarginPx}
-              min={0} max={maxBottomSpace}
+              min={0} max={600}
               onChange={v => setProductPositioningSettings({ bottomMarginPx: v })}
               unit="px"
             />
             <p className="text-xs text-muted-foreground">
-              The model&apos;s feet (or hem) will touch this line. Set to 0 to push feet to the canvas edge.
+              Model's feet (or hem) align to this line. Set to 0 to push feet to the canvas edge.
+            </p>
+          </div>
+
+          <Separator />
+
+          {/* Shot Types */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-1.5">
+              <Tags className="h-3.5 w-3.5 text-muted-foreground" />
+              <p className="text-xs font-medium">Apply to these shots</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {SHOT_TYPES.map(type => {
+                const active = (settings.applyToShotTypes ?? SAFE_DEFAULT_SHOT_TYPES).includes(type)
+                return (
+                  <button
+                    key={type}
+                    onClick={() => toggleShotType(type)}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition-all ${
+                      active
+                        ? 'border-primary bg-primary/5 text-primary font-medium'
+                        : 'border-border text-muted-foreground hover:border-muted-foreground/40'
+                    }`}
+                  >
+                    {SHOT_TYPE_LABELS[type]}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground leading-snug">
+              Images whose shot type isn't selected are generated as-is — no zooming or cropping.
+              <br />
+              <span className="text-amber-600 dark:text-amber-400">
+                ⚠ Avoid selecting Half Body, Close-up, Detail — they have no feet in frame and
+                will produce extreme zoom-in results.
+              </span>
             </p>
           </div>
 
@@ -140,21 +198,20 @@ export function ProductPositioningPanel() {
             </div>
             <p className="text-xs text-muted-foreground leading-snug">
               {settings.aiExtend !== false
-                ? 'When the zoomed photo doesn\'t fully cover the canvas (e.g. narrow portrait on a wide canvas), Cloudinary Generative Fill extends the background seamlessly. Adds ~5s to generation.'
-                : 'AI Extend is off — any gaps outside the photo edges will show the canvas background color.'}
+                ? 'When the zoomed photo doesn\'t fully cover the canvas (narrow portrait on a wide canvas, or small side gaps), Cloudinary Generative Fill extends the background. Adds ~5s per image.'
+                : 'Off — any uncovered canvas edges will show the canvas background color.'}
             </p>
           </div>
 
           <Separator />
 
-          {/* Guide toggle */}
+          {/* Show guide lines */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
-              {settings.showGuide ? (
-                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
-              ) : (
-                <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
+              {settings.showGuide
+                ? <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                : <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+              }
               <p className="text-xs font-medium">Show guide lines in editor</p>
             </div>
             <ToggleButton
@@ -174,7 +231,7 @@ export function ProductPositioningPanel() {
               ...DEFAULT_PRODUCT_POSITIONING_SETTINGS,
               enabled: true,
               scaleMode: 'fill',
-              applyToShotTypes: [...SHOT_TYPES] as ShotType[],
+              applyToShotTypes: SAFE_DEFAULT_SHOT_TYPES,
             })}
           >
             <RotateCcw className="h-3 w-3" />
@@ -206,23 +263,17 @@ function SliderField({
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2">
         <input
           type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
+          min={min} max={max} step={step} value={value}
           onChange={e => onChange(Number(e.target.value))}
           className="flex-1 h-1.5 accent-primary cursor-pointer"
         />
-        <span className="flex items-center gap-0.5">
+        <span className="flex items-center gap-0.5 shrink-0">
           <input
             type="number"
-            min={min}
-            max={max}
-            step={step}
-            value={value}
+            min={min} max={max} step={step} value={value}
             onChange={e => commitNumber(e.target.value)}
             className="w-14 h-5 text-xs font-mono text-right bg-transparent border border-border rounded px-1
                        focus:outline-none focus:border-primary

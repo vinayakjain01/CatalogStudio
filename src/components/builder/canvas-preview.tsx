@@ -235,16 +235,13 @@ function computeLocalPositioningFromBounds(
   boxH: number
 ): LocalPositioning | null {
   if (!bounds || !settings?.enabled || !boxW || !boxH) return null
-  // FIX: Bypass positioning for degenerate bounds when NOT in fill mode.
-  // detectZoomSubjectBounds() returns fullImageRect() — bounds.top = 0 — when
-  // it can't locate the subject (complex backdrop, model fills the frame, etc.).
-  // For smart_fit/fit modes, applying head space against bounds we don't trust
-  // shifts the IMAGE TOP to headSpacePx instead of the model's actual HEAD —
-  // producing different head positions for each product in bulk generation.
-  // EXCEPTION: fill mode passes through. With degenerate bounds, fill scales
-  // based on the full image height, keeping the guides area fully covered with
-  // no white space — a much better fallback than plain contain-fit.
-  if (isDegenerateBounds(bounds) && settings?.scaleMode !== 'fill') {
+  // Skip degenerate bounds for ALL scale modes.
+  // When detectZoomSubjectBounds() can't locate the subject it returns fullImageRect()
+  // (bounds.top = 0, bounds.bottom = imageH - 1). Applying framing against bounds we
+  // don't trust would either shift the image top to headSpacePx (wrong for smart_fit/fit)
+  // or blow up a half-body photo when fill mode mistakes "waist" for "feet".
+  // A plain contain-fit is safer and always shows the original image correctly.
+  if (isDegenerateBounds(bounds)) {
     return { shotType: null, apply: false, placement: null, wouldCrop: false, aspectRatio: null, coverageRatio: null }
   }
   const signals = computeClassificationSignals(bounds)
