@@ -276,10 +276,30 @@ export function calculatePlacement(
 
   const containScale = Math.min(availableW / contentW, availableH / contentH)
 
-  // 'smart_fit': always zoom to hit both guides (up to maxUpscale). 'fit':
-  // never enlarge past native pixel size — may leave a gap rather than
-  // upscale, but never loses quality.
-  const rawScale = scaleMode === 'smart_fit' ? containScale : Math.min(1, containScale)
+  // Three scale strategies:
+  //  - 'fit':       never enlarge past native pixel size — may leave a gap
+  //                 rather than upscale, but never loses quality.
+  //  - 'smart_fit':  always zoom to hit both guides (up to maxUpscale), but
+  //                 caps the zoom at whichever axis (width OR height) is
+  //                 tighter — so it NEVER crops. If the detected content is
+  //                 wide relative to the canvas (e.g. a flared dupatta/scarf),
+  //                 the width constraint can end up binding, and the photo
+  //                 stops short of the bottom guide, leaving a gap below the
+  //                 feet. That's a deliberate "never crop the product"
+  //                 trade-off, not a bug — but it isn't what 'fill' is for.
+  //  - 'fill':      ALWAYS satisfies the head guide and bottom guide exactly,
+  //                 by scaling from height alone (ignoring the width
+  //                 constraint entirely). If that makes the content wider
+  //                 than the canvas, the excess is cropped from the sides —
+  //                 background first, and the product itself only if the
+  //                 zoom needed to hit both guides genuinely requires it.
+  //                 This is what "zoom in and cut the side background, don't
+  //                 just move the image" means in practice: the vertical
+  //                 guides are the hard constraint, width is not.
+  const rawScale =
+    scaleMode === 'fill'      ? availableH / contentH :
+    scaleMode === 'smart_fit' ? containScale :
+    Math.min(1, containScale)
 
   // maxUpscale is an ABSOLUTE cap on the scale factor (e.g. 1.5 = never
   // render source pixels at more than 150% of their native size) — not
@@ -301,17 +321,20 @@ export function calculatePlacement(
   }
 
   // wouldCrop reflects the VISIBLE CONTENT only (never the full image,
-  // whose margins may be transparent) — content is guaranteed to fit by
-  // construction above, so this only fires for genuine floating-point edge
-  // cases, and is the hard backstop the caller bypasses on rather than
-  // shifting position (which would break the "touch both guides" guarantee).
+  // whose margins may be transparent). For 'fit'/'smart_fit', content is
+  // guaranteed to fit on all 4 sides by construction, so this only fires for
+  // genuine floating-point edge cases — the hard backstop the caller bypasses
+  // on rather than shifting position (which would break the "touch both
+  // guides" guarantee). For 'fill', horizontal overflow is EXPECTED (that's
+  // the whole point of the mode), so only top/bottom count as a real crop —
+  // and by construction those hit exactly, modulo the maxUpscale cap.
   const contentTop    = imgY + bounds.top * scale
   const contentBottom = imgY + bounds.bottom * scale
   const contentLeft   = imgX + bounds.left * scale
   const contentRight  = imgX + bounds.right * scale
-  const wouldCrop =
-    contentTop < -0.5 || contentLeft < -0.5 ||
-    contentBottom > canvasH + 0.5 || contentRight > canvasW + 0.5
+  const wouldCrop = scaleMode === 'fill'
+    ? (contentTop < -0.5 || contentBottom > canvasH + 0.5)
+    : (contentTop < -0.5 || contentLeft < -0.5 || contentBottom > canvasH + 0.5 || contentRight > canvasW + 0.5)
 
   return {
     placement: { imgX, imgY, renderedW, renderedH, scale },
@@ -333,9 +356,10 @@ export function calculatePlacement(
  * Instead: still zoom the photo to satisfy the Head Space / Bottom Space
  * guides, just using the FULL IMAGE as the content box (the best available
  * proxy for "head at top, feet at bottom" when we have no real silhouette).
- * scaleMode is force-overridden to 'smart_fit' regardless of the template's
- * configured scale mode — 'fit' mode's "never upscale, may leave a gap" is
- * exactly the padding we're trying to avoid here, so it isn't honoured for
+ * scaleMode is force-overridden to 'fill' regardless of the template's
+ * configured scale mode — 'fit' mode's "never upscale, may leave a gap" and
+ * 'smart_fit' mode's "never crop, may leave a gap when width binds" are both
+ * exactly the padding we're trying to avoid here, so neither is honoured for
  * this fallback path. This guarantees every product in a bulk run — detected
  * or not — fills the canvas identically, with only the (rare) precision of
  * exactly where "head" sits varying, never a blank border.
@@ -348,7 +372,7 @@ export function calculatePlacementNoLetterbox(
     'headSpacePx' | 'leftMarginPx' | 'rightMarginPx' | 'bottomMarginPx' |
     'autoCenterHorizontally' | 'scaleMode' | 'maxUpscale'>
 ): PlacementResult {
-  return calculatePlacement(bounds, canvasW, canvasH, { ...settings, scaleMode: 'smart_fit' })
+  return calculatePlacement(bounds, canvasW, canvasH, { ...settings, scaleMode: 'fill' })
 }
 
 // ─── NEW: Smart Fit 2.0 — placement from stored metadata ─────────────────────

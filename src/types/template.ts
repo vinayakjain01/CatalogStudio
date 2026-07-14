@@ -317,7 +317,7 @@ export interface ProductPositioningSettings {
   rightMarginPx: number            // default 40
   bottomMarginPx: number           // default 40
   autoCenterHorizontally: boolean  // default true
-  scaleMode: 'fit' | 'smart_fit'   // default 'smart_fit' — move first, scale only if required
+  scaleMode: 'fit' | 'smart_fit' | 'fill'   // default 'smart_fit' — 'fill' = always zoom to satisfy both guides, cropping background from the sides if needed (never leaves a gap)
   maxUpscale: number               // default 1.5 — never zoom more than this far beyond plain "contain"
   applyToShotTypes: ShotType[]     // default ['full_body', 'half_body']
   showGuide: boolean               // default true — editor-only static guide overlay toggle

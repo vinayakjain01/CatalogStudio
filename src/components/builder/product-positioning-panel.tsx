@@ -115,7 +115,7 @@ export function ProductPositioningPanel() {
               <ZoomIn className="h-3.5 w-3.5 text-muted-foreground" />
               <p className="text-xs font-medium">Scale Mode</p>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5">
               <button
                 onClick={() => setProductPositioningSettings({ scaleMode: 'fit' })}
                 className={`py-1.5 text-xs rounded border transition-all ${
@@ -136,10 +136,22 @@ export function ProductPositioningPanel() {
               >
                 Smart Fit
               </button>
+              <button
+                onClick={() => setProductPositioningSettings({ scaleMode: 'fill' })}
+                className={`py-1.5 text-xs rounded border transition-all ${
+                  settings.scaleMode === 'fill'
+                    ? 'border-primary bg-primary/5 text-primary font-medium'
+                    : 'border-border hover:border-muted-foreground/40'
+                }`}
+              >
+                Fill
+              </button>
             </div>
             <p className="text-xs text-muted-foreground">
-              {settings.scaleMode === 'smart_fit'
-                ? 'Moves the product to hit the head-space target first, scaling only as much as needed. Never crops.'
+              {settings.scaleMode === 'fill'
+                ? 'Always zooms so the head AND the bottom guide are both hit exactly — cropping background from the sides if needed. Use this if Smart Fit is leaving a gap above or below the product.'
+                : settings.scaleMode === 'smart_fit'
+                ? 'Moves the product to hit the head-space target first, scaling only as much as needed. Never crops — so it can leave a gap at the bottom guide if the product is wide relative to the canvas.'
                 : 'Plain contain scaling — moves the product without zooming.'}
             </p>
             <SliderField
