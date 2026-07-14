@@ -235,6 +235,16 @@ function computeLocalPositioningFromBounds(
   boxH: number
 ): LocalPositioning | null {
   if (!bounds || !settings?.enabled || !boxW || !boxH) return null
+  // FIX: Bypass positioning for degenerate bounds (failed subject detection).
+  // detectZoomSubjectBounds() returns fullImageRect() — bounds.top = 0 — when
+  // it can't confidently locate the subject (complex/textured backdrop, or the
+  // model fills the entire frame). Applying head space against those bounds
+  // shifts the IMAGE TOP to headSpacePx instead of the model's actual HEAD,
+  // producing different head positions for each product in bulk generation.
+  // Fall back to plain contain-fit (no head space repositioning) instead.
+  if (isDegenerateBounds(bounds)) {
+    return { shotType: null, apply: false, placement: null, wouldCrop: false, aspectRatio: null, coverageRatio: null }
+  }
   const signals = computeClassificationSignals(bounds)
   const shotType = classifyShotType(signals)
   const base = { shotType, aspectRatio: signals.aspectRatio, coverageRatio: signals.coverageRatio }
@@ -350,11 +360,9 @@ function ProductZoomImageLayer({
     )
   }
 
-  // NOTE: we intentionally do NOT skip on degenerate bounds here.
-  // detectZoomSubjectBounds returns fullImageRect() when the backdrop is
-  // complex/textured — bounds = full image. In that case, head space still
-  // moves the image top to headSpacePx, which gives consistent framing even
-  // without precise subject detection. The compositor matches this behaviour.
+  // computeLocalPositioningFromBounds returns apply:false for degenerate bounds,
+  // so when detection failed we fall through to the contain-fit path above.
+  // Only proceed here when we have a real detected subject box.
 
   const { imgX, imgY, renderedW, renderedH } = result.placement
   const pctX = (v: number) => `${(v / canvasW) * 100}%`

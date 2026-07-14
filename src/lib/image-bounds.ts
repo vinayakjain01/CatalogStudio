@@ -137,10 +137,10 @@ const BG_MIN_CORNER_PX = 3
 const BG_BORDER_FRACTION = 0.015     // ring thickness (for the residual/confidence check), fraction of shorter side
 const BG_MIN_BORDER_PX = 2
 const BG_COLOR_DISTANCE_THRESHOLD = 36  // 0–441 (max possible RGB Euclidean distance)
-const BG_MAX_RESIDUAL_STDDEV = 28       // relaxed from 14 → 28: plain-grey/concrete backdrops have
-                                        // subtle texture that legitimately exceeds 14 even though they
-                                        // ARE plain studio backdrops. 28 still rejects heavily patterned
-                                        // fabrics/wallpapers while accepting smooth gradients + mild grain.
+const BG_MAX_RESIDUAL_STDDEV = 50       // Relaxed from 28 → 50: studio backdrops vary from smooth
+                                        // gradients to rough concrete/stucco. 28 rejects many
+                                        // legitimate plain backdrops. 50 still rejects heavily
+                                        // patterned fabrics while accepting real studio textures.
 const MIN_FOREGROUND_FRACTION = 0.005   // below this, treat as "nothing confidently detected"
 const MAX_FOREGROUND_FRACTION = 0.98    // above this, backdrop model was probably wrong
 
@@ -247,10 +247,21 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       rowVariance[y] = sumDiff / (analysisW - 1)
     }
 
-    // Threshold: rows with variance > 1.8× the per-image median are "subject rows"
-    const sorted = Float32Array.from(rowVariance).sort()
-    const median = sorted[Math.floor(sorted.length / 2)]
-    const varThreshold = median * 1.8
+    // Threshold: use the TOP and BOTTOM border rows (5% of frame height) as
+    // the backdrop baseline rather than the per-image median. Using the median
+    // fails when the model fills >50% of the frame — more than half the rows
+    // come from the high-variance subject, so the median is a subject-row value,
+    // not a backdrop value. The threshold ends up too high → nothing detected →
+    // returns fullImageRect (degenerate bounds) and the head-space bug fires.
+    // Border rows are almost always pure backdrop in catalog photography, so
+    // they give a reliable baseline regardless of how tightly the model is framed.
+    const borderSize = Math.max(2, Math.floor(analysisH * 0.05))
+    const borderRowValues: number[] = [
+      ...Array.from(rowVariance.slice(0, borderSize)),
+      ...Array.from(rowVariance.slice(Math.max(0, analysisH - borderSize))),
+    ]
+    const backdropBaseline = borderRowValues.reduce((a, b) => a + b, 0) / Math.max(1, borderRowValues.length)
+    const varThreshold = Math.max(backdropBaseline * 2.0, 3.0)
 
     let varMinY = -1, varMaxY = -1
     for (let y = 0; y < analysisH; y++) {

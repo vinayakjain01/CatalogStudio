@@ -652,12 +652,14 @@ export async function compositeImage(
       if (positioningSettings?.enabled) {
         try {
           const classified = await classifyProductZoomImage(product.imageUrl, positioningSettings, product.shotTypeOverride)
-          // Apply head space in two cases:
-          // 1. Normal: shot type is in applyToShotTypes (full_body / half_body)
-          // 2. Degenerate bounds: complex backdrop prevented subject detection —
-          //    still apply so the image top lands at headSpacePx consistently.
-          //    The compositor matches what the live preview shows in this case.
-          if (classified.applies || positioningSettings.enabled) {
+          // Apply head space only when subject detection succeeded AND the shot
+          // type is in the allow-list. classified.applies is already false for
+          // degenerate bounds (isDegenerateBounds check in classifyProductZoomImage)
+          // — do NOT override it with positioningSettings.enabled here, which
+          // was the bug: positioningSettings.enabled is always true, so the old
+          // "|| positioningSettings.enabled" forced placement even when detection
+          // failed, putting the image TOP (not the model's head) at headSpacePx.
+          if (classified.applies) {
             const scaleX = W / rawW
             const scaleY = H / rawH
             const scaledSettings = {
