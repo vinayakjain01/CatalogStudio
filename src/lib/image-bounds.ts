@@ -137,7 +137,10 @@ const BG_MIN_CORNER_PX = 3
 const BG_BORDER_FRACTION = 0.015     // ring thickness (for the residual/confidence check), fraction of shorter side
 const BG_MIN_BORDER_PX = 2
 const BG_COLOR_DISTANCE_THRESHOLD = 36  // 0–441 (max possible RGB Euclidean distance)
-const BG_MAX_RESIDUAL_STDDEV = 14       // border pixels must fit the modeled gradient this closely to trust it
+const BG_MAX_RESIDUAL_STDDEV = 28       // relaxed from 14 → 28: plain-grey/concrete backdrops have
+                                        // subtle texture that legitimately exceeds 14 even though they
+                                        // ARE plain studio backdrops. 28 still rejects heavily patterned
+                                        // fabrics/wallpapers while accepting smooth gradients + mild grain.
 const MIN_FOREGROUND_FRACTION = 0.005   // below this, treat as "nothing confidently detected"
 const MAX_FOREGROUND_FRACTION = 0.98    // above this, backdrop model was probably wrong
 
@@ -223,9 +226,59 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
 
   const residualStddev = Math.sqrt(residualSumSq / residualN)
   if (residualStddev > BG_MAX_RESIDUAL_STDDEV) {
-    // Textured/patterned backdrop the gradient model can't explain, or the
-    // subject bleeds into the border/corners — can't trust a color split.
-    return fullImageRect()
+    // The bilinear-gradient model couldn't explain the border ring — backdrop is
+    // either textured/patterned OR the subject is large enough to bleed into the
+    // corners/border. Try a row-variance fallback before giving up entirely.
+    //
+    // Row-variance strategy: for each row, compute the mean color difference
+    // between adjacent pixels (horizontal variation). Background rows are smooth
+    // (low variation); rows that contain the subject have edges/texture (high
+    // variation). This is reliable for fashion-on-seamless-backdrop images where
+    // the backdrop — even a textured one — is horizontally smoother than clothing.
+    const rowVariance = new Float32Array(analysisH)
+    for (let y = 0; y < analysisH; y++) {
+      let sumDiff = 0
+      for (let x = 1; x < analysisW; x++) {
+        const i = (y * analysisW + x) * 4
+        const j = i - 4
+        const dr = data[i] - data[j], dg = data[i+1] - data[j+1], db = data[i+2] - data[j+2]
+        sumDiff += Math.sqrt(dr*dr + dg*dg + db*db)
+      }
+      rowVariance[y] = sumDiff / (analysisW - 1)
+    }
+
+    // Threshold: rows with variance > 1.8× the per-image median are "subject rows"
+    const sorted = Float32Array.from(rowVariance).sort()
+    const median = sorted[Math.floor(sorted.length / 2)]
+    const varThreshold = median * 1.8
+
+    let varMinY = -1, varMaxY = -1
+    for (let y = 0; y < analysisH; y++) {
+      if (rowVariance[y] > varThreshold) {
+        if (varMinY === -1) varMinY = y
+        varMaxY = y
+      }
+    }
+
+    if (varMinY === -1 || varMaxY - varMinY < analysisH * 0.05) {
+      // Row-variance also couldn't find anything meaningful — genuine fallback
+      return fullImageRect()
+    }
+
+    // Row-variance found the subject rows — scale back to image coordinates
+    // and use a 5% horizontal inset as a rough left/right estimate (most
+    // catalog photography centers the subject horizontally)
+    const topResult    = Math.max(0,        Math.round(varMinY / scale))
+    const bottomResult = Math.min(imgH - 1, Math.round(varMaxY / scale))
+    const leftResult   = Math.max(0,        Math.round(analysisW * 0.05 / scale))
+    const rightResult  = Math.min(imgW - 1, Math.round(analysisW * 0.95 / scale))
+
+    return {
+      left: leftResult, top: topResult,
+      right: rightResult, bottom: bottomResult,
+      imageWidth: imgW, imageHeight: imgH,
+      hasTransparency: true,
+    }
   }
 
   // ── Step 3: bounding box of pixels that differ from their local modeled ───
