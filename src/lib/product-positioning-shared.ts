@@ -320,6 +320,37 @@ export function calculatePlacement(
   }
 }
 
+/**
+ * Same contract as calculatePlacement(), but for the "we couldn't confidently
+ * detect the subject" fallback (degenerate bounds — see isDegenerateBounds).
+ *
+ * BUG FIXED: callers used to treat a degenerate/low-confidence detection as
+ * "bypass Head Space entirely" and render a plain contain-fit, which is
+ * exactly the white-padding / inconsistent-framing bug this feature exists
+ * to eliminate — one product in the catalog would end up letterboxed while
+ * its neighbors (whose subject WAS detected) filled the frame edge-to-edge.
+ *
+ * Instead: still zoom the photo to satisfy the Head Space / Bottom Space
+ * guides, just using the FULL IMAGE as the content box (the best available
+ * proxy for "head at top, feet at bottom" when we have no real silhouette).
+ * scaleMode is force-overridden to 'smart_fit' regardless of the template's
+ * configured scale mode — 'fit' mode's "never upscale, may leave a gap" is
+ * exactly the padding we're trying to avoid here, so it isn't honoured for
+ * this fallback path. This guarantees every product in a bulk run — detected
+ * or not — fills the canvas identically, with only the (rare) precision of
+ * exactly where "head" sits varying, never a blank border.
+ */
+export function calculatePlacementNoLetterbox(
+  bounds: ProductBounds,
+  canvasW: number,
+  canvasH: number,
+  settings: Pick<ProductPositioningSettings,
+    'headSpacePx' | 'leftMarginPx' | 'rightMarginPx' | 'bottomMarginPx' |
+    'autoCenterHorizontally' | 'scaleMode' | 'maxUpscale'>
+): PlacementResult {
+  return calculatePlacement(bounds, canvasW, canvasH, { ...settings, scaleMode: 'smart_fit' })
+}
+
 // ─── NEW: Smart Fit 2.0 — placement from stored metadata ─────────────────────
 //
 // calculateSmartFitPlacement() is the Product Layer Engine version of

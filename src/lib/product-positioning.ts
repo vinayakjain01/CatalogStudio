@@ -26,6 +26,7 @@ import { SHOT_TYPES } from '@/types/template'
 import {
   placementToProductLayerSettings,
   calculatePlacement,
+  calculatePlacementNoLetterbox,
   computeClassificationSignals,
   classifyShotType,
   CLASSIFICATION_THRESHOLDS,
@@ -38,7 +39,7 @@ import {
 import { detectProductBounds, detectZoomSubjectBounds } from '@/lib/image-bounds'
 
 export {
-  placementToProductLayerSettings, calculatePlacement,
+  placementToProductLayerSettings, calculatePlacement, calculatePlacementNoLetterbox,
   computeClassificationSignals, classifyShotType, CLASSIFICATION_THRESHOLDS,
   type ClassificationSignals,
   type HeadSpacePlacement, type PlacementResult,
@@ -69,6 +70,15 @@ export interface ClassifyResult {
   bounds: ProductBounds
   applies: boolean
   signals: ClassificationSignals
+  /**
+   * True when bounds detection had nothing confident to report (bounds ==
+   * the full image rect). Callers should still position the product — just
+   * using calculatePlacementNoLetterbox() (full-image proxy, forced zoom)
+   * instead of calculatePlacement() — rather than skipping positioning
+   * altogether, which is what produced the "one product in the catalog is
+   * letterboxed, its neighbors aren't" bug.
+   */
+  isDegenerate: boolean
 }
 
 export async function classifyProductImage(
@@ -80,7 +90,10 @@ export async function classifyProductImage(
   const signals = computeClassificationSignals(bounds)
   const override = isValidShotType(manualShotTypeOverride) ? manualShotTypeOverride : null
   const shotType = override ?? classifyShotType(signals)
-  return { shotType, bounds, applies: settings.applyToShotTypes.includes(shotType), signals }
+  return {
+    shotType, bounds, applies: settings.applyToShotTypes.includes(shotType), signals,
+    isDegenerate: isDegenerateBounds(bounds),
+  }
 }
 
 // ─── Product Zoom Mode's classification entry point ──────────────────────────
@@ -107,8 +120,19 @@ export async function classifyProductZoomImage(
   const signals = computeClassificationSignals(bounds)
   const override = isValidShotType(manualShotTypeOverride) ? manualShotTypeOverride : null
   const shotType = override ?? classifyShotType(signals)
-  const applies = !isDegenerateBounds(bounds) && settings.applyToShotTypes.includes(shotType)
-  return { shotType, bounds, applies, signals }
+  const degenerate = isDegenerateBounds(bounds)
+  // FIX: degenerate (low-confidence) detection used to force applies=false,
+  // which silently skipped Head Space for that one photo and fell back to a
+  // plain contain-fit — producing visible white letterboxing on exactly the
+  // products whose backdrop was slightly harder to model, while every other
+  // product in the same catalog filled the frame. The allow-list check is
+  // still honoured (a flat-lay you've excluded stays excluded either way);
+  // what no longer happens is disabling positioning JUST because detection
+  // wasn't confident. The placement call site uses calculatePlacementNoLetterbox()
+  // when isDegenerate is true, so the fallback still zooms to fill the guides
+  // instead of leaving a gap.
+  const applies = settings.applyToShotTypes.includes(shotType)
+  return { shotType, bounds, applies, signals, isDegenerate: degenerate }
 }
 
 // ─── Orchestration — ai_product mode's single entry point ────────────────────

@@ -16,6 +16,7 @@ import { ProductPositioningGuide } from './product-positioning-guide'
 import {
   placementToProductLayerSettings,
   calculatePlacement,
+  calculatePlacementNoLetterbox,
   calculateSmartFitPlacement,
   computeClassificationSignals,
   classifyShotType,
@@ -235,23 +236,23 @@ function computeLocalPositioningFromBounds(
   boxH: number
 ): LocalPositioning | null {
   if (!bounds || !settings?.enabled || !boxW || !boxH) return null
-  // FIX: Bypass positioning for degenerate bounds (failed subject detection).
-  // detectZoomSubjectBounds() returns fullImageRect() — bounds.top = 0 — when
-  // it can't confidently locate the subject (complex/textured backdrop, or the
-  // model fills the entire frame). Applying head space against those bounds
-  // shifts the IMAGE TOP to headSpacePx instead of the model's actual HEAD,
-  // producing different head positions for each product in bulk generation.
-  // Fall back to plain contain-fit (no head space repositioning) instead.
-  if (isDegenerateBounds(bounds)) {
-    return { shotType: null, apply: false, placement: null, wouldCrop: false, aspectRatio: null, coverageRatio: null }
-  }
   const signals = computeClassificationSignals(bounds)
   const shotType = classifyShotType(signals)
   const base = { shotType, aspectRatio: signals.aspectRatio, coverageRatio: signals.coverageRatio }
   if (!settings.applyToShotTypes.includes(shotType)) {
     return { ...base, apply: false, placement: null, wouldCrop: false }
   }
-  const { placement, wouldCrop } = calculatePlacement(bounds, boxW, boxH, settings)
+  // FIX: bounds detection wasn't confident enough to trust the exact head/feet
+  // pixels (backdrop wasn't plain/uniform enough) — detectZoomSubjectBounds()
+  // returns fullImageRect() (bounds.top = 0) in that case. That used to mean
+  // "skip Head Space for this one photo," which rendered a plain contain-fit —
+  // visible as one product in the catalog being letterboxed while the rest of
+  // the batch (whose backdrop WAS detected confidently) filled the canvas.
+  // Now it still zooms to satisfy both guides using the full image as the
+  // content box (calculatePlacementNoLetterbox), matching the generation
+  // pipeline's fallback exactly, so preview and output stay in sync.
+  const placementFn = isDegenerateBounds(bounds) ? calculatePlacementNoLetterbox : calculatePlacement
+  const { placement, wouldCrop } = placementFn(bounds, boxW, boxH, settings)
   if (wouldCrop) return { ...base, apply: false, placement: null, wouldCrop: true }
   return { ...base, apply: true, placement, wouldCrop: false }
 }
@@ -334,10 +335,6 @@ function ProductZoomImageLayer({
   const { useProductBounds } = require('./use-product-bounds')
   const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId), 'zoom')
   const result = computeLocalPositioningFromBounds(bounds, positioningSettings, Math.round(canvasW), Math.round(canvasH))
-  // Low-confidence detection (backdrop wasn't plain/uniform enough to trust)
-  // — bypass Head Space entirely rather than position against bounds that are
-  // really just "the whole image," which would reproduce the padding bug.
-  const degenerate = Boolean(bounds && isDegenerateBounds(bounds))
 
   if (!imageUrl) {
     return (
@@ -348,9 +345,11 @@ function ProductZoomImageLayer({
     )
   }
 
-  // When positioning is not configured, doesn't apply to this shot type,
-  // or would crop — fall back to plain contain-fit. Only truly skip when
-  // there's no valid placement at all.
+  // Only reached when positioning is genuinely off, or this shot type is
+  // excluded from the allow-list (e.g. flat lays left unchecked on purpose).
+  // Low-confidence detection no longer lands here — computeLocalPositioningFromBounds
+  // now still returns a (full-image-proxy) placement for that case, so it's
+  // handled by the branch below instead of this plain contain-fit.
   if (!result?.apply || !result.placement) {
     return (
       <img src={imageUrl} alt="" draggable={false} style={{
@@ -359,10 +358,6 @@ function ProductZoomImageLayer({
       }} />
     )
   }
-
-  // computeLocalPositioningFromBounds returns apply:false for degenerate bounds,
-  // so when detection failed we fall through to the contain-fit path above.
-  // Only proceed here when we have a real detected subject box.
 
   const { imgX, imgY, renderedW, renderedH } = result.placement
   const pctX = (v: number) => `${(v / canvasW) * 100}%`
