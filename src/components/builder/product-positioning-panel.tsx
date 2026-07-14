@@ -155,14 +155,16 @@ export function ProductPositioningPanel() {
                 : 'Plain contain scaling — moves the product without zooming.'}
             </p>
             <SliderField
-              label="Max upscale"
+              label={settings.scaleMode === 'fill' ? 'Max upscale (quality warning only)' : 'Max upscale'}
               value={settings.maxUpscale}
               min={1} max={3} step={0.1}
               onChange={v => setProductPositioningSettings({ maxUpscale: v })}
               unit="×"
             />
             <p className="text-xs text-muted-foreground">
-              Caps how far Smart Fit may zoom in beyond a plain fit, so tightly-cropped photos never blow up into blur.
+              {settings.scaleMode === 'fill'
+                ? "Fill always zooms enough to hit both guides, even past this value — it will never leave a gap because of it. This number only flags (in the console) when a photo is being zoomed further than you'd normally want, so you know which source photos to re-shoot tighter."
+                : 'Caps how far Smart Fit may zoom in beyond a plain fit, so tightly-cropped photos never blow up into blur.'}
             </p>
           </div>
 

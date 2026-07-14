@@ -305,8 +305,18 @@ export function calculatePlacement(
   // render source pixels at more than 150% of their native size) — not
   // relative to containScale, which would make it a no-op for smart_fit
   // (since containScale already IS the scale smart_fit wants to use).
-  const scale = Math.min(rawScale, maxUpscale)
-  const clampedByMaxUpscale = scale < rawScale - 1e-9
+  //
+  // 'fill' is exempt from this cap. Its entire contract is "the head guide
+  // and bottom guide are ALWAYS hit exactly" — capping the scale here would
+  // silently reintroduce the exact gap-below-the-feet bug Fill exists to
+  // eliminate (this was reported: Fill mode still left white space at the
+  // bottom on a photo that needed >1.5x zoom to close the gap, because the
+  // cap was quietly winning over the "always hit both guides" promise).
+  // clampedByMaxUpscale is still reported for 'fill' so callers/UI can warn
+  // "this crop is zoomed in further than your quality cap" — it just no
+  // longer prevents the guide from being hit.
+  const scale = scaleMode === 'fill' ? rawScale : Math.min(rawScale, maxUpscale)
+  const clampedByMaxUpscale = rawScale > maxUpscale + 1e-9
 
   const renderedW = bounds.imageWidth * scale
   const renderedH = bounds.imageHeight * scale

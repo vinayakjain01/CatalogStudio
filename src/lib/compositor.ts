@@ -677,7 +677,14 @@ export async function compositeImage(
             // as the content box (calculatePlacementNoLetterbox) instead of
             // a detected silhouette.
             const placementFn = classified.isDegenerate ? calculatePlacementNoLetterbox : calculatePlacement
-            const { placement: computed, wouldCrop } = placementFn(classified.bounds, W, H, scaledSettings)
+            const { placement: computed, wouldCrop, clampedByMaxUpscale } = placementFn(classified.bounds, W, H, scaledSettings)
+            if (positioningSettings.scaleMode === 'fill' && clampedByMaxUpscale) {
+              console.warn(
+                `[product-positioning] Fill mode zoomed to ${computed.scale.toFixed(2)}x, past the ` +
+                `configured max upscale of ${positioningSettings.maxUpscale}x, to hit both guides on ` +
+                `${product.imageUrl} — consider a tighter source crop for this photo.`
+              )
+            }
             if (!wouldCrop) zoomPlacement = computed
           }
         } catch (err: any) {
