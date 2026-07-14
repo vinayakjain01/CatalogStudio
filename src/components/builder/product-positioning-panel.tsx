@@ -30,7 +30,7 @@ export function ProductPositioningPanel() {
   const settings = canvasData.productPositioningSettings ?? DEFAULT_PRODUCT_POSITIONING_SETTINGS
   const isAiMode = canvasData.templateMode === 'ai_product'
   const isZoomMode = canvasData.templateMode === 'product_zoom'
-  const maxHeadSpace = Math.round((canvasData.height || 1080) * 0.4)
+  const maxHeadSpace = Math.round((canvasData.height || 1080) * 0.7)
 
   function toggleShotType(type: ShotType) {
     const current = settings.applyToShotTypes
@@ -180,7 +180,7 @@ export function ProductPositioningPanel() {
               <SliderField
                 label="Bottom"
                 value={settings.bottomMarginPx}
-                min={0} max={200}
+                min={0} max={600}
                 onChange={v => setProductPositioningSettings({ bottomMarginPx: v })}
                 unit="px"
               />

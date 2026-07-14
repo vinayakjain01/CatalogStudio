@@ -9,7 +9,7 @@ import {
 import { resolveVariables } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
-import { getExtendedImage, needsExtend } from '@/lib/image-extend'
+import { getExtendedImage, getExtendedImagePositioned, needsExtend } from '@/lib/image-extend'
 import {
   resolveProductPositioning,
   classifyProductImage,
@@ -678,10 +678,48 @@ export async function compositeImage(
       try {
         const img = await loadImageSafe(product.imageUrl)
         if (zoomPlacement) {
-          ctx.drawImage(
-            img, 0, 0, img.width, img.height,
-            zoomPlacement.imgX, zoomPlacement.imgY, zoomPlacement.renderedW, zoomPlacement.renderedH
-          )
+          const { imgX, imgY, renderedW, renderedH } = zoomPlacement
+
+          // ── Check if the image covers the full canvas ───────────────────────
+          // If imgY > 0: white/blank space above the image
+          // If imgX > 0: blank space to the left
+          // If image doesn't reach canvas bottom: blank space below
+          // If image doesn't reach canvas right: blank space to the right
+          //
+          // When there IS exposed canvas AND storeId+supabase are available,
+          // call AI extend so the background is seamlessly filled instead of
+          // showing the canvas background color (which looks like padding).
+          const hasExposedArea =
+            imgY > 1 || imgX > 1 ||
+            imgY + renderedH < H - 1 ||
+            imgX + renderedW < W - 1
+
+          if (hasExposedArea && options.storeId && options.supabase) {
+            try {
+              // Convert supersampled coordinates back to 1× for the extend call
+              // (getExtendedImagePositioned works in 1× space, compositor handles scaling)
+              const extResult = await getExtendedImagePositioned(
+                product.imageUrl,
+                rawW, rawH,         // 1× canvas dimensions
+                imgX / S, imgY / S, // 1× offsets
+                renderedW / S, renderedH / S, // 1× rendered size
+                options.storeId,
+                options.supabase
+              )
+              console.log(`[compositor] product_zoom AI extend ${extResult.fromCache ? 'cached' : 'fresh'} ` +
+                `offset=(${Math.round(imgX/S)},${Math.round(imgY/S)}) rendered=${Math.round(renderedW/S)}×${Math.round(renderedH/S)}`)
+              // Draw the AI-extended image (fills full canvas)
+              const extImg = await loadImageSafe(extResult.extendedUrl)
+              ctx.drawImage(extImg, 0, 0, W, H)
+            } catch (extErr: any) {
+              console.warn('[compositor] product_zoom AI extend failed, drawing plain image:', extErr.message)
+              // Fallback: draw plain image at calculated position
+              ctx.drawImage(img, 0, 0, img.width, img.height, imgX, imgY, renderedW, renderedH)
+            }
+          } else {
+            // Image covers the full canvas (or AI extend not available) — draw directly
+            ctx.drawImage(img, 0, 0, img.width, img.height, imgX, imgY, renderedW, renderedH)
+          }
         } else {
           // No positioning configured / doesn't apply / would crop — plain
           // contain-fit to the full canvas. Never crops, never stretches.

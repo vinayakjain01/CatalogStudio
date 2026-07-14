@@ -326,9 +326,9 @@ export interface ProductPositioningSettings {
 export const DEFAULT_PRODUCT_POSITIONING_SETTINGS: ProductPositioningSettings = {
   enabled: false,
   headSpacePx: 120,
-  leftMarginPx: 40,
-  rightMarginPx: 40,
-  bottomMarginPx: 40,
+  leftMarginPx: 0,    // 0 default in Zoom Mode — product fills edge-to-edge
+  rightMarginPx: 0,   // 0 default in Zoom Mode
+  bottomMarginPx: 0,  // 0 default in Zoom Mode
   autoCenterHorizontally: true,
   scaleMode: 'smart_fit',
   maxUpscale: 1.5,

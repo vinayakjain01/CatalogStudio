@@ -681,7 +681,7 @@ function AiModePositioning({
       canvasW,
       canvasH,
       positioningSettings ?? {
-        headSpacePx: 120, leftMarginPx: 40, rightMarginPx: 40, bottomMarginPx: 40,
+        headSpacePx: 120, leftMarginPx: 0, rightMarginPx: 0, bottomMarginPx: 0,
         autoCenterHorizontally: true, scaleMode: 'smart_fit', maxUpscale: 1.5,
       } as ProductPositioningSettings
     )

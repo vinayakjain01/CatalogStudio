@@ -249,3 +249,174 @@ export async function invalidateExtendCache(
     .delete()
     .eq('cache_key', cacheKey)
 }
+// ─── Positioned extend ────────────────────────────────────────────────────────
+//
+// Like getExtendedImage but places the SOURCE image at a specific position
+// within the target canvas instead of centering it. Used by Product Zoom mode
+// when head-space / bottom-space positioning moves the product to a non-center
+// location, leaving canvas areas above/below/left/right that need AI fill.
+//
+// Cloudinary's c_pad always centers the source. To offset it we:
+//  1. Pad the source image to a larger intermediate canvas that equals the
+//     target canvas but with the source at the correct offset, using solid
+//     background color for the intermediate padding.
+//  2. Apply b_gen_fill to the intermediate to replace the solid padding with
+//     AI-generated background that matches the image content.
+//
+// The cache key includes the offset so each position combo is cached separately.
+
+export function getPositionedExtendCacheKey(
+  sourceUrl: string,
+  targetWidth: number,
+  targetHeight: number,
+  offsetX: number,
+  offsetY: number,
+  renderedW: number,
+  renderedH: number
+): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${sourceUrl}|${targetWidth}|${targetHeight}|${offsetX}|${offsetY}|${renderedW}|${renderedH}|positioned_extend_v1`)
+    .digest('hex')
+}
+
+export interface PositionedExtendResult {
+  extendedUrl: string
+  cloudinaryId: string
+  fromCache: boolean
+}
+
+/**
+ * Extend a product image with AI-generated background so it fills the entire
+ * target canvas, with the product placed at the given pixel offset.
+ *
+ * imgX/imgY/renderedW/renderedH are the 1× canvas coordinates of the product.
+ * Values may be negative (product extends above/left of canvas).
+ */
+export async function getExtendedImagePositioned(
+  sourceUrl: string,
+  targetWidth: number,
+  targetHeight: number,
+  imgX: number,
+  imgY: number,
+  renderedW: number,
+  renderedH: number,
+  storeId: string,
+  supabase: SupabaseClient
+): Promise<PositionedExtendResult> {
+  const cacheKey = getPositionedExtendCacheKey(
+    sourceUrl, targetWidth, targetHeight,
+    Math.round(imgX), Math.round(imgY),
+    Math.round(renderedW), Math.round(renderedH)
+  )
+
+  // Check cache
+  const { data: cached } = await supabase
+    .from('image_extend_cache')
+    .select('extended_url, cloudinary_id')
+    .eq('cache_key', cacheKey)
+    .maybeSingle()
+
+  if (cached) {
+    console.log(`[image-extend/positioned] Cache HIT ${targetWidth}x${targetHeight} offset=(${Math.round(imgX)},${Math.round(imgY)})`)
+    return { extendedUrl: cached.extended_url, cloudinaryId: cached.cloudinary_id, fromCache: true }
+  }
+
+  console.log(`[image-extend/positioned] Cache MISS — ${targetWidth}x${targetHeight} offset=(${Math.round(imgX)},${Math.round(imgY)}) for ${sourceUrl.slice(0, 60)}`)
+
+  const publicId = await ensureOnCloudinary(sourceUrl)
+
+  // Cloudinary's c_pad centers the image. To place at offset (imgX, imgY)
+  // we use x/y gravity offset with gravity=north_west.
+  //
+  // The source image will be scaled to renderedW×renderedH, then placed
+  // at (imgX, imgY) within the target canvas, with b_gen_fill filling the rest.
+  //
+  // Cloudinary transformation:
+  //  c_scale,w_{rW},h_{rH}           — scale source to rendered size
+  //  c_pad,w_{targetW},h_{targetH},
+  //    gravity=north_west,x_{ix},y_{iy},
+  //    b_gen_fill                    — pad to canvas with AI fill, offset from top-left
+  //
+  // Negative offsets (image starts above/left of canvas): clamp to 0 since
+  // Cloudinary can't place images before the canvas origin. In that case the
+  // product extends to the edge naturally (canvas clips it).
+
+  const clampedX = Math.max(0, Math.round(imgX))
+  const clampedY = Math.max(0, Math.round(imgY))
+
+  const eagerPublicId = `extend-results/pos_${cacheKey.slice(0, 24)}`
+  let finalUrl: string
+  let finalCloudinaryId: string
+
+  try {
+    const uploadResult = await cloudinary.uploader.upload(sourceUrl, {
+      public_id: eagerPublicId,
+      overwrite: true,
+      resource_type: 'image',
+      eager: [
+        {
+          transformation: [
+            // Step 1: Scale the source image to rendered dimensions
+            { width: Math.round(renderedW), height: Math.round(renderedH), crop: 'scale' },
+            // Step 2: Pad out to the full target canvas, placing at offset from top-left
+            // gravity: 'north_west' + x/y places the image at (x, y) from top-left corner
+            {
+              width: targetWidth,
+              height: targetHeight,
+              crop: 'pad' as any,
+              background: 'gen_fill',
+              gravity: 'north_west',
+              x: clampedX,
+              y: clampedY,
+            },
+          ],
+          fetch_format: 'auto',
+          quality: 'auto:best',
+        },
+      ],
+      eager_async: false,
+    })
+
+    const eagerResult = uploadResult.eager?.[0]
+    if (eagerResult?.secure_url) {
+      finalUrl = eagerResult.secure_url
+      finalCloudinaryId = uploadResult.public_id
+    } else {
+      // Fallback to URL-based transform
+      finalUrl = cloudinary.url(publicId, {
+        transformation: [
+          { width: Math.round(renderedW), height: Math.round(renderedH), crop: 'scale' },
+          { width: targetWidth, height: targetHeight, crop: 'pad', background: 'gen_fill',
+            gravity: 'north_west', x: clampedX, y: clampedY } as any,
+        ],
+        fetch_format: 'png',
+        quality: 'auto:best',
+      })
+      finalCloudinaryId = publicId
+    }
+  } catch (err: any) {
+    console.error('[image-extend/positioned] Failed, falling back to centered extend:', err.message)
+    // Fallback: use plain centered extend
+    const fallback = await getExtendedImage(sourceUrl, targetWidth, targetHeight, storeId, supabase)
+    return { ...fallback, fromCache: false }
+  }
+
+  // Store in cache
+  await supabase
+    .from('image_extend_cache')
+    .upsert({
+      cache_key: cacheKey,
+      source_url: sourceUrl,
+      extended_url: finalUrl,
+      cloudinary_id: finalCloudinaryId,
+      width: targetWidth,
+      height: targetHeight,
+      fit_mode: 'ai_extend',
+      provider: 'cloudinary',
+      store_id: storeId,
+    }, { onConflict: 'cache_key' })
+
+  console.log(`[image-extend/positioned] Done: ${finalUrl.slice(0, 80)}`)
+  return { extendedUrl: finalUrl, cloudinaryId: finalCloudinaryId, fromCache: false }
+}
