@@ -1,15 +1,18 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
-import { Sidebar } from '@/components/dashboard/sidebar'
+import { getUser } from '@/lib/supabase/get-user'
 import { getActiveStore } from '@/lib/active-store'
+import { Sidebar } from '@/components/dashboard/sidebar'
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  // Both resolve with a single Supabase auth call thanks to React cache.
+  // getActiveStore() calls getUser() internally — the result is shared,
+  // so no duplicate network request is made.
+  const [user, { activeStoreId, stores }] = await Promise.all([
+    getUser(),
+    getActiveStore(),
+  ])
 
   if (!user) redirect('/login')
-
-  const { activeStoreId, stores } = await getActiveStore()
 
   return (
     <div className="flex h-screen bg-background">

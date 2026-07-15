@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getUser } from '@/lib/supabase/get-user'
+import { getActiveStore } from '@/lib/active-store'
 import { CanvasData } from '@/types/template'
 
-// GET all templates for the user
 export async function GET() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const [user, supabase] = await Promise.all([
+    getUser(),
+    createClient(),
+  ])
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { data, error } = await supabase
@@ -18,26 +21,25 @@ export async function GET() {
   return NextResponse.json({ templates: data })
 }
 
-// POST create a new template
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  // Parse body + authenticate + resolve active store — all in parallel
+  const [body, user, { activeStoreId }] = await Promise.all([
+    request.json(),
+    getUser(),
+    getActiveStore(),
+  ])
+
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const body = await request.json()
-  const { name, description, category_id, canvas_data } = body
-
-  if (!name || !canvas_data) {
-    return NextResponse.json({ error: 'name and canvas_data required' }, { status: 400 })
-  }
-
-  // Templates are store-scoped. Use the active store (validated against the user).
-  const { getActiveStore } = await import('@/lib/active-store')
-  const { activeStoreId } = await getActiveStore()
   if (!activeStoreId) {
     return NextResponse.json({ error: 'No active store. Connect a store first.' }, { status: 400 })
   }
 
+  const { name, description, category_id, canvas_data } = body
+  if (!name || !canvas_data) {
+    return NextResponse.json({ error: 'name and canvas_data required' }, { status: 400 })
+  }
+
+  const supabase = await createClient()
   const { data, error } = await supabase
     .from('templates')
     .insert({
