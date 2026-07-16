@@ -276,6 +276,44 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       return fullImageRect()
     }
 
+    // ── Feet-visibility guard ─────────────────────────────────────────────────
+    // Count low-variance rows BELOW the detected subject. For a proper full-body
+    // shot, the photographer leaves a floor / shadow region below the model's
+    // feet — those rows have variance ≤ varThreshold (similar to the backdrop).
+    // For a half-body or close-up shot, the garment fills to the very bottom of
+    // the frame; there are no low-variance floor rows at all.
+    //
+    // If fewer than 4% of the analysed height are visible floor rows, we conclude
+    // the feet are cut off and return degenerate bounds so the compositor skips
+    // head-space framing entirely. A plain contain-fit is always better than
+    // zooming 3-5× into a waist or generating an extreme fabric close-up.
+    let floorRows = 0
+    for (let y = varMaxY + 1; y < analysisH; y++) {
+      if (rowVariance[y] <= varThreshold) floorRows++
+    }
+    const minFloorRows = Math.max(3, Math.floor(analysisH * 0.04))
+
+    if (floorRows < minFloorRows) {
+      // Feet not visible — half-body or close-up shot, skip framing
+      return fullImageRect()
+    }
+
+    // ── Head-visibility guard ─────────────────────────────────────────────────
+    // Same check above the detected head. Count low-variance backdrop rows above
+    // varMinY. If the head is already at the very top edge (head cut off), also
+    // skip framing. Use a lighter threshold (2%) since photographers often frame
+    // models with less headroom than floor room.
+    let headBackdropRows = 0
+    for (let y = 0; y < varMinY; y++) {
+      if (rowVariance[y] <= varThreshold) headBackdropRows++
+    }
+    const minHeadBackdrop = Math.max(2, Math.floor(analysisH * 0.02))
+
+    if (headBackdropRows < minHeadBackdrop) {
+      // Head cut off or too close to the top edge — skip framing
+      return fullImageRect()
+    }
+
     // Row-variance found the subject rows — scale back to image coordinates
     // and use a 5% horizontal inset as a rough left/right estimate (most
     // catalog photography centers the subject horizontally)
