@@ -341,14 +341,19 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       left: leftResult, top: topResult,
       right: rightResult, bottom: bottomResult,
       imageWidth: imgW, imageHeight: imgH,
-      // FIX: zoom-mode images are opaque (no alpha channel). Setting hasTransparency: true
-      // caused classifyShotType to use the detailed transparency-based classifier
-      // (designed for AI cutout images) instead of the simple opaque aspect-ratio
-      // classifier. Result: portrait walking-pose photos got classified as 'half_body'
-      // instead of 'full_body', so selecting only "Full Body" never applied framing.
-      // With hasTransparency: false and opaqueFullBodyAspectRatio: 0.85, any portrait
-      // photo (height ≥ 85% of width) → 'full_body'. Only landscape photos → 'flat_lay'.
-      hasTransparency: false,
+      // USE AI MODE CLASSIFIER: hasTransparency: true makes classifyShotType run the
+      // same 6-category logic as AI Mode (full_body / half_body / close_up / detail /
+      // flat_lay / accessory) based on aspectRatio + coverageRatio.
+      //
+      // Safe to enable now because the three visibility guards above (feet guard,
+      // head guard, max-head-clearance) return degenerate bounds for any shot that
+      // shouldn't be framed — half-body, close-up, lower-body shots all fail a guard
+      // before reaching this return.
+      //
+      // Aspect-ratio note: zoom-mode bounds include ~10-20% backdrop, so the effective
+      // aspectRatio is ~0.8× a tight AI-cutout. A 2:3 portrait → aspect ~1.4 → full_body.
+      // A 3:4 portrait → aspect ~1.2 → half_body (user selects Half Body in the panel).
+      hasTransparency: true,
     }
   }
 

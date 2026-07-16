@@ -25,7 +25,8 @@ const SHOT_TYPE_LABELS: Record<ShotType, string> = {
 }
 
 // Only full-body shots are safe to auto-frame with head+feet detection.
-// Half-body shots have no feet in frame — fill mode would zoom 3× into the waist.
+// The visibility guards (feet + head clearance) now protect against framing photos
+// without proper head+feet. Half Body is safe to select for walking/angled poses.
 const SAFE_DEFAULT_SHOT_TYPES: ShotType[] = ['full_body']
 
 export function ProductPositioningPanel() {
@@ -176,8 +177,8 @@ export function ProductPositioningPanel() {
               Images whose shot type isn't selected are generated as-is — no zooming or cropping.
               <br />
               <span className="text-amber-600 dark:text-amber-400">
-                ⚠ Avoid selecting Half Body, Close-up, Detail — they have no feet in frame and
-                will produce extreme zoom-in results.
+                ⚠ Half Body now safe for walking/angled poses (visibility detection prevents
+                extreme zoom). Avoid Close-up and Detail — not relevant for fashion photos.
               </span>
             </p>
           </div>
