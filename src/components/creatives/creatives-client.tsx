@@ -259,21 +259,49 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
             )}
           </div>
 
-          {/* Progress bar — shown during generation */}
-          {generating && batchProgress && batchProgress.total > 0 && (
-            <div className="space-y-1.5">
-              <Progress value={progressPercent} className="h-2" />
-              <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                <span>✓ <b className="text-green-600">{batchProgress.completed}</b> done</span>
-                <span>⟳ <b className="text-blue-600">{batchProgress.processing}</b> processing</span>
-                <span>◷ <b className="text-amber-600">{batchProgress.pending}</b> pending</span>
-                {batchProgress.failed > 0 && (
-                  <span>✗ <b className="text-destructive">{batchProgress.failed}</b> failed</span>
-                )}
-                {batchProgress.cancelled > 0 && (
-                  <span>⊘ <b className="text-muted-foreground">{batchProgress.cancelled}</b> cancelled</span>
-                )}
+          {/* ── Progress bar — visible immediately when Generate is clicked ── */}
+          {generating && (
+            <div className="space-y-2">
+              {/* Bar always visible; fills as jobs complete */}
+              <div className="flex items-center gap-3">
+                <Progress
+                  value={batchProgress && batchProgress.total > 0 ? progressPercent : 0}
+                  className="h-3 flex-1"
+                />
+                <span className="text-sm font-mono tabular-nums shrink-0 text-muted-foreground">
+                  {batchProgress
+                    ? `${batchProgress.completed + batchProgress.failed}/${batchProgress.total}`
+                    : '0/…'}
+                </span>
               </div>
+
+              {/* Detailed counts — shown once the first poll returns */}
+              {batchProgress && batchProgress.total > 0 ? (
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                    <b className="text-green-600">{batchProgress.completed}</b> done
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                    <b className="text-blue-600">{batchProgress.processing}</b> processing
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400" />
+                    <b className="text-amber-600">{batchProgress.pending}</b> pending
+                  </span>
+                  {batchProgress.failed > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-2 h-2 rounded-full bg-red-500" />
+                      <b className="text-destructive">{batchProgress.failed}</b> failed
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground animate-pulse">
+                  Queuing jobs, worker starting…
+                </p>
+              )}
             </div>
           )}
 

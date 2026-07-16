@@ -7,6 +7,37 @@ import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
 import { randomUUID } from 'crypto'
 
 // ── Limits ────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/generate/enqueue?batchId=xxx
+ * Returns live job counts for the progress bar in the Creatives page.
+ * Called every 2 seconds while generation is running.
+ */
+export async function GET(request: NextRequest) {
+  const user = await getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const batchId = request.nextUrl.searchParams.get('batchId')
+  if (!batchId) return NextResponse.json({ error: 'batchId required' }, { status: 400 })
+
+  const admin = getAdminClient()
+  const { data: jobs, error } = await admin
+    .from('generation_jobs')
+    .select('id, status')
+    .eq('batch_id', batchId)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, total: 0 }
+  for (const job of jobs || []) {
+    counts.total++
+    const s = job.status as keyof typeof counts
+    if (s in counts) counts[s]++
+  }
+
+  return NextResponse.json(counts)
+}
+
 // Tune these based on your worker capacity and team size.
 const BULK_RATE_LIMIT_PER_STORE = 5      // max 5 bulk batches per store per hour
 const BULK_RATE_WINDOW_SECS     = 3600   // 1 hour
