@@ -299,18 +299,33 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
     }
 
     // ── Head-visibility guard ─────────────────────────────────────────────────
-    // Same check above the detected head. Count low-variance backdrop rows above
-    // varMinY. If the head is already at the very top edge (head cut off), also
-    // skip framing. Use a lighter threshold (2%) since photographers often frame
-    // models with less headroom than floor room.
+    // Count low-variance backdrop rows ABOVE the detected subject top.
+    // Two checks:
+    //
+    // 1. MINIMUM (2%): if the subject starts at or above the very top edge, the
+    //    head may be cut off → return degenerate.
+    //
+    // 2. MAXIMUM (20%): if there is TOO MUCH backdrop above the detected subject
+    //    top, the top of the subject is likely a WAIST or HIP (lower-body shot),
+    //    not an actual head. A real full-body catalog photo has the model's head
+    //    within the top 20% of the frame; a lower-body shot has the waist at
+    //    25–35% from the top with blank backdrop above.
+    //    With a 20% ceiling: full-body shots pass (head at 5–15%), lower-body
+    //    shots return degenerate (waist at 20–35%) → plain contain-fit.
     let headBackdropRows = 0
     for (let y = 0; y < varMinY; y++) {
       if (rowVariance[y] <= varThreshold) headBackdropRows++
     }
     const minHeadBackdrop = Math.max(2, Math.floor(analysisH * 0.02))
+    const maxHeadBackdrop = Math.floor(analysisH * 0.20)
 
     if (headBackdropRows < minHeadBackdrop) {
       // Head cut off or too close to the top edge — skip framing
+      return fullImageRect()
+    }
+    if (headBackdropRows > maxHeadBackdrop) {
+      // Too much backdrop above — subject top is a waist/hip, not a head
+      // (lower-body shot: legs only, no head in frame) — skip framing
       return fullImageRect()
     }
 
