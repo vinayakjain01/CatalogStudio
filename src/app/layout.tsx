@@ -4,7 +4,7 @@ import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
 
 export const metadata: Metadata = {
-  title: 'CatalogCreative',
+  title: 'Catalog Studio',
   description: 'Catalog creative automation for Shopify → Meta',
 }
 

@@ -47,7 +47,7 @@ export function Sidebar({
       <div className="p-5 border-b">
         <div className="flex items-center gap-2">
           <Wand2 className="h-5 w-5 text-primary" />
-          <span className="font-semibold text-base">CatalogCreative</span>
+          <span className="font-semibold text-base">Catalog Studio</span>
         </div>
       </div>
       <div className="border-b">
