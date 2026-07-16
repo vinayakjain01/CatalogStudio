@@ -331,7 +331,7 @@ function ProductZoomImageLayer({
 }) {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { useProductBounds } = require('./use-product-bounds')
-  const { bounds } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId), 'zoom')
+  const { bounds, loading: boundsLoading } = useProductBounds(imageUrl, storeId, Boolean(imageUrl && storeId), 'zoom')
   const result = computeLocalPositioningFromBounds(bounds, positioningSettings, Math.round(canvasW), Math.round(canvasH))
   // Low-confidence detection (backdrop wasn't plain/uniform enough to trust)
   // — bypass Head Space entirely rather than position against bounds that are
@@ -344,6 +344,17 @@ function ProductZoomImageLayer({
         justifyContent: 'center', fontSize: 11, color: '#9ca3af', pointerEvents: 'none' }}>
         Product Image
       </div>
+    )
+  }
+
+  // While bounds are loading, show the image in contain-fit immediately.
+  // Previously returned null here which left the canvas blank for ~1-2 seconds.
+  if (boundsLoading) {
+    return (
+      <img src={imageUrl} alt="" draggable={false} style={{
+        position: 'absolute', inset: 0, width: '100%', height: '100%',
+        objectFit: 'contain', pointerEvents: 'none', opacity: 0.7,
+      }} />
     )
   }
 

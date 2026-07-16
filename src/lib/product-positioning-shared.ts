@@ -119,8 +119,21 @@ export const CLASSIFICATION_THRESHOLDS = {
   minEdgeTolerancePx: 4,
   /** Below this coverage ratio → 'accessory'. */
   accessoryMaxCoverage: 0.12,
-  /** Opaque (no-transparency) fallback: aspect ratio threshold for full_body vs flat_lay. */
-  opaqueFullBodyAspectRatio: 1.15,
+  /** Opaque (no-transparency) fallback: aspect ratio threshold for full_body vs flat_lay.
+   *  aspectRatio = contentH / contentW.
+   *
+   *  LOWERED from 1.15 → 0.85 (fixed):
+   *  The old threshold of 1.15 classified any image where height < 1.15× width as
+   *  'flat_lay'. This captured angled-pose model photos (aspect ≈ 0.9–1.1) as flat_lay,
+   *  so selecting "Flat Lay" in the panel applied head space to non-flat-lay images.
+   *
+   *  New rule:  aspect ≥ 0.85 (height ≥ 85% of width) → 'full_body' (portrait photos)
+   *             aspect <  0.85 (wider than 85% of height) → 'flat_lay' (landscape garments)
+   *
+   *  This correctly classifies landscape garment flat-lays as 'flat_lay' while keeping
+   *  all portrait-ish model photos (standing, angled, walking) as 'full_body'.
+   */
+  opaqueFullBodyAspectRatio: 0.85,
   /** Edge-to-edge vertical span + narrow width + high coverage → 'detail'. */
   detailMinAspectRatio: 1.6,
   detailMinCoverage: 0.4,

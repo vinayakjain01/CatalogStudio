@@ -397,8 +397,10 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     productLayerBundle: productLayerBundle ?? undefined,
   })
 
-  // PNG master sanity check (0x89 0x50 'PNG')
-  if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
+  // JPEG output sanity check — FF D8 = JPEG Start Of Image marker.
+  // (Previously checked for PNG magic bytes 0x89 0x50, which caused every job
+  // to fail after the compositor was switched to JPEG output.)
+  if (buffer.length < 1000 || buffer[0] !== 0xFF || buffer[1] !== 0xD8) {
     throw new Error('Invalid image buffer from compositor')
   }
 
