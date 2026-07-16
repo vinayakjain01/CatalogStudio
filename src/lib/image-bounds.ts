@@ -281,17 +281,16 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       return fullImageRect()
     }
 
-    // ── Feet-visibility guard ─────────────────────────────────────────────────
-    // Count low-variance rows BELOW the detected subject. For a proper full-body
-    // shot, the photographer leaves a floor / shadow region below the model's
-    // feet — those rows have variance ≤ varThreshold (similar to the backdrop).
-    // For a half-body or close-up shot, the garment fills to the very bottom of
-    // the frame; there are no low-variance floor rows at all.
+    // ── Feet detection ────────────────────────────────────────────────────────
+    // PATH A — plain/textured studio backdrop:
+    //   Count low-variance rows below the subject. Plain floors and seamless
+    //   paper are low-variance → reliably detected.
     //
-    // If fewer than 4% of the analysed height are visible floor rows, we conclude
-    // the feet are cut off and return degenerate bounds so the compositor skips
-    // head-space framing entirely. A plain contain-fit is always better than
-    // zooming 3-5× into a waist or generating an extreme fabric close-up.
+    // PATH B — complex backdrop (carpet, mosaic tile, outdoor path, grass):
+    //   The floor has similar/higher variance than the backdrop → PATH A finds
+    //   zero floor rows. Fall back to SUBJECT HEIGHT SPAN: full-body shots span
+    //   ≥ 65% of the image from head to hem. The head guard below handles
+    //   close-up/half-body shots that slip past this check.
     let floorRows = 0
     for (let y = varMaxY + 1; y < analysisH; y++) {
       if (rowVariance[y] <= varThreshold) floorRows++
@@ -299,8 +298,15 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
     const minFloorRows = Math.max(3, Math.floor(analysisH * 0.04))
 
     if (floorRows < minFloorRows) {
-      // Feet not visible — half-body or close-up shot, skip framing
-      return fullImageRect()
+      // PATH B: carpet, mosaic, outdoor ground, etc.
+      const subjectSpan = (varMaxY - varMinY) / analysisH
+      if (subjectSpan < 0.65) {
+        // Subject < 65% of image height → too short for full-body.
+        return fullImageRect()
+      }
+      // Full-body shot on complex floor. Cap feet at 92% so the high-variance
+      // floor doesn't become the framing target (avoids over-zoom).
+      varMaxY = Math.min(varMaxY, Math.floor(analysisH * 0.92))
     }
 
     // ── Head-visibility guard ─────────────────────────────────────────────────
