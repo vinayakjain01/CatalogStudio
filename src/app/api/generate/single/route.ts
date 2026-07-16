@@ -5,6 +5,11 @@ import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 import { getProductLayerBundle } from '@/lib/product-layer-engine'
+import { getUser } from '@/lib/supabase/get-user'
+import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
+
+const SINGLE_GEN_LIMIT = 60
+const SINGLE_GEN_WINDOW_SECS = 3600
 
 export const runtime = 'nodejs'
 // Was 60s; bumped since the optional Background Reconstruction step
@@ -32,16 +37,25 @@ function getAdminClient() {
 //
 //   POST /api/generate/single  { productId, storeId }
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const [user, body] = await Promise.all([getUser(), request.json()])
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { productId, storeId } = await request.json()
+  const { productId, storeId } = body
   if (!productId || !storeId) {
     return NextResponse.json({ error: 'productId and storeId required' }, { status: 400 })
   }
 
+  // Rate limit: max 60 single generations per user per hour
+  const rl = await rateLimit(`single:${user.id}`, SINGLE_GEN_LIMIT, SINGLE_GEN_WINDOW_SECS)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `Rate limit reached. Try again in ${rl.resetIn}s.` },
+      { status: 429, headers: rateLimitHeaders(rl) }
+    )
+  }
+
   // Verify store ownership
+  const supabase = await createClient()
   const { data: store } = await supabase
     .from('stores').select('id').eq('id', storeId).eq('user_id', user.id).single()
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })

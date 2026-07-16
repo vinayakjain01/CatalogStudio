@@ -47,19 +47,35 @@ export async function enqueueCatalogJob(
   return queue.add(jobName, data, options)
 }
 
-export async function enqueueGenerationJobs(jobIds: string[]) {
+/**
+ * Push job IDs to BullMQ.
+ *
+ * @param jobIds       DB job UUIDs to enqueue
+ * @param basePriority BullMQ priority for the first job in this batch.
+ *                     Lower number = higher priority (processed sooner).
+ *                     Pass the store's current pending count so that stores
+ *                     with fewer queued jobs are served first (fair round-robin).
+ *                     Defaults to 100 (low priority) when not set.
+ */
+export async function enqueueGenerationJobs(
+  jobIds: string[],
+  basePriority = 100,
+) {
   const queue = getCatalogQueue('generation')
   if (!queue || jobIds.length === 0) {
     console.warn(`[enqueueGenerationJobs] Skipped — queue=${queue ? 'ok' : 'null'} jobIds=${jobIds.length}`)
     return 0
   }
 
-  console.log(`[enqueueGenerationJobs] Calling addBulk with ${jobIds.length} jobs on queue "${QUEUE_NAMES.generation}"`)
-  await queue.addBulk(jobIds.map(jobId => ({
+  console.log(`[enqueueGenerationJobs] Calling addBulk with ${jobIds.length} jobs priority=${basePriority} on queue "${QUEUE_NAMES.generation}"`)
+  await queue.addBulk(jobIds.map((jobId, i) => ({
     name: 'generate-creative',
     data: { jobId },
     opts: {
-      jobId: `generation:${jobId}`,
+      jobId:    `generation:${jobId}`,
+      // Each successive job in the batch gets a slightly lower priority so that
+      // other stores' jobs interleave between large batches from one store.
+      priority: basePriority + i,
     },
   })))
   console.log(`[enqueueGenerationJobs] addBulk completed — ${jobIds.length} jobs queued`)

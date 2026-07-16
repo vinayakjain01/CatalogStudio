@@ -1,22 +1,67 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getUser } from '@/lib/supabase/get-user'
 import { getAdminClient, enqueueGeneration } from '@/lib/generation-queue'
 import { isRedisEnabled } from '@/lib/redis'
+import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
 import { randomUUID } from 'crypto'
 
+// ── Limits ────────────────────────────────────────────────────────────────────
+// Tune these based on your worker capacity and team size.
+const BULK_RATE_LIMIT_PER_STORE = 5      // max 5 bulk batches per store per hour
+const BULK_RATE_WINDOW_SECS     = 3600   // 1 hour
+const MAX_PENDING_JOBS_PER_STORE = 200   // max queued+active jobs per store at any time
+
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const [user, body] = await Promise.all([
+    getUser(),
+    request.json(),
+  ])
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { storeId, filter, creativeType } = await request.json()
+  const { storeId, filter, creativeType } = body
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
 
+  // ── 1. Verify store ownership ─────────────────────────────────────────────
+  const supabase = await createClient()
   const { data: store } = await supabase
     .from('stores').select('id').eq('id', storeId).eq('user_id', user.id).single()
   if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 })
 
+  // ── 2. Rate limit: max N bulk submissions per store per hour ──────────────
+  // Prevents one team from re-submitting large batches repeatedly and
+  // monopolising the generation queue.
+  const rl = await rateLimit(`bulk:${storeId}`, BULK_RATE_LIMIT_PER_STORE, BULK_RATE_WINDOW_SECS)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `Too many bulk generation requests for this store. Try again in ${rl.resetIn}s.` },
+      { status: 429, headers: rateLimitHeaders(rl) }
+    )
+  }
+
   const admin = getAdminClient()
+
+  // ── 3. Queue depth cap: reject if store already has too many pending jobs ─
+  // This keeps the queue fair across teams: a single store cannot back up the
+  // worker for hours for everyone else.
+  const { count: pendingCount } = await admin
+    .from('generation_jobs')
+    .select('id', { count: 'exact', head: true })
+    .eq('store_id', storeId)
+    .in('status', ['pending', 'processing'])
+
+  if ((pendingCount ?? 0) >= MAX_PENDING_JOBS_PER_STORE) {
+    return NextResponse.json(
+      {
+        error: `Queue limit reached. This store already has ${pendingCount} jobs pending. ` +
+               `Wait for them to finish before adding more.`,
+        pendingCount,
+      },
+      { status: 429 }
+    )
+  }
+
+  // ── 4. Collect product IDs ─────────────────────────────────────────────────
   const productIds: string[] = []
   const PAGE = 1000
   let from = 0
@@ -29,8 +74,8 @@ export async function POST(request: NextRequest) {
       .eq('status', 'active')
       .range(from, from + PAGE - 1)
 
-    if (filter?.type === 'tag' && filter.value) q = q.contains('tags', [filter.value])
-    else if (filter?.type === 'vendor' && filter.value) q = q.eq('vendor', filter.value)
+    if (filter?.type === 'tag'          && filter.value) q = q.contains('tags', [filter.value])
+    else if (filter?.type === 'vendor'       && filter.value) q = q.eq('vendor', filter.value)
     else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
 
     const { data: products, error } = await q
@@ -45,37 +90,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: 'No products matched', enqueued: 0 })
   }
 
-  const batchId = randomUUID()
+  // ── 5. Fair priority: stores with fewer pending jobs get higher priority ──
+  // BullMQ processes lower priority numbers first. A store with 0 pending jobs
+  // gets priority=1, a store with 100 pending jobs gets priority=101.
+  // This ensures that when multiple teams submit simultaneously, each team
+  // gets a turn rather than the first team blocking everyone else.
+  const basePriority = (pendingCount ?? 0) + 1
+
+  // ── 6. Enqueue ─────────────────────────────────────────────────────────────
+  const batchId  = randomUUID()
   const enqueued = await enqueueGeneration(
-    { storeId, productIds, creativeType: creativeType || 'default', batchId },
+    { storeId, productIds, creativeType: creativeType || 'default', batchId, basePriority },
     admin
   )
 
-  // Tell the client whether the DO worker will handle this (Redis path)
-  // or whether the client needs to drive drain calls (no-Redis fallback)
   const redisEnabled = isRedisEnabled()
-  console.log(`[enqueue] batchId=${batchId} enqueued=${enqueued} redisEnabled=${redisEnabled}`)
+  console.log(
+    `[enqueue] batchId=${batchId} enqueued=${enqueued} priority=${basePriority} ` +
+    `redisEnabled=${redisEnabled} storeId=${storeId}`
+  )
 
-  return NextResponse.json({ batchId, enqueued, redisEnabled })
-}
-
-// Progress polling
-export async function GET(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const batchId = request.nextUrl.searchParams.get('batchId')
-  if (!batchId) return NextResponse.json({ error: 'batchId required' }, { status: 400 })
-
-  const admin = getAdminClient()
-  const { data: jobs } = await admin
-    .from('generation_jobs')
-    .select('status')
-    .eq('batch_id', batchId)
-
-  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, total: jobs?.length || 0 }
-  for (const j of jobs || []) (counts as any)[j.status] = ((counts as any)[j.status] || 0) + 1
-
-  return NextResponse.json(counts)
+  return NextResponse.json(
+    { batchId, enqueued, redisEnabled, priority: basePriority },
+    { headers: rateLimitHeaders(rl) }
+  )
 }

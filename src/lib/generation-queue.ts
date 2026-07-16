@@ -37,6 +37,13 @@ export interface EnqueueArgs {
   productIds: string[]      // internal product UUIDs
   creativeType?: string     // default 'default'
   batchId?: string
+  /**
+   * BullMQ job priority for this batch. Lower = processed sooner.
+   * Set to the store's current pending-job count so stores with fewer
+   * queued jobs are served first (fair round-robin across teams).
+   * Defaults to 100 when not provided (low priority / FIFO).
+   */
+  basePriority?: number
 }
 
 /**
@@ -45,7 +52,7 @@ export interface EnqueueArgs {
  * by (product, template, creative_type), so duplicates collapse at write time.
  */
 export async function enqueueGeneration(
-  { storeId, productIds, creativeType = 'default', batchId }: EnqueueArgs,
+  { storeId, productIds, creativeType = 'default', batchId, basePriority = 100 }: EnqueueArgs,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<number> {
   if (productIds.length === 0) return 0
@@ -80,7 +87,7 @@ export async function enqueueGeneration(
     try {
       const pushed = await measureAsync(
         'queue.generation.redis_enqueue',
-        () => enqueueGenerationJobs(insertedIds),
+        () => enqueueGenerationJobs(insertedIds, basePriority),
         { rows: insertedIds.length, storeId }
       )
       console.log(`[enqueueGeneration] Redis addBulk OK — pushed=${pushed}`)
