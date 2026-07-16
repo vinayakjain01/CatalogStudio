@@ -10,6 +10,7 @@ import { Progress } from '@/components/ui/progress'
 import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { DownloadZipButton } from './download-zip-button'
+import { shopifyFetch } from '@/lib/shopify-token'
 
 interface Creative {
   id: string
@@ -96,7 +97,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     pollingActive.current = true
     lastCompletedAt.current = { count: 0, time: Date.now() }
 
-    const res = await fetch('/api/generate/enqueue', {
+    const res = await shopifyFetch('/api/generate/enqueue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

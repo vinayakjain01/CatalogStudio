@@ -15,13 +15,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <Toaster />
         {/*
-          next/script with strategy="afterInteractive" loads AFTER hydration
-          so it never blocks HTML parsing — unlike the old raw <script> tag.
+          strategy="beforeInteractive" injects the <script> tag into the initial
+          server-rendered HTML — visible to Shopify's automated verifier bot which
+          scans the page source before JS runs.
+
+          Previously "afterInteractive" meant the script only appeared after hydration,
+          so Shopify's bot could never confirm "Using the latest App Bridge script
+          loaded from Shopify's CDN" and the check stayed stuck.
         */}
         <Script
           src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
           data-api-key={process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID ?? process.env.SHOPIFY_CLIENT_ID ?? ''}
-          strategy="afterInteractive"
+          strategy="beforeInteractive"
         />
       </body>
     </html>
