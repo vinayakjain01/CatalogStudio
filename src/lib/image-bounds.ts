@@ -326,7 +326,14 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       left: leftResult, top: topResult,
       right: rightResult, bottom: bottomResult,
       imageWidth: imgW, imageHeight: imgH,
-      hasTransparency: true,
+      // FIX: zoom-mode images are opaque (no alpha channel). Setting hasTransparency: true
+      // caused classifyShotType to use the detailed transparency-based classifier
+      // (designed for AI cutout images) instead of the simple opaque aspect-ratio
+      // classifier. Result: portrait walking-pose photos got classified as 'half_body'
+      // instead of 'full_body', so selecting only "Full Body" never applied framing.
+      // With hasTransparency: false and opaqueFullBodyAspectRatio: 0.85, any portrait
+      // photo (height ≥ 85% of width) → 'full_body'. Only landscape photos → 'flat_lay'.
+      hasTransparency: false,
     }
   }
 

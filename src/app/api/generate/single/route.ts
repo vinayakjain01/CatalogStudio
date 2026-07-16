@@ -155,7 +155,11 @@ export async function POST(request: NextRequest) {
       productLayerBundle: productLayerBundle ?? undefined,
     })
 
-    if (buffer.length < 1000 || buffer[0] !== 0x89 || buffer[1] !== 0x50) {
+    // JPEG output sanity check — FF D8 = JPEG Start Of Image marker.
+    // (The compositor was switched from PNG to JPEG output for speed.
+    // The old PNG check 0x89 0x50 caused every single-generate to return
+    // "Image generation produced an invalid buffer" for valid JPEG output.)
+    if (buffer.length < 1000 || buffer[0] !== 0xFF || buffer[1] !== 0xD8) {
       return NextResponse.json({ error: 'Image generation produced an invalid buffer.' }, { status: 500 })
     }
 
