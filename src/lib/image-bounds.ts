@@ -236,31 +236,36 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
     // variation). This is reliable for fashion-on-seamless-backdrop images where
     // the backdrop — even a textured one — is horizontally smoother than clothing.
     const rowVariance = new Float32Array(analysisH)
+
+    // IMPROVEMENT 1: Compute row variance on the CENTER 70% of columns only.
+    // Previously used the full image width, which included outdoor trees,
+    // garden paths, walls, and carpet edges at the sides — all of which
+    // created high-variance "subject" rows in images that don't have a
+    // plain studio backdrop. By focusing on the center 70%, we capture the
+    // model (who is almost always center-framed) and ignore side backgrounds.
+    const colStart = Math.floor(analysisW * 0.15)
+    const colEnd   = Math.ceil(analysisW  * 0.85)
+
     for (let y = 0; y < analysisH; y++) {
       let sumDiff = 0
-      for (let x = 1; x < analysisW; x++) {
+      for (let x = colStart + 1; x < colEnd; x++) {
         const i = (y * analysisW + x) * 4
         const j = i - 4
         const dr = data[i] - data[j], dg = data[i+1] - data[j+1], db = data[i+2] - data[j+2]
         sumDiff += Math.sqrt(dr*dr + dg*dg + db*db)
       }
-      rowVariance[y] = sumDiff / (analysisW - 1)
+      rowVariance[y] = sumDiff / (colEnd - colStart - 1)
     }
 
-    // Threshold: use the TOP and BOTTOM border rows (5% of frame height) as
-    // the backdrop baseline rather than the per-image median. Using the median
-    // fails when the model fills >50% of the frame — more than half the rows
-    // come from the high-variance subject, so the median is a subject-row value,
-    // not a backdrop value. The threshold ends up too high → nothing detected →
-    // returns fullImageRect (degenerate bounds) and the head-space bug fires.
-    // Border rows are almost always pure backdrop in catalog photography, so
-    // they give a reliable baseline regardless of how tightly the model is framed.
-    const borderSize = Math.max(2, Math.floor(analysisH * 0.05))
-    const borderRowValues: number[] = [
-      ...Array.from(rowVariance.slice(0, borderSize)),
-      ...Array.from(rowVariance.slice(Math.max(0, analysisH - borderSize))),
-    ]
-    const backdropBaseline = borderRowValues.reduce((a, b) => a + b, 0) / Math.max(1, borderRowValues.length)
+    // IMPROVEMENT 2: Use ONLY the TOP border rows as the backdrop baseline.
+    // Previously averaged top + bottom border rows. This caused carpet floors,
+    // outdoor paths, rugs, and grass to inflate the baseline → threshold too
+    // high → subject not detected → degenerate bounds.
+    // The backdrop ABOVE the model's head is almost always plain (sky, smooth
+    // wall, plain studio backdrop) and gives a reliable low baseline.
+    const borderSize = Math.max(3, Math.floor(analysisH * 0.06))
+    const topBorderValues: number[] = Array.from(rowVariance.slice(0, borderSize))
+    const backdropBaseline = topBorderValues.reduce((a, b) => a + b, 0) / Math.max(1, topBorderValues.length)
     const varThreshold = Math.max(backdropBaseline * 2.0, 3.0)
 
     let varMinY = -1, varMaxY = -1
