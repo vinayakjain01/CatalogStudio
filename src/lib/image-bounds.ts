@@ -340,13 +340,64 @@ export async function detectZoomSubjectBounds(imageUrl: string): Promise<Product
       return fullImageRect()
     }
 
-    // Row-variance found the subject rows — scale back to image coordinates
-    // and use a 5% horizontal inset as a rough left/right estimate (most
-    // catalog photography centers the subject horizontally)
-    const topResult    = Math.max(0,        Math.round(varMinY / scale))
+    // ── Column variance: detect actual horizontal center of subject ──────────
+    // Previously used a fixed 5% inset (left=5%, right=95%) which always
+    // centered the IMAGE, not the MODEL. Models photographed off-center in the
+    // source photo would appear off-center in the canvas after fill mode.
+    //
+    // Now: compute column-level pixel-to-pixel variance (vertical diffs) on
+    // the center 70% of ROWS (avoids floor/head-backdrop noise). The columns
+    // with the highest variance are the model; low-variance columns are the
+    // backdrop on the sides. This gives the model's actual left/right extent,
+    // so the centering formula in calculatePlacement() correctly places the
+    // model at the horizontal center of the canvas.
+    const rowBand_start = Math.max(0, varMinY + Math.floor((varMaxY - varMinY) * 0.15))
+    const rowBand_end   = Math.min(analysisH, varMinY + Math.floor((varMaxY - varMinY) * 0.85))
+
+    const colVariance = new Float32Array(analysisW)
+    for (let x = 0; x < analysisW; x++) {
+      let sumDiff = 0
+      for (let y = rowBand_start + 1; y < rowBand_end; y++) {
+        const i = (y * analysisW + x) * 4
+        const j = ((y - 1) * analysisW + x) * 4
+        const dr = data[i] - data[j], dg = data[i+1] - data[j+1], db = data[i+2] - data[j+2]
+        sumDiff += Math.sqrt(dr*dr + dg*dg + db*db)
+      }
+      colVariance[x] = rowBand_end > rowBand_start + 1
+        ? sumDiff / (rowBand_end - rowBand_start - 1)
+        : 0
+    }
+
+    // Baseline from left + right border columns (background on sides)
+    const colBorderSize = Math.max(2, Math.floor(analysisW * 0.06))
+    const colBorderVals: number[] = [
+      ...Array.from(colVariance.slice(0, colBorderSize)),
+      ...Array.from(colVariance.slice(analysisW - colBorderSize)),
+    ]
+    const colBaseline  = colBorderVals.reduce((a, b) => a + b, 0) / Math.max(1, colBorderVals.length)
+    const colThreshold = Math.max(colBaseline * 2.0, 3.0)
+
+    let varMinX = -1, varMaxX = -1
+    for (let x = 0; x < analysisW; x++) {
+      if (colVariance[x] > colThreshold) {
+        if (varMinX === -1) varMinX = x
+        varMaxX = x
+      }
+    }
+
+    // If column detection found a valid horizontal span (≥ 10% of width), use it;
+    // otherwise fall back to the 5% inset.
+    const topResult = Math.max(0,        Math.round(varMinY / scale))
     const bottomResult = Math.min(imgH - 1, Math.round(varMaxY / scale))
-    const leftResult   = Math.max(0,        Math.round(analysisW * 0.05 / scale))
-    const rightResult  = Math.min(imgW - 1, Math.round(analysisW * 0.95 / scale))
+    let leftResult: number, rightResult: number
+    if (varMinX !== -1 && varMaxX - varMinX >= analysisW * 0.10) {
+      const pad = Math.round(imgW * 0.02)  // 2% padding on each side
+      leftResult  = Math.max(0,        Math.round(varMinX / scale) - pad)
+      rightResult = Math.min(imgW - 1, Math.round(varMaxX / scale) + pad)
+    } else {
+      leftResult  = Math.max(0,        Math.round(analysisW * 0.05 / scale))
+      rightResult = Math.min(imgW - 1, Math.round(analysisW * 0.95 / scale))
+    }
 
     return {
       left: leftResult, top: topResult,

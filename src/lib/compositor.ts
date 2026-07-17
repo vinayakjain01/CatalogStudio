@@ -45,7 +45,7 @@ const SUPERSAMPLE_SM   = 2   // 2× for small canvases too — was 3×, which OO
 // Transparency: the compositor always fills the canvas with a solid
 // background before drawing any layer, so the final canvas never has an
 // alpha channel — JPEG is always correct here.
-const JPEG_QUALITY = 92
+const JPEG_QUALITY = 95   // raised from 92 — highest quality with still fast encode and small upload
 const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000
 const IMAGE_CACHE_MAX    = 250
 
