@@ -176,15 +176,41 @@ function detectImageType(buffer: Buffer): string | null {
  * Upload a downloaded image buffer to Cloudinary.
  *
  * Quality policy:
- *  - We upload WITHOUT forcing format or quality — the raw bytes are stored as-is.
- *  - For Drive images that exceed the 10MB Cloudinary upload limit, we use a
- *    Cloudinary upload transformation (limit dimensions to 3000px) instead of
- *    forcing JPG conversion, so we preserve transparency and avoid compression.
- *  - Delivery optimization (f_auto, q_auto:best) happens at URL level, not
- *    at upload time, so the stored master is always the highest quality version.
+ *  - If the image fits under 9.8 MB: upload as-is (highest quality, no changes).
+ *  - If the image is over 9.8 MB: re-encode as JPEG at the highest quality that
+ *    still fits, using a progressive quality ladder (97→95→93→90→87→85→80→75).
+ *    Last resort: resize to 75% of original dimensions at quality 90.
+ *
+ * WHY: Cloudinary's upload limit is 10 MB on the raw payload. The old approach
+ * used an upload-time transformation (crop: 'limit') but that transform is applied
+ * AFTER the bytes arrive — Cloudinary still rejects the upload if the payload itself
+ * exceeds the limit, producing "File size too large. Got X. Maximum is 10485760."
  */
+async function compressIfNeeded(buffer: Buffer): Promise<Buffer> {
+  const MAX = 9.8 * 1024 * 1024
+  if (buffer.length <= MAX) return buffer
+
+  // Lazy-import @napi-rs/canvas — already a project dependency (serverExternalPackages)
+  const { createCanvas, loadImage } = await import('@napi-rs/canvas')
+  const img = await loadImage(buffer)
+
+  for (const quality of [97, 95, 93, 90, 87, 85, 80, 75]) {
+    const canvas = createCanvas(img.width, img.height)
+    canvas.getContext('2d').drawImage(img, 0, 0)
+    const out = (canvas as any).toBuffer('image/jpeg', { quality })
+    if (out.length <= MAX) return out
+  }
+
+  // Last resort: scale to 75% then quality 90
+  const w = Math.round(img.width  * 0.75)
+  const h = Math.round(img.height * 0.75)
+  const canvas = createCanvas(w, h)
+  canvas.getContext('2d').drawImage(img, 0, 0, w, h)
+  return (canvas as any).toBuffer('image/jpeg', { quality: 90 })
+}
+
 export async function uploadImageToCloudinary(
-  buffer: Buffer,
+  rawBuffer: Buffer,
   publicId: string
 ): Promise<{ url: string; cloudinaryId: string }> {
   const { v2: cloudinary } = await import('cloudinary')
@@ -195,11 +221,9 @@ export async function uploadImageToCloudinary(
     api_secret: process.env.CLOUDINARY_API_SECRET,
   })
 
-  // Cloudinary's upload limit is 10MB. For files that exceed this, we use
-  // a transformation to cap the longest dimension at 3000px — large enough
-  // for print-quality output but small enough to avoid the 10MB cap.
-  // We use 'png' format (lossless) rather than 'jpg' to avoid compression.
-  const isLarge = buffer.length > 9 * 1024 * 1024
+  // Compress before upload — Cloudinary rejects payloads > 10 MB at the
+  // transport level, regardless of any upload-time transformations.
+  const buffer = await compressIfNeeded(rawBuffer)
 
   const result = await new Promise<any>((resolve, reject) => {
     cloudinary.uploader.upload_stream(
@@ -208,10 +232,6 @@ export async function uploadImageToCloudinary(
         folder: 'catalog-imports',
         overwrite: false,
         resource_type: 'image',
-        // No format/quality forced — preserve original format
-        ...(isLarge ? {
-          transformation: [{ width: 3000, height: 3000, crop: 'limit' }],
-        } : {}),
       },
       (error, result) => {
         if (error || !result) return reject(error || new Error('Upload failed'))
