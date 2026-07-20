@@ -7,42 +7,38 @@ export const metadata: Metadata = {
   description: 'Catalog creative automation for Shopify → Meta',
 }
 
-const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID
-  ?? process.env.SHOPIFY_CLIENT_ID
-  ?? ''
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID
+    ?? process.env.SHOPIFY_CLIENT_ID
+    ?? ''
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         {/*
-         * ─── Shopify App Bridge — CRITICAL ORDERING ──────────────────────────
+         * Shopify App Bridge — MUST be synchronous, MUST be first script.
          *
-         * Both checks in the Shopify Partner Dashboard require:
+         * Problem with React 18 + Next.js App Router:
+         *   React automatically adds async="true" to every external
+         *   <script src="..."> element during SSR — even without the async prop.
+         *   App Bridge explicitly checks its own script tag for async/defer and
+         *   ABORTS initialization if found → window.shopify stays undefined forever.
+         *   This was true for both strategy="afterInteractive" AND our raw <script> tag.
          *
-         *  1. App Bridge loaded from Shopify's CDN as the VERY FIRST script.
-         *  2. Session tokens (window.shopify.idToken()) available and used in
-         *     requests to your backend.
-         *
-         * WHY raw <script> and NOT next/script:
-         *   next/script's "beforeInteractive" strategy still injects an `async`
-         *   attribute in some Next.js App Router builds. App Bridge explicitly
-         *   checks for async/defer/type=module and ABORTS if found:
-         *     "The script tag loading App Bridge has `async` — Aborting."
-         *   That abort leaves window.shopify = undefined forever, so no session
-         *   tokens ever fire and both Shopify checks stay permanently stuck.
-         *
-         *   A raw <script> tag placed directly in <head> is ALWAYS synchronous
-         *   and is the first thing the browser parses — guaranteed correct.
-         *
-         * Step 1: <meta name="shopify-api-key"> — App Bridge reads the key here.
-         * Step 2: <script> CDN — synchronous, no async / defer / type=module.
-         *
-         * Docs: https://shopify.dev/docs/api/app-home/app-bridge-web-components
+         * Solution:
+         *   1. <meta name="shopify-api-key"> — React renders meta tags correctly.
+         *   2. Inline <script> (no src) — React never touches inline scripts.
+         *      The inline script creates the App Bridge element with async=false
+         *      and inserts it into the DOM immediately after itself.
+         *      Browser executes it synchronously during HTML parsing.
+         *      App Bridge checks script.async → false → PASSES → window.shopify defined.
          */}
-        <meta name="shopify-api-key" content={API_KEY} />
-        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
-        <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js" />
+        <meta name="shopify-api-key" content={apiKey} />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `!function(){var s=document.createElement('script');s.src='https://cdn.shopify.com/shopifycloud/app-bridge.js';s.async=false;var c=document.currentScript;c.parentNode.insertBefore(s,c.nextSibling);}();`
+          }}
+        />
       </head>
       <body className="antialiased">
         {children}
