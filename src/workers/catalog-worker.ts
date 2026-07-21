@@ -2,6 +2,7 @@ import { Worker, ConnectionOptions } from 'bullmq'
 import { closeRedisConnection, getRedisConnection } from '@/lib/redis'
 import { QUEUE_NAMES, closeCatalogQueues } from '@/lib/queues'
 import { getAdminClient, processGenerationJob, processBatch } from '@/lib/generation-queue'
+import { processAdaptationImage, processAdaptationBatch } from '@/lib/adaptation-queue'
 import { syncStoreProducts } from '@/lib/shopify-sync'
 import { logPerf } from '@/lib/perf'
 
@@ -18,6 +19,10 @@ if (!connection) {
 // Default to 1 and let bigger hosts opt into more via the env var.
 const generationConcurrency = parseInt(process.env.WORKER_GENERATION_CONCURRENCY || '2', 10)
 const syncConcurrency = parseInt(process.env.WORKER_SYNC_CONCURRENCY || '2', 10)
+// Template Adaptation calls are I/O-bound waits on external image-editing
+// APIs (Gemini/OpenAI/fal.ai), not in-process canvas compositing — higher
+// default concurrency than generation is safe here.
+const adaptationConcurrency = parseInt(process.env.WORKER_ADAPTATION_CONCURRENCY || '3', 10)
 const DB_POLL_INTERVAL_MS = parseInt(process.env.DB_POLL_INTERVAL_MS || '3000', 10)
 
 const admin = getAdminClient()
@@ -67,6 +72,39 @@ async function resetStuckJobs() {
       console.log('[worker:startup] No stuck jobs found — clean start')
     }
   }
+
+  // Same two-step recovery for Template Adaptation images stuck in 'generating'.
+  const { data: exhaustedAdaptations } = await admin
+    .from('adaptation_images')
+    .update({
+      status:    'failed',
+      locked_at: null,
+      error:     'Max attempts reached — permanently failed (worker restarted mid-generation)',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('status', 'generating')
+    .gte('attempts', 3)
+    .select('id')
+
+  if (exhaustedAdaptations && exhaustedAdaptations.length > 0) {
+    console.warn(`[worker:startup] Permanently failed ${exhaustedAdaptations.length} exhausted adaptation images`)
+  }
+
+  const { data: resetAdaptations, error: adaptationResetError } = await admin
+    .from('adaptation_images')
+    .update({
+      status:    'pending',
+      locked_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('status', 'generating')
+    .select('id')
+
+  if (adaptationResetError) {
+    console.error('[worker:startup] Failed to reset stuck adaptation images:', adaptationResetError.message)
+  } else if (resetAdaptations && resetAdaptations.length > 0) {
+    console.log(`[worker:startup] Reset ${resetAdaptations.length} stuck adaptation images back to pending`)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +150,28 @@ const workers = [
       return { synced }
     },
     { connection: connection as unknown as ConnectionOptions, concurrency: syncConcurrency }
+  ),
+
+  new Worker(
+    QUEUE_NAMES.templateAdaptation,
+    async job => {
+      const started = Date.now()
+      const imageId = String(job.data.imageId || '')
+      if (!imageId) throw new Error('imageId is required')
+      console.log(`[worker:adaptation] BullMQ job received bullId=${job.id} imageId=${imageId}`)
+      const result = await processAdaptationImage(imageId, admin)
+      const elapsed = Date.now() - started
+      console.log(`[worker:adaptation] BullMQ job done bullId=${job.id} imageId=${imageId} completed=${result.completed} failed=${result.failed} ms=${elapsed}`)
+      logPerf('worker.adaptation.job', elapsed, {
+        bullJobId: String(job.id),
+        imageId,
+        processed: result.processed,
+        completed: result.completed,
+        failed: result.failed,
+      })
+      return result
+    },
+    { connection: connection as unknown as ConnectionOptions, concurrency: adaptationConcurrency }
   ),
 
   new Worker(
@@ -174,11 +234,36 @@ async function dbPollTick() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Template Adaptation DB-poll loop — sibling to dbPollTick, same fallback
+// reasoning (Vercel can't always reach Valkey), kept as an independent loop
+// so a throw in one domain's polling never blocks the other's.
+// ─────────────────────────────────────────────────────────────────────────────
+let adaptationPollRunning = false
+let adaptationPollActive = true
+
+async function adaptationPollTick() {
+  if (!adaptationPollActive || adaptationPollRunning) return
+  adaptationPollRunning = true
+  try {
+    const result = await processAdaptationBatch(adaptationConcurrency, adaptationConcurrency, admin)
+    if (result.claimed > 0) {
+      console.log(`[worker:adaptation-db-poll] claimed=${result.claimed} completed=${result.completed} failed=${result.failed}`)
+    }
+  } catch (err: any) {
+    console.error('[worker:adaptation-db-poll] Error:', err.message)
+  } finally {
+    adaptationPollRunning = false
+    if (adaptationPollActive) setTimeout(adaptationPollTick, DB_POLL_INTERVAL_MS)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shutdown
 // ─────────────────────────────────────────────────────────────────────────────
 async function shutdown() {
   console.log('[worker] Shutting down…')
   dbPollActive = false
+  adaptationPollActive = false
   await Promise.all(workers.map(w => w.close()))
   await closeCatalogQueues()
   await closeRedisConnection()
@@ -195,6 +280,7 @@ process.on('SIGTERM', shutdown)
 console.log('[worker] catalog workers starting…', {
   generationConcurrency,
   syncConcurrency,
+  adaptationConcurrency,
   dbPollIntervalMs: DB_POLL_INTERVAL_MS,
   queues: QUEUE_NAMES,
 })
@@ -202,4 +288,6 @@ console.log('[worker] catalog workers starting…', {
 resetStuckJobs().then(() => {
   console.log(`[worker:db-poll] Starting DB poll loop every ${DB_POLL_INTERVAL_MS}ms`)
   dbPollTick()
+  console.log(`[worker:adaptation-db-poll] Starting adaptation DB poll loop every ${DB_POLL_INTERVAL_MS}ms`)
+  adaptationPollTick()
 })

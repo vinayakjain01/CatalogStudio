@@ -6,6 +6,7 @@ export const QUEUE_NAMES = {
   productSync: 'product-sync',
   feedGeneration: 'feed-generation',
   metaRefresh: 'meta-refresh',
+  templateAdaptation: 'template-adaptation',
 } as const
 
 export type CatalogQueueName = keyof typeof QUEUE_NAMES
@@ -80,6 +81,33 @@ export async function enqueueGenerationJobs(
   })))
   console.log(`[enqueueGenerationJobs] addBulk completed — ${jobIds.length} jobs queued`)
   return jobIds.length
+}
+
+/**
+ * Push adaptation_images row IDs to BullMQ, one job per image (mirrors
+ * enqueueGenerationJobs). Each product image in a Template Adaptation job is
+ * its own independent BullMQ job so one image's failure/retry never touches
+ * its siblings.
+ */
+export async function enqueueAdaptationImages(
+  imageIds: string[],
+  basePriority = 100,
+) {
+  const queue = getCatalogQueue('templateAdaptation')
+  if (!queue || imageIds.length === 0) {
+    console.warn(`[enqueueAdaptationImages] Skipped — queue=${queue ? 'ok' : 'null'} imageIds=${imageIds.length}`)
+    return 0
+  }
+
+  await queue.addBulk(imageIds.map((imageId, i) => ({
+    name: 'adapt-image',
+    data: { imageId },
+    opts: {
+      jobId:    `adaptation:${imageId}`,
+      priority: basePriority + i,
+    },
+  })))
+  return imageIds.length
 }
 
 export async function closeCatalogQueues() {

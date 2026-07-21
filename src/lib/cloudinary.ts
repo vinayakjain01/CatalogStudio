@@ -20,7 +20,8 @@ cloudinary.config({
  */
 export async function uploadBuffer(
   buffer: Buffer,
-  publicId: string
+  publicId: string,
+  folder: string = 'catalog-creatives'
 ): Promise<{ url: string; deliveredUrl: string; publicId: string }> {
   const started = Date.now()
   return new Promise((resolve, reject) => {
@@ -28,7 +29,7 @@ export async function uploadBuffer(
       .upload_stream(
         {
           public_id: publicId,
-          folder: 'catalog-creatives',
+          folder,
           overwrite: true,
           resource_type: 'image',
           // No `format` and no upload-time transformation:
