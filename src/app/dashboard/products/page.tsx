@@ -6,7 +6,9 @@ import { FolderUp } from 'lucide-react'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
 
-const PAGE_SIZE = 25
+// 10 per page: each row loads a Cloudinary thumbnail, so a smaller page means
+// fewer image requests per navigation and a faster first paint.
+const PAGE_SIZE = 10
 
 export default async function ProductsPage({
   searchParams,

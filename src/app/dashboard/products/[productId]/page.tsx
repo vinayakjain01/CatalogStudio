@@ -78,7 +78,11 @@ export default async function ProductDetailPage({
       {/* Original vs Generated */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-2">Original (Shopify)</h2>
+          {/* min-h-8 matches the control row opposite, so both cards start at the
+              same y and the two images sit exactly side by side. */}
+          <div className="flex items-center min-h-8 mb-2">
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Original (Shopify)</h2>
+          </div>
           <Card className="overflow-hidden">
             <div className="aspect-square bg-muted">
               {primaryImage ? (
@@ -102,15 +106,17 @@ export default async function ProductDetailPage({
         </div>
 
         <div>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Generated creative</h2>
-            <ProductGenerateButton productId={product.id} storeId={(product as any).stores.id} />
-          </div>
-          <div className="mb-2">
-            <ProductShotTypeSelector
-              productId={product.id}
-              initialValue={(product as any).shot_type_override ?? null}
-            />
+          {/* Shot type sits inline with Generate rather than on its own row —
+              a second row here offset this card against the original image. */}
+          <div className="flex items-center justify-between gap-2 min-h-8 mb-2">
+            <h2 className="truncate text-sm font-medium text-muted-foreground uppercase tracking-wide">Generated creative</h2>
+            <div className="flex shrink-0 items-center gap-2">
+              <ProductShotTypeSelector
+                productId={product.id}
+                initialValue={(product as any).shot_type_override ?? null}
+              />
+              <ProductGenerateButton productId={product.id} storeId={(product as any).stores.id} />
+            </div>
           </div>
 
           {generatedImages.length > 0 ? (

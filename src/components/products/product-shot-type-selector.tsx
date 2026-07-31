@@ -52,9 +52,12 @@ export function ProductShotTypeSelector({
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-muted-foreground whitespace-nowrap">Shot type</span>
+      {/* Label is dropped on narrower viewports so this control can share a row
+          with the Generate button without overflowing it. The trigger still
+          reads "Auto-detect"/the chosen type, so nothing becomes ambiguous. */}
+      <span className="hidden whitespace-nowrap text-xs text-muted-foreground lg:inline">Shot type</span>
       <Select value={value} onValueChange={handleChange} disabled={saving}>
-        <SelectTrigger className="h-8 w-40 text-xs">
+        <SelectTrigger className="h-8 w-32 text-xs lg:w-36" aria-label="Shot type">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
