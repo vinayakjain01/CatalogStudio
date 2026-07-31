@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Megaphone, FolderOpen, Sparkles } from 'lucide-react'
+import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Megaphone, FolderUp, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { StoreSwitcher } from '@/components/dashboard/store-switcher'
@@ -18,11 +18,12 @@ interface StoreLite {
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/dashboard/products', label: 'Products', icon: ShoppingBag },
+  // Sits next to Products: uploading a folder is how products get created.
+  { href: '/dashboard/upload', label: 'Upload Products', icon: FolderUp },
   { href: '/dashboard/templates', label: 'Templates', icon: Layers },
   { href: '/dashboard/template-adaptation', label: 'Template Adaptation', icon: Sparkles },
   { href: '/dashboard/rules', label: 'Rules Engine', icon: Zap },
   { href: '/dashboard/creatives', label: 'Creatives', icon: ImageIcon },
-  { href: '/dashboard/drive', label: 'Drive Import', icon: FolderOpen },
   { href: '/dashboard/meta', label: 'Meta', icon: Megaphone },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]

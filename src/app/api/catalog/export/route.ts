@@ -1,8 +1,8 @@
 /**
  * GET /api/catalog/export?importId=...&format=xlsx|csv
  *
- * Downloads an Excel/CSV file containing all products from a Drive import,
- * with the generated creative URLs appended as extra columns.
+ * Downloads an Excel/CSV file containing all products from one import batch
+ * (a folder upload), with the generated creative URLs appended as extra columns.
  *
  * Self-contained — no dependency on catalog-import lib files.
  */

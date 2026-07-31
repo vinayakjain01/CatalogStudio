@@ -71,7 +71,7 @@ const sessionCache = new Map<string, CachedBundle>()
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
- * @param imageUrl   The original product image URL (Shopify CDN or Drive).
+ * @param imageUrl   The original product image URL (Shopify CDN or uploaded image).
  * @param storeId    The store the product belongs to (for auth + cache scope).
  * @param enabled    Set false to disable the hook entirely (e.g. when not in
  *                   AI Product Mode). Avoids unnecessary API calls.

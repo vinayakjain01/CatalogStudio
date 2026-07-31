@@ -1,9 +1,10 @@
-import { Suspense } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveStore } from '@/lib/active-store'
+import { Button } from '@/components/ui/button'
+import { FolderUp } from 'lucide-react'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
-import { ProductsSearch } from '@/components/products/products-search'
 
 const PAGE_SIZE = 25
 
@@ -27,9 +28,19 @@ export default async function ProductsPage({
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-semibold">Products</h1>
-        <div className="text-center py-20 text-muted-foreground">
-          <p>No stores connected yet.</p>
-          <p className="text-sm mt-1">Go to Settings to connect your Shopify store.</p>
+        <div className="text-center py-20 space-y-4">
+          <div className="text-muted-foreground">
+            <p>No products yet.</p>
+            <p className="text-sm mt-1">
+              Upload a folder of product images, or connect a Shopify store in Settings.
+            </p>
+          </div>
+          <Button size="lg" asChild>
+            <Link href="/dashboard/upload">
+              <FolderUp className="h-4 w-4" />
+              Upload folder
+            </Link>
+          </Button>
         </div>
       </div>
     )
@@ -76,6 +87,12 @@ export default async function ProductsPage({
             {totalCount || 0} products total
           </p>
         </div>
+        <Button variant="outline" size="lg" asChild>
+          <Link href="/dashboard/upload">
+            <FolderUp className="h-4 w-4" />
+            Upload folder
+          </Link>
+        </Button>
       </div>
       <ProductsTable products={products || []} />
       <ProductsPagination

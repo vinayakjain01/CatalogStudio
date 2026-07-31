@@ -8,7 +8,7 @@ _Compiled 2026-07-08 from a complete read-through of the codebase (8 parallel su
 
 **Craftify** (formerly CatalogStudio) is an AI-powered creative-automation platform for Shopify brands. A merchant connects a Shopify store, its product catalog syncs in, the merchant builds one or more visual **templates** (layered canvas designs with text/image/logo/badge layers and product-image slots), defines **rules** that map products to templates (by tag/vendor/type/discount/import batch), and the platform bulk-generates a finished marketing creative (PNG) per product by running the product photo through AI background removal / AI outpainting and compositing it into the template. Finished creatives are stored on Cloudinary and exposed to the dashboard, a ZIP export, and a Meta (Facebook/Instagram) Shopping product feed (XML).
 
-Stack: **Next.js 16.2.9** (App Router, async `params`/`searchParams`, `force-dynamic` opt-outs), **TypeScript**, **Supabase** (Postgres + Auth, no in-repo migrations — schema is dashboard-managed), **Cloudinary** (image hosting/transforms/AI generative fill), **BullMQ + ioredis** against a DigitalOcean-managed **Redis/Valkey**, a standalone **Node/PM2 worker** process, **Shopify Admin GraphQL API** + OAuth, **Meta Catalog** (feed-only, no Graph API calls), **Google Drive API** (API-key based folder import), `@napi-rs/canvas` for server-side compositing, and **Vercel** for hosting + cron.
+Stack: **Next.js 16.2.9** (App Router, async `params`/`searchParams`, `force-dynamic` opt-outs), **TypeScript**, **Supabase** (Postgres + Auth, no in-repo migrations — schema is dashboard-managed), **Cloudinary** (image hosting/transforms/AI generative fill), **BullMQ + ioredis** against a DigitalOcean-managed **Redis/Valkey**, a standalone **Node/PM2 worker** process, **Shopify Admin GraphQL API** + OAuth, **Meta Catalog** (feed-only, no Graph API calls), browser **directory upload** (local folder import), `@napi-rs/canvas` for server-side compositing, and **Vercel** for hosting + cron.
 
 > Note on `AGENTS.md`: this repo pins Next.js 16.2.9 and ships framework docs under `node_modules/next/dist/docs/`. The codebase already uses the async `params`/`searchParams` convention consistently, and uses the `export const dynamic = 'force-dynamic'` escape hatch (not the newer `connection()`/`cacheLife` APIs) wherever a server component needs a fresh per-request Supabase read.
 
@@ -72,19 +72,19 @@ Meta feed:  /api/feed/[storeId] (token-authed, public) streams products+generate
 | `src/app/api/templates/` | Template CRUD + thumbnail render | `route.ts`, `[templateId]/route.ts`, `[templateId]/thumbnail/route.ts` | `PUT` has no field allow-list (see §9) |
 | `src/app/api/rules/` | Rules CRUD | `route.ts` (GET/POST), `[ruleId]/route.ts` (DELETE only) | **No update/reorder endpoint exists** |
 | `src/app/api/products/`, `src/app/api/categories/` | Product listing/filtering API + template categories | | |
-| `src/app/api/drive/import/` | Google Drive folder → new store + products | `route.ts` | Creates a brand-new store per import (see §8 bug) |
-| `src/app/api/catalog/export/` | XLSX/CSV export of a Drive-import batch | `route.ts` | Only works for products with `import_id` set |
+| `src/app/api/upload/folder/`, `/images/`, `/status/`, `/image/`, `/retry/` | Local folder upload → new store + products | `folder/route.ts` (session open/finalise), `images/route.ts` (per-image Cloudinary + product create) | Creates a brand-new store per import; every route re-verifies ownership via `lib/uploads/session.ts` |
+| `src/app/api/catalog/export/` | XLSX/CSV export of one upload batch | `route.ts` | Only works for products with `import_id` set |
 | `src/app/api/feed/[storeId]/` | Public Meta Shopping XML feed | `route.ts` | Token-authed via `stores.feed_token`, always XML regardless of `?format=` |
 | `src/app/api/meta/connect/` | Persists a merchant-entered Meta Catalog ID | `route.ts` | No real Meta Graph API integration |
 | `src/app/api/stores/[storeId]/sync/`, `src/app/api/active-store/`, `src/app/api/upload/` | Manual sync trigger, store-switcher cookie, generic image upload | | |
-| `src/app/dashboard/` | All authenticated pages (products, templates, rules, creatives, drive, meta, settings) | `layout.tsx` (auth gate + active-store load), `page.tsx` (stat cards) | Nested under one server-component layout |
+| `src/app/dashboard/` | All authenticated pages (products, upload, templates, rules, creatives, meta, settings) | `layout.tsx` (auth gate + active-store load), `page.tsx` (stat cards) | Nested under one server-component layout |
 | `src/components/builder/` | **The live template editor (canonical, actively used)** | `template-builder-client.tsx`, `canvas-preview.tsx`, `layer-panel.tsx`, `layer-properties.tsx`, `smart-background.tsx`, `use-extend-preview.ts`, `use-transparent-preview.ts` | Pure DOM/CSS renderer, drag/resize via raw mouse listeners |
 | `src/components/templates/` | **Legacy/dead** — superseded editor components | `canvas-preview.tsx`, `layer-properties.tsx`, `toolbar.tsx` | Zero live imports except `delete-template-button.tsx`, which **is** used |
-| `src/components/rules/`, `src/components/products/`, `src/components/creatives/`, `src/components/drive/`, `src/components/meta/`, `src/components/settings/`, `src/components/dashboard/` | Feature-scoped UI for each dashboard section | | |
+| `src/components/rules/`, `src/components/products/`, `src/components/creatives/`, `src/components/upload/`, `src/components/meta/`, `src/components/settings/`, `src/components/dashboard/` | Feature-scoped UI for each dashboard section | | |
 | `src/components/ui/` | shadcn primitives | | Standard, lightly customized |
 | `src/lib/background-removal/` | Multi-provider abstraction + Cloudinary-backed cache | `index.ts`, `provider.ts`, `clipdrop-provider.ts`, `removebg-provider.ts`, `fal-birefnet-provider.ts`, `cloudinary-provider.ts` | `photoroom` is declared but unimplemented (dead union member) |
 | `src/lib/image-extend/` | Cloudinary generative-fill (AI outpaint) wrapper + cache | `index.ts` | |
-| `src/lib/catalog-import/` | Drive/Dropbox URL normalization + robust image download | `image-resolver.ts` | Shared by Drive import; vestige of a planned spreadsheet-based "line sheet" import that was never built |
+| `src/lib/catalog-import/` | Cloudinary upload + magic-byte type detection for imported images | `image-storage.ts` | Shared by the folder-upload route; the former Drive/Dropbox URL-normalization layer was removed with the Drive import |
 | `src/lib/compositor.ts` | **The core rendering engine** — `@napi-rs/canvas` based, draws all layer types, backgrounds, supersampling/downscale | | Second, independent renderer from the DOM-based live editor — must be kept pixel-compatible by hand |
 | `src/lib/template-resolver.ts` | Rule matching (product → template) | | First-match-wins by `priority DESC`, no tie-break |
 | `src/lib/generation-queue.ts` | Orchestrates `generation_jobs` (DB) + optional BullMQ push; contains `runJob`/`processBatch` (the actual pipeline execution) | | Also the DB-poll fallback executor |
@@ -97,6 +97,7 @@ Meta feed:  /api/feed/[storeId] (token-authed, public) streams products+generate
 | `src/lib/shopify-webhook.ts` | HMAC verification for Shopify webhooks | | |
 | `src/lib/active-store.ts` | Server-side "current store" resolution + ownership check | | |
 | `src/lib/cloudinary.ts` | Upload + delivery-URL helper (`f_auto,q_auto:best`) | | |
+| `src/lib/uploads/` | Folder-upload support: shared file classification, session/ownership guard, browser-side alpha-safe compression, directory picking | `image-files.ts`, `session.ts`, `client-compress.ts`, `pick-files.ts` | `image-files.ts` predicates run on BOTH client and server so the two cannot drift |
 | `src/lib/editor-preview.ts` | Dead code — its one export is never called (pages duplicate the logic inline) | | |
 | `src/lib/supabase/` | Browser + server Supabase client factories | `client.ts`, `server.ts` | Server client forces `sameSite:none; secure; partitioned` cookies (needed inside the Shopify admin iframe) |
 | `src/stores/builder-store.ts` | Zustand store for the live editor (single flat store, no persist middleware) | | |
@@ -123,14 +124,14 @@ No `supabase/migrations` folder exists. Every table/column below is inferred fro
 | `generation_jobs` | `id, store_id, product_id, template_id, creative_type, status (pending/processing/completed/failed/cancelled), batch_id, attempts, max_attempts, locked_at, error, bg_removal_status, transparent_url, created_at, updated_at` | queue-table backing both BullMQ and DB-poll execution |
 | `generated_images` | `id, product_id, template_id, creative_type, cloudinary_public_id, generated_url, status, updated_at` | unique `(product_id, template_id, creative_type)`; **no `store_id` column**; `status` is only ever written as `'completed'` anywhere in the codebase |
 | `sync_logs` | `id, store_id, sync_type, status, products_synced, error_message, completed_at, created_at` | audit trail per sync run |
-| `catalog_imports` | `id, user_id, filename, source ('line_sheet' etc.)` | groups a Drive-folder import batch |
+| `catalog_imports` | `id, store_id, user_id, filename, source_url, status, total_rows, imported_rows, failed_rows, error_report` | groups one upload batch |
 | `catalog_import_rows` | raw staging rows per import | `import_id`→catalog_imports |
 | `bg_removal_cache` | keyed by sha256 of source URL → Cloudinary transparent-PNG URL | |
 | `image_extend_cache` | keyed by `(source URL, width, height)` hash → extended-image URL | |
 
 Two things worth flagging explicitly since the original brief asked about `creative_status`/`feed_status`: **neither column name exists anywhere in the code.** The actual analogues are `generated_images.status` and `stores.meta_feed_status`.
 
-Also notable: **two parallel product-image models coexist** — the relational `product_images` table (Shopify-sync path, raw Shopify CDN URLs) vs. a single `products.image_url` column (Drive-import path). Code written against one will silently misbehave for products created via the other pipeline.
+Also notable: **two parallel product-image models coexist** — the relational `product_images` table (Shopify-sync path, raw Shopify CDN URLs) vs. a single `products.image_url` column (folder-upload path — which also writes a `product_images` row, so uploaded products appear in both). Code written against one will silently misbehave for products created via the other pipeline.
 
 ---
 
@@ -203,8 +204,8 @@ BullMQ retry: 3 attempts, exponential backoff (5s base), no dead-letter queue. `
 ## 11. Import System
 
 - **Shopify sync**: see §6.
-- **Google Drive import**: API-key based (not OAuth), works only on publicly-link-shared folders, top-level images only (no recursive scan), matches images to products **by filename only** (filename minus extension becomes both `title` and `sku`), and creates a brand-new store per import — re-importing the same folder always produces duplicates rather than updating existing products.
-- **Excel/CSV/"line sheet" file upload import does not exist in this codebase.** `exceljs` is an unused dependency; `xlsx` is used only for the export route. `image-resolver.ts`'s Drive/Dropbox URL-normalization logic appears to be a leftover building block from an earlier, differently-shaped import design (per its own header comment referencing "real customer line sheets").
+- **Local folder upload** (`/dashboard/upload`): the browser's directory-upload capability hands over the whole tree (nested folders included); the client classifies and de-duplicates files, downscales anything over the ~4.5 MB request-body ceiling (PNGs resized only, never JPEG-converted, so alpha survives for the background-removal path), then POSTs one image per request. Each image becomes a product with the filename minus extension as both `title` and `sku`; colliding basenames across subfolders are disambiguated by parent folder, because `(store_id, sku)` is an upsert key and would otherwise silently overwrite. Creates a brand-new store per upload.
+- **Excel/CSV/"line sheet" file upload import does not exist in this codebase.** `exceljs` is an unused dependency; `xlsx` is used only for the export route.
 - `jszip` is used only client-side for the "download all creatives as ZIP" button — unrelated to import.
 
 ## 12. API Structure (full route inventory)
@@ -213,11 +214,15 @@ BullMQ retry: 3 attempts, exponential backoff (5s base), no dead-letter queue. `
 |---|---|---|
 | `/api/active-store` | POST | Set active-store cookie (ownership-checked) |
 | `/api/background/remove`, `/api/background/cache` | GET/POST, GET/DELETE | Background-removal trigger + cache inspect/invalidate |
-| `/api/catalog/export` | GET | XLSX/CSV export of a Drive-import batch |
+| `/api/catalog/export` | GET | XLSX/CSV export of one upload batch |
 | `/api/categories` | GET/POST | Template categories |
 | `/api/creatives/[creativeId]` | GET/DELETE(?) | Single creative |
 | `/api/cron/generate`, `/api/cron/sync` | GET | Vercel cron entry points, `CRON_SECRET`-gated |
-| `/api/drive/import` | POST | Google Drive folder → new store + products |
+| `/api/upload/folder` | POST/PATCH | Open / finalise a folder-upload session (creates store + `catalog_imports` row) |
+| `/api/upload/images` | POST | Multipart image(s) → Cloudinary + product + `product_images` + audit row |
+| `/api/upload/status` | GET | Server-side progress for an upload session |
+| `/api/upload/image` | DELETE | Remove one uploaded product + its Cloudinary asset |
+| `/api/upload/retry` | POST | Reset failure accounting so the client can re-send failed images |
 | `/api/feed/[storeId]` | GET | Public Meta Shopping XML feed, `feed_token`-gated |
 | `/api/generate/enqueue`, `/single`, `/cancel`, `/stats` | POST/GET | Generation control plane |
 | `/api/image-extend` | GET/POST | Standalone AI-extend for editor preview |
@@ -254,12 +259,11 @@ BullMQ retry: 3 attempts, exponential backoff (5s base), no dead-letter queue. `
 | `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Cloudinary SDK |
 | `BG_REMOVAL_PROVIDER`, `BG_REMOVAL_FALLBACK_PROVIDERS` | Background-removal provider selection |
 | `CLIPDROP_API_KEY`, `REMOVEBG_API_KEY`, `FAL_API_KEY` | Individual background-removal provider credentials |
-| `GOOGLE_DRIVE_API_KEY` | Google Drive folder import |
 | `NODE_ENV` | Cookie `secure` flag branching in OAuth routes |
 
 ## 15. External Services
 
-Supabase (DB + Auth) · Cloudinary (media hosting, transforms, generative fill) · Shopify Admin GraphQL API + OAuth · Meta Commerce Manager (feed-consumer only, no API integration) · Google Drive API v3 (API-key, not OAuth) · DigitalOcean Managed Redis/Valkey · Clipdrop / remove.bg / fal.ai BiRefNet (background removal) · Vercel (hosting + cron).
+Supabase (DB + Auth) · Cloudinary (media hosting, transforms, generative fill) · Shopify Admin GraphQL API + OAuth · Meta Commerce Manager (feed-consumer only, no API integration) · DigitalOcean Managed Redis/Valkey · Clipdrop / remove.bg / fal.ai BiRefNet (background removal) · Vercel (hosting + cron).
 
 ---
 
@@ -272,7 +276,7 @@ Grouped by severity/theme; each item was found and cited with file:line by the s
 - Inconsistent cookie flags for `active_store_id` across three different set-sites (`httpOnly` true in one, false in two others; mixed `sameSite`) — could silently fail to persist depending on entry path.
 - Embedded-app OAuth launch (`/api/shopify/auth`) has no replay protection (HMAC verified, but Shopify's `timestamp` param is present and never checked for staleness).
 - `PUT /api/templates/[templateId]` spreads the raw request body into the update with no field allow-list — currently safe only because the client only ever sends 3 fields.
-- Google Drive import has no file-type allowlist beyond Drive's own `mimeType contains 'image/'` filter (inconsistent with `/api/upload`'s explicit png/jpg/webp allowlist).
+- `/api/upload` (generic editor-asset upload) allows png/jpg/webp only, while the folder-import path (`/api/upload/images`) also accepts avif — two allowlists, deliberately different, but worth collapsing if avif support is ever wanted in the editor.
 
 **Correctness / reliability**
 - DB-poll retry path (`generation-queue.ts` `failJob`) compares `attempts < max_attempts` but **`attempts` is never incremented anywhere in that file** — retry accounting is effectively broken (verify against the worker's own increment logic, if any, before relying on retry limits).
@@ -282,7 +286,7 @@ Grouped by severity/theme; each item was found and cited with file:line by the s
 - No reconciliation for Shopify products deleted/archived upstream — they persist in Craftify indefinitely.
 - Only `variants[0]` is synced per product — multi-variant price/inventory data is lost, with no `variants` table.
 - `product_images` is fully deleted and reinserted on every sync (not diffed), non-atomically (separate HTTP calls, no transaction) — a crash mid-sync can leave a product with zero images.
-- Google Drive import creates a new store per import, making its own dedup key `(store_id, sku)` ineffective across repeated imports of the same folder.
+- Folder upload creates a new store per upload, making its `(store_id, sku)` dedup key ineffective across repeated uploads of the same folder (inherited from the Drive import it replaced).
 - Rules engine has no update/reorder API — editing a rule requires delete + recreate; `GET /api/rules` doesn't filter `is_active` while the resolver does, so the UI can show rules that aren't actually being evaluated.
 - Rule priority ties have no secondary sort key (Postgres row order is unspecified) — match order can be unstable.
 - `generated_images.status` is only ever written as `'completed'`, yet three separate call sites filter on it defensively — logic drift risk if a future write path ever inserts another value.
