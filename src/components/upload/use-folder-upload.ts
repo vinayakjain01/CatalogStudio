@@ -238,7 +238,13 @@ export function useFolderUpload() {
     patchItem(item.id, { status: 'uploading', error: undefined })
 
     try {
-      const { blob, filename } = await prepareImageForUpload(item.file)
+      const { blob, filename, sourceWidth, sourceHeight } = await prepareImageForUpload(item.file)
+
+      // Compression had to decode the original, so take its measurements rather
+      // than waiting for a thumbnail that may never be rendered on this page.
+      if (sourceWidth && sourceHeight) {
+        patchItem(item.id, { width: sourceWidth, height: sourceHeight })
+      }
 
       const form = new FormData()
       form.append('importId', activeSession.importId)

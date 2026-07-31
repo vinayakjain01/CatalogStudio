@@ -6,22 +6,27 @@
  * Each tile shows thumbnail, filename, resolution, size and upload status, and
  * can be removed before (or after) uploading.
  *
- * Two deliberate performance choices, because a real product folder is hundreds
- * of multi-megabyte images:
+ * Three deliberate performance choices, because a real product folder is
+ * hundreds of 45-megapixel images:
+ *  - PAGE_SIZE tiles at a time. Rendering a whole folder means the browser
+ *    decodes every original at full resolution to paint a 200px thumbnail,
+ *    which competes with the uploads for CPU and memory.
  *  - tiles are memoized, so one file finishing its upload re-renders one tile
- *    rather than all 400
- *  - thumbnails are lazy and the grid is capped until the user asks for more,
- *    so the browser never decodes hundreds of full-size photos at once
+ *    rather than the whole page
+ *  - once an image is uploaded its tile switches to a small Cloudinary
+ *    thumbnail, so the giant local file no longer has to be decoded at all
  */
 import { memo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CheckCircle2, ImageOff, Loader2, Plus, RotateCcw, X } from 'lucide-react'
+import {
+  CheckCircle2, ChevronLeft, ChevronRight, ImageOff, Loader2, Plus, RotateCcw, X,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatBytes } from '@/lib/uploads/image-files'
 import type { ItemStatus, UploadItem } from './use-folder-upload'
 
-const INITIAL_VISIBLE = 60
+const PAGE_SIZE = 10
 
 interface ImagePreviewGridProps {
   items: UploadItem[]
@@ -35,14 +40,21 @@ interface ImagePreviewGridProps {
 export function ImagePreviewGrid({
   items, onRemove, onInclude, onDimensions, busy,
 }: ImagePreviewGridProps) {
-  const [visible, setVisible] = useState(INITIAL_VISIBLE)
+  const [page, setPage] = useState(1)
 
-  const shown = items.slice(0, visible)
-  const hidden = items.length - shown.length
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  // Derived rather than corrected in an effect: removing items can drop the
+  // page count below the current page, and clamping here avoids a blank render.
+  const currentPage = Math.min(page, totalPages)
+
+  const from = (currentPage - 1) * PAGE_SIZE
+  const shown = items.slice(from, from + PAGE_SIZE)
+
+  if (items.length === 0) return null
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {shown.map(item => (
           <PreviewTile
             key={item.id}
@@ -55,16 +67,52 @@ export function ImagePreviewGrid({
         ))}
       </div>
 
-      {hidden > 0 && (
-        <div className="flex justify-center">
-          <Button variant="outline" size="lg" onClick={() => setVisible(items.length)}>
-            Show all {items.length} images
-            <span className="text-muted-foreground">({hidden} more)</span>
-          </Button>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm">
+          <p className="text-muted-foreground">
+            Showing {from + 1}–{Math.min(from + PAGE_SIZE, items.length)} of {items.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Previous
+            </Button>
+            <span className="px-2 text-muted-foreground tabular-nums">
+              Page {currentPage} of {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage(currentPage + 1)}
+              disabled={currentPage >= totalPages}
+            >
+              Next
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       )}
     </div>
   )
+}
+
+/**
+ * Prefer a small Cloudinary rendition once the image has landed there.
+ *
+ * The local object URL points at the untouched original — asking the browser to
+ * decode 45 MP to fill a 200px tile is the single most expensive thing this grid
+ * can do, and it is pure waste once a hosted copy exists.
+ */
+function thumbnailSrc(item: UploadItem): string {
+  if (item.imageUrl && item.imageUrl.includes('/upload/')) {
+    return item.imageUrl.replace('/upload/', '/upload/w_400,c_limit,f_auto,q_auto/')
+  }
+  return item.previewUrl
 }
 
 interface PreviewTileProps {
@@ -99,14 +147,18 @@ const PreviewTile = memo(function PreviewTile({
           </div>
         ) : (
           <img
-            src={item.previewUrl}
+            src={thumbnailSrc(item)}
             alt={item.productName}
             loading="lazy"
             decoding="async"
             className="h-full w-full object-cover"
             onLoad={e => {
               const img = e.currentTarget
-              if (img.naturalWidth) onDimensions(item.id, img.naturalWidth, img.naturalHeight)
+              // Only the local original reports true source dimensions; the
+              // Cloudinary rendition is deliberately downscaled.
+              if (img.naturalWidth && img.currentSrc === item.previewUrl) {
+                onDimensions(item.id, img.naturalWidth, img.naturalHeight)
+              }
             }}
             onError={() => setBroken(true)}
           />
