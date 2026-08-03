@@ -26,7 +26,7 @@ import { cn } from '@/lib/utils'
 import { formatBytes } from '@/lib/uploads/image-files'
 import type { ItemStatus, UploadItem } from './use-folder-upload'
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 5
 
 interface ImagePreviewGridProps {
   items: UploadItem[]
