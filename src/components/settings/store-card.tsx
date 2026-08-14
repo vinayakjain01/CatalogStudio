@@ -37,6 +37,26 @@ export function StoreCard({ store }: StoreCardProps) {
   // new expiring offline token. This clears the 403 / non-expiring token error.
   const reconnectUrl = `/api/shopify/install?shop=${encodeURIComponent(store.shop_domain)}`
 
+  /**
+   * Start OAuth in the TOP window, never the current one.
+   *
+   * Inside the Shopify admin this component renders in an iframe, and Shopify's
+   * OAuth grant screen sets frame-ancestors so it refuses to be framed. A plain
+   * link therefore dies silently in the embedded app — the merchant clicks
+   * Reconnect and nothing whatsoever happens. Escaping to the top frame is the
+   * standard embedded-app redirect; outside the iframe `top === self`, so this
+   * is just a normal navigation.
+   */
+  function startReconnect(e: React.MouseEvent) {
+    e.preventDefault()
+    const target = `${window.location.origin}${reconnectUrl}`
+    if (window.top && window.top !== window.self) {
+      window.top.location.href = target
+    } else {
+      window.location.href = target
+    }
+  }
+
   async function handleSync() {
     setSyncing(true)
     setSyncResult(null)
@@ -113,7 +133,7 @@ export function StoreCard({ store }: StoreCardProps) {
               </p>
             </div>
             <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 flex-shrink-0" asChild>
-              <a href={reconnectUrl}>
+              <a href={reconnectUrl} onClick={startReconnect}>
                 <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
                 Reconnect
               </a>

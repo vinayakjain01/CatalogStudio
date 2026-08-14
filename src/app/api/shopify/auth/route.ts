@@ -126,19 +126,42 @@ export async function GET(request: NextRequest) {
   }
 
   // --- 3. Token exchange: refresh to an expiring offline access token. ---
+  //
+  // Three things go wrong here if this block is careless, and all three did:
+  //  1. needs_reauth was never cleared on success, so the "token expired"
+  //     banner survived a perfectly good reconnect and could never clear.
+  //  2. expires_in was discarded, leaving token_expires_at null — nothing could
+  //     tell a fresh expiring token from a legacy non-expiring one.
+  //  3. a failed exchange only reached a server log, so the app loaded normally
+  //     with a dead token and the merchant had no idea why syncing failed.
   if (idToken) {
     try {
-      const { access_token, scope } = await exchangeSessionTokenForOfflineToken(
-        shop,
-        idToken
-      )
+      const { access_token, scope, expires_in } =
+        await exchangeSessionTokenForOfflineToken(shop, idToken)
+
       await supabase
         .from('stores')
-        .update({ access_token, ...(scope ? { scope } : {}) })
+        .update({
+          access_token,
+          ...(scope ? { scope } : {}),
+          needs_reauth: false,
+          token_expires_at: expires_in
+            ? new Date(Date.now() + expires_in * 1000).toISOString()
+            : null,
+        })
         .eq('id', store.id)
-    } catch (err) {
-      // Don't block the app load if exchange fails; log for diagnosis.
-      console.error('[shopify/auth] token exchange failed:', err)
+
+      console.log(
+        `[shopify/auth] token exchange OK shop=${shop} prefix=${access_token.slice(0, 6)} expires_in=${expires_in ?? 'none'}`
+      )
+    } catch (err: any) {
+      // Flag the store so the UI keeps prompting a reconnect rather than
+      // silently serving a token the Admin API will reject.
+      console.error('[shopify/auth] token exchange failed:', err?.message || err)
+      await supabase
+        .from('stores')
+        .update({ needs_reauth: true })
+        .eq('id', store.id)
     }
   }
 

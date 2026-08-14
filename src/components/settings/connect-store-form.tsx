@@ -30,8 +30,16 @@ export function ConnectStoreForm() {
       return
     }
 
-    // Redirect to our install route — it handles the rest
-    window.location.href = `/api/shopify/install?shop=${domain}`
+    // Redirect to our install route — it handles the rest.
+    // Must target the TOP window: inside the Shopify admin iframe, Shopify's
+    // OAuth grant screen refuses to be framed, so navigating the iframe itself
+    // fails silently and the merchant sees nothing happen.
+    const target = `${window.location.origin}/api/shopify/install?shop=${domain}`
+    if (window.top && window.top !== window.self) {
+      window.top.location.href = target
+    } else {
+      window.location.href = target
+    }
   }
 
   return (
