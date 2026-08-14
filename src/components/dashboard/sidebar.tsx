@@ -5,10 +5,11 @@ import { usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Wand2, Check, Copy } from 'lucide-react'
+import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Check, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { StoreSwitcher } from '@/components/dashboard/store-switcher'
+import { CraftifyLogo } from '@/components/brand/craftify-logo'
 
 interface StoreLite {
   id: string
@@ -94,13 +95,10 @@ export function Sidebar({
   }
 
   return (
-    // 240px (w-60) on a gray-50 surface, per the design spec.
+    // 240px (w-60) on the tinted sidebar surface.
     <aside className="w-60 border-r flex flex-col bg-sidebar">
-      <div className="p-5 border-b">
-        <div className="flex items-center gap-2">
-          <Wand2 className="h-5 w-5 text-primary" />
-          <span className="font-semibold text-base">Catalog Studio</span>
-        </div>
+      <div className="border-b p-5">
+        <CraftifyLogo markClassName="h-7 w-7" />
       </div>
       <div className="border-b">
         <StoreSwitcher stores={stores} activeStoreId={activeStoreId} />
@@ -108,9 +106,8 @@ export function Sidebar({
       <nav className="flex-1 p-3 space-y-1">
         {navItems.map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href}>
-            {/* Active item is indigo-50 on indigo-600 text — a tinted state
-                rather than a solid fill, so the nav reads as navigation and the
-                solid indigo stays reserved for primary actions. */}
+            {/* Tinted active state rather than a solid fill, so the nav reads
+                as navigation and solid purple stays reserved for actions. */}
             <div className={cn(
               'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
               pathname === href

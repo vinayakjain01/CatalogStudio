@@ -26,7 +26,7 @@ const manrope = Manrope({
 })
 
 export const metadata: Metadata = {
-  title: 'Catalog Studio',
+  title: 'Craftify',
   description: 'Catalog creative automation for Shopify → Meta',
 }
 
