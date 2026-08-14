@@ -73,9 +73,11 @@ export default async function ProductsPage({
   if (search) query = query.ilike('title', `%${search}%`)
   if (tag) query = query.contains('tags', [tag])
 
-  const [{ count: totalCount }, { data: products }] = await Promise.all([
+  const [{ count: totalCount }, { data: products }, { data: store }] = await Promise.all([
     countQuery,
     query,
+    // Prices must render in the store's own currency, not a hardcoded one.
+    supabase.from('stores').select('currency').eq('id', activeStoreId).single(),
   ])
 
   const totalPages = Math.max(1, Math.ceil((totalCount || 0) / PAGE_SIZE))
@@ -90,7 +92,7 @@ export default async function ProductsPage({
           </p>
         </div>
       </div>
-      <ProductsTable products={products || []} />
+      <ProductsTable products={products || []} currency={store?.currency || 'USD'} />
       <ProductsPagination
         currentPage={currentPage}
         totalPages={totalPages}

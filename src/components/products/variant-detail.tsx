@@ -52,10 +52,11 @@ export interface CreativeRow {
 
 const LOW_STOCK_THRESHOLD = 5
 
-function formatPrice(value: number | null) {
+/** Store currency, not a hardcoded one — see products-table. */
+function formatPrice(value: number | null, currency: string) {
   if (value == null) return '—'
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency', currency: 'INR', maximumFractionDigits: 0,
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency', currency, maximumFractionDigits: 0,
   }).format(value)
 }
 
@@ -71,12 +72,14 @@ export function VariantDetail({
   variants,
   images,
   creatives,
+  currency = 'USD',
 }: {
   productId: string
   storeId: string
   variants: VariantRow[]
   images: ImageRow[]
   creatives: CreativeRow[]
+  currency?: string
 }) {
   const [selectedId, setSelectedId] = useState(variants[0]?.id ?? '')
   const selected = variants.find(v => v.id === selectedId) ?? variants[0]
@@ -150,10 +153,10 @@ export function VariantDetail({
       <Card>
         <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3 p-4 text-sm">
           <Fact label="Price">
-            <span className="font-semibold">{formatPrice(price)}</span>
+            <span className="font-semibold">{formatPrice(price, currency)}</span>
             {onSale && (
               <>
-                <span className="ml-2 text-muted-foreground line-through">{formatPrice(compareAt)}</span>
+                <span className="ml-2 text-muted-foreground line-through">{formatPrice(compareAt, currency)}</span>
                 <Badge variant="destructive" className="ml-2 py-0 text-xs">-{discount}%</Badge>
               </>
             )}

@@ -3,6 +3,12 @@ import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { syncStoreProducts } from '@/lib/shopify-sync'
 
+// A full catalog sync paginates Shopify, upserts products and variants, then
+// replaces images. At 741 products / 9.5k variants the default budget is not
+// enough — the first run timed out mid-way, leaving images unsynced.
+export const maxDuration = 300
+export const dynamic = 'force-dynamic'
+
 function getAdminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

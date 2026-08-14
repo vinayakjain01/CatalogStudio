@@ -384,12 +384,42 @@ async function replaceProductVariants(
 
   // Reconcile deletions — a variant removed in Shopify must stop appearing in
   // the products list and the feed. Upserting alone would leave it orphaned.
-  for (const [productId, keepIds] of seenByProductId) {
-    const query = supabase.from('product_variants').delete().eq('product_id', productId)
-    const { error } = keepIds.length
-      ? await query.not('shopify_variant_id', 'in', `(${keepIds.join(',')})`)
-      : await query
+  //
+  // Done as one read plus one delete of just the stale ids. The obvious version
+  // — a scoped DELETE per product — is O(products) sequential round-trips: on
+  // this catalog that was 741 of them, which exhausted the function's time
+  // budget before image syncing ever ran, leaving product_images empty and
+  // last_synced_at unset. Deleting by id also avoids a `not.in` list carrying
+  // ~9.5k variant ids in a URL.
+  const productIds = Array.from(seenByProductId.keys())
+  const staleIds: string[] = []
+
+  for (const chunk of chunkArray(productIds, 200)) {
+    const { data: existing, error } = await measureAsync(
+      'supabase.product_variants.reconcile_lookup',
+      () => supabase
+        .from('product_variants')
+        .select('id, product_id, shopify_variant_id')
+        .in('product_id', chunk),
+      { rows: chunk.length, storeId }
+    )
     if (error) throw new Error(error.message)
+
+    for (const row of existing ?? []) {
+      const keep = seenByProductId.get((row as any).product_id)
+      if (keep && !keep.includes(String((row as any).shopify_variant_id))) {
+        staleIds.push((row as any).id)
+      }
+    }
+  }
+
+  for (const chunk of chunkArray(staleIds, 200)) {
+    const { error } = await supabase.from('product_variants').delete().in('id', chunk)
+    if (error) throw new Error(error.message)
+  }
+
+  if (staleIds.length > 0) {
+    console.log(`[sync] removed ${staleIds.length} variants no longer in Shopify`)
   }
 }
 

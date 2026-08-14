@@ -28,9 +28,13 @@ interface Product {
 /** Below this, a variant is "low stock" rather than plainly in stock. */
 const LOW_STOCK_THRESHOLD = 5
 
-function formatPrice(price: number) {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency', currency: 'INR', maximumFractionDigits: 0,
+/**
+ * Format in the STORE's currency, not a hardcoded one. This showed a USD store's
+ * prices with a rupee sign, which silently misrepresents every price on the page.
+ */
+function formatPrice(price: number, currency: string) {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency', currency, maximumFractionDigits: 0,
   }).format(price)
 }
 
@@ -52,14 +56,16 @@ function stockSummary(variants: ProductVariantLite[]) {
   return { label: 'In Stock', tone: 'green' as const, total }
 }
 
-/** Price range across variants — "₹1,200 – ₹1,800" when they differ. */
-function priceSummary(variants: ProductVariantLite[]) {
+/** Price range across variants — "$1,200 – $1,800" when they differ. */
+function priceSummary(variants: ProductVariantLite[], currency: string) {
   const prices = variants.map(v => Number(v.price ?? 0)).filter(p => p > 0)
   if (prices.length === 0) return { label: '—', compareAt: null as number | null, discount: null as number | null }
 
   const min = Math.min(...prices)
   const max = Math.max(...prices)
-  const label = min === max ? formatPrice(min) : `${formatPrice(min)} – ${formatPrice(max)}`
+  const label = min === max
+    ? formatPrice(min, currency)
+    : `${formatPrice(min, currency)} – ${formatPrice(max, currency)}`
 
   // Discount is quoted off the cheapest variant, which is the one the range leads with.
   const cheapest = variants.find(v => Number(v.price ?? 0) === min)
@@ -78,7 +84,13 @@ const TONE_CLASS = {
   muted: 'bg-muted text-muted-foreground',
 } as const
 
-export function ProductsTable({ products }: { products: Product[] }) {
+export function ProductsTable({
+  products,
+  currency = 'USD',
+}: {
+  products: Product[]
+  currency?: string
+}) {
   const router = useRouter()
 
   return (
@@ -100,7 +112,7 @@ export function ProductsTable({ products }: { products: Product[] }) {
             const variants = product.product_variants ?? []
             const imageUrl = product.product_images?.[0]?.src
             const stock = stockSummary(variants)
-            const price = priceSummary(variants)
+            const price = priceSummary(variants, currency)
 
             return (
               <tr
@@ -155,7 +167,7 @@ export function ProductsTable({ products }: { products: Product[] }) {
                   </div>
                   {price.compareAt && price.discount && (
                     <p className="text-xs text-muted-foreground line-through">
-                      {formatPrice(price.compareAt)}
+                      {formatPrice(price.compareAt, currency)}
                     </p>
                   )}
                 </td>

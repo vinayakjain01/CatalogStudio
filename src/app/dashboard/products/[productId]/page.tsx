@@ -19,7 +19,7 @@ export default async function ProductDetailPage({
     .from('products')
     .select(`
       id, title, vendor, product_type, tags, status, description,
-      stores(id, user_id, shop_name),
+      stores(id, user_id, shop_name, currency),
       product_variants(
         id, shopify_variant_id, title, sku, barcode, price, compare_at_price,
         inventory_quantity, is_sold_out, option1, option2, option3, position
@@ -74,6 +74,7 @@ export default async function ProductDetailPage({
         variants={variants}
         images={images}
         creatives={creatives}
+        currency={(product as any).stores?.currency || 'USD'}
       />
     </div>
   )
