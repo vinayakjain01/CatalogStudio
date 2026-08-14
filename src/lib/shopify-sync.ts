@@ -312,7 +312,13 @@ function toProductRow(storeId: string, sp: ShopifyProduct) {
     price,
     compare_at_price: compareAtPrice,
     inventory_quantity: primaryVariant?.inventory_quantity || 0,
-    sku: primaryVariant?.sku || null,
+    // products.sku is deliberately NOT written. A leftover UNIQUE(store_id, sku)
+    // constraint from the removed folder-import flow (where filename doubled as
+    // the dedup key) makes it fatal here: real catalogs reuse a SKU across
+    // products, so syncing 741 products died on
+    //   duplicate key value violates unique constraint "products_store_id_sku_key"
+    // In v2 the SKU belongs to the variant, which is uniquely keyed on
+    // (store_id, shopify_variant_id). Migration 006 drops the stale constraint.
     updated_at: new Date().toISOString(),
   }
 }
