@@ -33,23 +33,42 @@ export function StoreCard({ store }: StoreCardProps) {
   const feedJsonUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=json`
   const feedCsvUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=csv`
 
-  // Reconnect sends the merchant through a fresh OAuth flow, which issues a
-  // new expiring offline token. This clears the 403 / non-expiring token error.
-  const reconnectUrl = `/api/shopify/install?shop=${encodeURIComponent(store.shop_domain)}`
+  /**
+   * Reconnect opens the app INSIDE the Shopify admin — it does not run the
+   * legacy OAuth install flow.
+   *
+   * WHY: /admin/oauth/authorize + code grant returns a NON-EXPIRING offline
+   * token (shpat_…), and the Admin API now rejects those outright:
+   *   "[API] Non-expiring access tokens are no longer accepted."
+   * Verified live — reconnecting that way swapped the token and still 403'd.
+   *
+   * The only path to an *expiring* offline token is token exchange, which needs
+   * the session token App Bridge provides, which only exists when the app is
+   * loaded embedded. Launching the admin app URL triggers
+   * / → /api/shopify/auth?id_token=… → exchange → fresh token.
+   */
+  const storeHandle = store.shop_domain.replace(/\.myshopify\.com$/, '')
+  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID
+  const embeddedAppUrl = apiKey
+    ? `https://admin.shopify.com/store/${storeHandle}/apps/${apiKey}`
+    : null
+  // Falls back to the install flow only when the app key isn't exposed to the
+  // browser — a store that was never installed still needs that path.
+  const reconnectUrl =
+    embeddedAppUrl ?? `/api/shopify/install?shop=${encodeURIComponent(store.shop_domain)}`
 
   /**
-   * Start OAuth in the TOP window, never the current one.
-   *
-   * Inside the Shopify admin this component renders in an iframe, and Shopify's
-   * OAuth grant screen sets frame-ancestors so it refuses to be framed. A plain
-   * link therefore dies silently in the embedded app — the merchant clicks
-   * Reconnect and nothing whatsoever happens. Escaping to the top frame is the
-   * standard embedded-app redirect; outside the iframe `top === self`, so this
-   * is just a normal navigation.
+   * Navigate the TOP window, never the current one. Inside the Shopify admin
+   * this renders in an iframe, and both the admin and Shopify's OAuth screen
+   * set frame-ancestors, so navigating the iframe dies silently — the merchant
+   * clicks and nothing happens. Outside the iframe `top === self`, so this is
+   * an ordinary navigation.
    */
   function startReconnect(e: React.MouseEvent) {
     e.preventDefault()
-    const target = `${window.location.origin}${reconnectUrl}`
+    const target = reconnectUrl.startsWith('http')
+      ? reconnectUrl
+      : `${window.location.origin}${reconnectUrl}`
     if (window.top && window.top !== window.self) {
       window.top.location.href = target
     } else {
@@ -129,7 +148,9 @@ export function StoreCard({ store }: StoreCardProps) {
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-amber-800">Shopify access token expired</p>
               <p className="text-xs text-amber-700 mt-0.5">
-                Shopify no longer accepts the old token. Reconnect to get a fresh one — it only takes a second.
+                Shopify only accepts expiring tokens now, and those are issued when the
+                app is opened inside your Shopify admin. Reconnect opens it there and
+                refreshes the token automatically.
               </p>
             </div>
             <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 flex-shrink-0" asChild>

@@ -8,7 +8,11 @@ export const metadata: Metadata = {
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID
+  // Server Component, so the non-public var is readable here too; the client id
+  // is public regardless (it appears in every OAuth URL). An empty value would
+  // make App Bridge silently abort and never issue a session token.
+  const apiKey =
+    process.env.NEXT_PUBLIC_SHOPIFY_CLIENT_ID
     ?? process.env.SHOPIFY_CLIENT_ID
     ?? ''
 
