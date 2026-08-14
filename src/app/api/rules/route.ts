@@ -80,11 +80,15 @@ export async function POST(request: NextRequest) {
       name: name || null,
       conditions: cleanConditions,
       condition_mode: condition_mode === 'any' ? 'any' : 'all',
-      // Legacy columns stay populated for legacy submissions so the resolver's
-      // fallback path still has something to read.
-      rule_type: isV2 ? null : rule_type,
-      rule_operator: isV2 ? null : rule_operator,
-      rule_value: isV2 ? null : rule_value,
+      // The legacy columns are NOT NULL (they predate migration 002, which added
+      // `conditions` but never relaxed them), so a v2 rule cannot write null
+      // there. It writes a marker instead: the resolver checks `conditions`
+      // first and only falls back to these when the array is empty, so a v2 rule
+      // never reaches the legacy evaluator, and 'conditions' is not a legacy
+      // rule_type it would match anyway. Migration 007 drops the NOT NULLs.
+      rule_type: isV2 ? 'conditions' : rule_type,
+      rule_operator: isV2 ? (condition_mode === 'any' ? 'any' : 'all') : rule_operator,
+      rule_value: isV2 ? '' : rule_value,
       priority: priority ?? 0,
     })
     .select('*, templates(id, name)')
