@@ -2,7 +2,8 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveStore } from '@/lib/active-store'
 import { Button } from '@/components/ui/button'
-import { Store } from 'lucide-react'
+import { Store, Package } from 'lucide-react'
+import { EmptyState } from '@/components/ui/empty-state'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
 
@@ -30,20 +31,19 @@ export default async function ProductsPage({
     return (
       <div className="space-y-6">
         <h1 className="text-2xl font-semibold">Products</h1>
-        <div className="text-center py-20 space-y-4">
-          <div className="text-muted-foreground">
-            <p>No products yet.</p>
-            <p className="text-sm mt-1">
-              Connect your Shopify store to sync products and variants.
-            </p>
-          </div>
-          <Button size="lg" asChild>
-            <Link href="/dashboard/settings">
-              <Store className="h-4 w-4" />
-              Connect store
-            </Link>
-          </Button>
-        </div>
+        <EmptyState
+          icon={Store}
+          title="Connect your Shopify store"
+          description="Sync your catalog to bring products, variants and images into Craftify."
+          action={
+            <Button size="lg" asChild>
+              <Link href="/dashboard/settings">
+                <Store className="h-4 w-4" />
+                Connect store
+              </Link>
+            </Button>
+          }
+        />
       </div>
     )
   }
@@ -92,7 +92,24 @@ export default async function ProductsPage({
           </p>
         </div>
       </div>
-      <ProductsTable products={products || []} currency={store?.currency || 'USD'} />
+      {(products?.length ?? 0) === 0 ? (
+        <EmptyState
+          icon={Package}
+          title={search || tag ? 'No products match those filters' : 'Sync your catalog'}
+          description={
+            search || tag
+              ? 'Try a different search term, or clear the filter to see everything.'
+              : 'Run a sync from Settings to pull your Shopify products and variants in.'
+          }
+          action={
+            <Button size="lg" asChild>
+              <Link href="/dashboard/settings">Go to Settings</Link>
+            </Button>
+          }
+        />
+      ) : (
+        <ProductsTable products={products || []} currency={store?.currency || 'USD'} />
+      )}
       <ProductsPagination
         currentPage={currentPage}
         totalPages={totalPages}

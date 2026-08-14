@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -335,11 +336,16 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       )}
 
       {!loading && creatives.length === 0 && (
-        <div className="text-center py-20 text-muted-foreground border-2 border-dashed rounded-xl">
-          <ImageIcon className="h-10 w-10 mx-auto mb-3 opacity-30" />
-          <p className="font-medium">No creatives yet</p>
-          <p className="text-sm mt-1">Set up rules, then click Generate to create creatives</p>
-        </div>
+        <EmptyState
+          icon={ImageIcon}
+          title="Generate your first creatives"
+          description="Map products to a template in the Rules Engine, then generate — every matching variant gets its own creative."
+          action={
+            <Button size="lg" asChild>
+              <a href="/dashboard/rules">Open Rules Engine</a>
+            </Button>
+          }
+        />
       )}
 
       {!loading && creatives.length > 0 && (

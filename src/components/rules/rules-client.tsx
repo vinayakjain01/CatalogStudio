@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Trash2, Plus, Zap, ArrowRight, X } from 'lucide-react'
+import { EmptyState } from '@/components/ui/empty-state'
 import type { RuleCondition, RuleField, RuleOperator } from '@/lib/template-resolver'
 
 const FIELDS: { value: RuleField; label: string; kind: 'text' | 'number' | 'none' }[] = [
@@ -295,12 +296,11 @@ export function RulesClient({ stores, templates }: Props) {
         {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
         {!loading && rules.length === 0 && (
-          <Card className="border-dashed">
-            <CardContent className="py-10 text-center text-muted-foreground">
-              <Zap className="mx-auto mb-2 h-6 w-6 opacity-30" />
-              <p className="text-sm">No rules yet — products won&apos;t generate until one matches.</p>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Zap}
+            title="Add your first rule"
+            description="Rules decide which template each product gets. Until one matches, nothing will generate."
+          />
         )}
 
         {rules.map((rule, index) => (

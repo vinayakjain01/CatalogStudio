@@ -94,7 +94,8 @@ export function Sidebar({
   }
 
   return (
-    <aside className="w-60 border-r flex flex-col bg-card">
+    // 240px (w-60) on a gray-50 surface, per the design spec.
+    <aside className="w-60 border-r flex flex-col bg-sidebar">
       <div className="p-5 border-b">
         <div className="flex items-center gap-2">
           <Wand2 className="h-5 w-5 text-primary" />
@@ -107,11 +108,14 @@ export function Sidebar({
       <nav className="flex-1 p-3 space-y-1">
         {navItems.map(({ href, label, icon: Icon }) => (
           <Link key={href} href={href}>
+            {/* Active item is indigo-50 on indigo-600 text — a tinted state
+                rather than a solid fill, so the nav reads as navigation and the
+                solid indigo stays reserved for primary actions. */}
             <div className={cn(
-              'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors',
+              'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
               pathname === href
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground'
             )}>
               <Icon className="h-4 w-4" />
               {label}

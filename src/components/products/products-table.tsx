@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { Badge } from '@/components/ui/badge'
 import { formatDistanceToNow } from 'date-fns'
-import { cn } from '@/lib/utils'
+import { StatusBadge, type StatusTone } from '@/components/ui/status-badge'
 
 export interface ProductVariantLite {
   id: string
@@ -46,14 +46,14 @@ function formatPrice(price: number, currency: string) {
  * how Shopify's storefront behaves, so the badge must not claim otherwise.
  */
 function stockSummary(variants: ProductVariantLite[]) {
-  if (variants.length === 0) return { label: 'No variants', tone: 'muted' as const, total: 0 }
+  if (variants.length === 0) return { label: 'No variants', tone: 'neutral' as StatusTone, total: 0 }
 
   const total = variants.reduce((sum, v) => sum + (v.inventory_quantity ?? 0), 0)
   const allSoldOut = variants.every(v => v.is_sold_out)
 
-  if (allSoldOut) return { label: 'Sold Out', tone: 'red' as const, total }
-  if (total < LOW_STOCK_THRESHOLD) return { label: 'Low Stock', tone: 'amber' as const, total }
-  return { label: 'In Stock', tone: 'green' as const, total }
+  if (allSoldOut) return { label: 'Sold Out', tone: 'sold_out' as StatusTone, total }
+  if (total < LOW_STOCK_THRESHOLD) return { label: 'Low Stock', tone: 'low_stock' as StatusTone, total }
+  return { label: 'In Stock', tone: 'in_stock' as StatusTone, total }
 }
 
 /** Price range across variants — "$1,200 – $1,800" when they differ. */
@@ -76,13 +76,6 @@ function priceSummary(variants: ProductVariantLite[], currency: string) {
 
   return { label, compareAt, discount }
 }
-
-const TONE_CLASS = {
-  green: 'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400',
-  amber: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400',
-  red:   'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400',
-  muted: 'bg-muted text-muted-foreground',
-} as const
 
 export function ProductsTable({
   products,
@@ -143,12 +136,7 @@ export function ProductsTable({
                 </td>
 
                 <td className="p-3">
-                  <span className={cn(
-                    'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
-                    TONE_CLASS[stock.tone]
-                  )}>
-                    {stock.label}
-                  </span>
+                  <StatusBadge tone={stock.tone}>{stock.label}</StatusBadge>
                   {variants.length > 0 && (
                     <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">
                       {stock.total} in stock
@@ -162,7 +150,7 @@ export function ProductsTable({
                   <div className="flex items-center gap-2">
                     <span className="font-medium whitespace-nowrap">{price.label}</span>
                     {price.discount && (
-                      <Badge variant="destructive" className="text-xs py-0">-{price.discount}%</Badge>
+                      <StatusBadge tone="sale">-{price.discount}%</StatusBadge>
                     )}
                   </div>
                   {price.compareAt && price.discount && (

@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Plus, Pencil, Layers } from 'lucide-react'
 import { DeleteTemplateButton } from '@/components/templates/delete-template-button'
+import { EmptyState } from '@/components/ui/empty-state'
 
 export default async function TemplatesPage() {
   const supabase = await createClient()
@@ -85,17 +86,19 @@ export default async function TemplatesPage() {
           ))}
         </div>
       ) : (
-        <div className="border-2 border-dashed rounded-xl flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <Layers className="h-10 w-10 mb-3 opacity-30" />
-          <p className="font-medium">No templates yet</p>
-          <p className="text-sm mt-1">Create your first template to start generating creatives</p>
-          <Link href="/dashboard/templates/new" className="mt-4">
-            <Button variant="outline">
-              <Plus className="h-4 w-4 mr-2" />
-              Create template
+        <EmptyState
+          icon={Layers}
+          title="Design your first template"
+          description="A template is the layered canvas your product photos are composited into — add text, badges and a logo once, then apply it across the catalog."
+          action={
+            <Button size="lg" asChild>
+              <Link href="/dashboard/templates/new">
+                <Plus className="h-4 w-4" />
+                Create template
+              </Link>
             </Button>
-          </Link>
-        </div>
+          }
+        />
       )}
     </div>
   )

@@ -9,11 +9,11 @@
  * variant[0] values and there was no way to reach the others at all.
  */
 import { useState } from 'react'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Download, ImageIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { ProductGenerateButton } from '@/components/products/product-generate-button'
 
 export interface VariantRow {
@@ -157,7 +157,7 @@ export function VariantDetail({
             {onSale && (
               <>
                 <span className="ml-2 text-muted-foreground line-through">{formatPrice(compareAt, currency)}</span>
-                <Badge variant="destructive" className="ml-2 py-0 text-xs">-{discount}%</Badge>
+                <StatusBadge tone="sale" className="ml-2">-{discount}%</StatusBadge>
               </>
             )}
           </Fact>
@@ -259,23 +259,7 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 }
 
 function StockBadge({ soldOut, qty }: { soldOut: boolean; qty: number }) {
-  if (soldOut) {
-    return (
-      <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950/40 dark:text-red-400">
-        Sold Out
-      </span>
-    )
-  }
-  if (qty < LOW_STOCK_THRESHOLD) {
-    return (
-      <span className="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
-        Low Stock · {qty}
-      </span>
-    )
-  }
-  return (
-    <span className="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-950/40 dark:text-green-400">
-      In Stock · {qty}
-    </span>
-  )
+  if (soldOut) return <StatusBadge tone="sold_out">Sold Out</StatusBadge>
+  if (qty < LOW_STOCK_THRESHOLD) return <StatusBadge tone="low_stock">Low Stock · {qty}</StatusBadge>
+  return <StatusBadge tone="in_stock">In Stock · {qty}</StatusBadge>
 }
