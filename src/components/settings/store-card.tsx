@@ -30,8 +30,22 @@ export function StoreCard({ store }: StoreCardProps) {
   const [copied, setCopied] = useState<string | null>(null)
   const router = useRouter()
 
-  const feedJsonUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=json`
-  const feedCsvUrl = `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/feed/${store.id}?token=${store.feed_token}&format=csv`
+  /**
+   * Feed URLs are built from the ORIGIN THE USER IS ON, falling back to the
+   * configured app URL.
+   *
+   * NEXT_PUBLIC_APP_URL is inlined at build time, so after a domain change it
+   * keeps emitting the old host until someone redeploys — and these URLs get
+   * pasted into Meta Commerce Manager, where a stale host means a silently dead
+   * feed. The sidebar already resolves at runtime; this matches it so the two
+   * can never disagree.
+   */
+  const origin =
+    typeof window !== 'undefined'
+      ? window.location.origin
+      : (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
+  const feedJsonUrl = `${origin}/api/feed/${store.id}?token=${store.feed_token}&format=json`
+  const feedCsvUrl = `${origin}/api/feed/${store.id}?token=${store.feed_token}&format=csv`
 
   /**
    * Reconnect opens the app INSIDE the Shopify admin — it does not run the
