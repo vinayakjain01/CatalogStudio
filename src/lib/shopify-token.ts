@@ -22,7 +22,26 @@ export interface OfflineTokenResult {
   access_token: string
   scope: string
   expires_in?: number
+  refresh_token?: string
+  refresh_token_expires_in?: number
 }
+
+/**
+ * Asks Shopify for an EXPIRING offline token.
+ *
+ * Shopify introduced expiring offline tokens in Dec 2025 and now rejects the
+ * non-expiring kind outright:
+ *   "[API] Non-expiring access tokens are no longer accepted."
+ *
+ * Crucially, expiring is OPT-IN per request — omit this and Shopify happily
+ * returns a non-expiring token that every Admin API call then 403s on. That was
+ * the actual cause of the reconnect loop: reinstalling and token exchange both
+ * "succeeded" and both handed back an unusable token, because neither request
+ * asked for an expiring one.
+ *
+ * Expiring tokens live 1 hour and come with a 90-day refresh token.
+ */
+const EXPIRING = '1'
 
 // ── Server-side: token exchange (used in /api/shopify/auth) ──────────────────
 
@@ -46,6 +65,7 @@ export async function exchangeSessionTokenForOfflineToken(
       subject_token:        idToken,
       subject_token_type:   ID_TOKEN_TYPE,
       requested_token_type: OFFLINE_TOKEN_TYPE,
+      expiring:             EXPIRING,
     }),
   })
 
@@ -59,10 +79,67 @@ export async function exchangeSessionTokenForOfflineToken(
     throw new Error(`Token exchange returned no access_token: ${text}`)
   }
 
+  // No expires_in means Shopify ignored `expiring` and issued a non-expiring
+  // token, which the Admin API will reject on the very next call. Better to fail
+  // here, where the reason is obvious, than to store it and debug 403s later.
+  if (!data.expires_in) {
+    throw new Error(
+      'Shopify returned a NON-EXPIRING token despite expiring=1. ' +
+      'The Admin API rejects these; check the app is on Shopify managed installation.'
+    )
+  }
+
   return {
-    access_token: data.access_token,
-    scope:        data.scope ?? '',
-    expires_in:   data.expires_in,
+    access_token:             data.access_token,
+    scope:                    data.scope ?? '',
+    expires_in:               data.expires_in,
+    refresh_token:            data.refresh_token,
+    refresh_token_expires_in: data.refresh_token_expires_in,
+  }
+}
+
+/**
+ * Trade a refresh token for a fresh access token.
+ *
+ * Expiring access tokens last only 1 hour, so anything running outside a live
+ * browser session — the cron sync, the BullMQ worker — will hold an expired one
+ * almost always. The refresh token lasts 90 days and is the only way those paths
+ * stay authenticated.
+ *
+ * Shopify rotates both tokens: the returned refresh_token replaces the old one,
+ * which is invalidated immediately, so the new value MUST be persisted.
+ */
+export async function refreshOfflineToken(
+  shop: string,
+  refreshToken: string
+): Promise<OfflineTokenResult> {
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id:     process.env.SHOPIFY_CLIENT_ID,
+      client_secret: process.env.SHOPIFY_CLIENT_SECRET,
+      grant_type:    'refresh_token',
+      refresh_token: refreshToken,
+    }),
+  })
+
+  const text = await res.text()
+  if (!res.ok) {
+    throw new Error(`Token refresh failed (${res.status}): ${text}`)
+  }
+
+  const data = JSON.parse(text)
+  if (!data.access_token) {
+    throw new Error(`Token refresh returned no access_token: ${text}`)
+  }
+
+  return {
+    access_token:             data.access_token,
+    scope:                    data.scope ?? '',
+    expires_in:               data.expires_in,
+    refresh_token:            data.refresh_token,
+    refresh_token_expires_in: data.refresh_token_expires_in,
   }
 }
 

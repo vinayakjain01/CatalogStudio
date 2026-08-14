@@ -99,6 +99,8 @@ export async function GET(request: NextRequest) {
   let accessToken: string
   let scope: string
   let expiresAt: string | null = null
+  let refreshToken: string | null = null
+  let refreshExpiresAt: string | null = null
 
   try {
     const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
@@ -108,6 +110,10 @@ export async function GET(request: NextRequest) {
         client_id: process.env.SHOPIFY_CLIENT_ID,
         client_secret: process.env.SHOPIFY_CLIENT_SECRET,
         code,
+        // Opt in to an EXPIRING offline token. Without this Shopify returns a
+        // non-expiring one, which the Admin API now rejects outright — a fresh
+        // reinstall still produced an unusable token until this was added.
+        expiring: '1',
       }),
     })
 
@@ -122,6 +128,15 @@ export async function GET(request: NextRequest) {
     // expiry so we can re-auth before it lapses. Legacy permanent tokens omit it.
     if (tokenData.expires_in) {
       expiresAt = new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
+    }
+    // The refresh token is what keeps the cron sync and the worker working once
+    // the 1-hour access token lapses — without persisting it, background jobs
+    // would authenticate for exactly one hour after each manual reconnect.
+    refreshToken = tokenData.refresh_token ?? null
+    if (tokenData.refresh_token_expires_in) {
+      refreshExpiresAt = new Date(
+        Date.now() + tokenData.refresh_token_expires_in * 1000
+      ).toISOString()
     }
   } catch (err: any) {
     console.error('[callback] Token exchange error:', err)
@@ -201,6 +216,8 @@ export async function GET(request: NextRequest) {
         shop_domain: shop,
         access_token: accessToken,
         token_expires_at: expiresAt,
+        refresh_token: refreshToken,
+        refresh_token_expires_at: refreshExpiresAt,
         needs_reauth: false,
         scope,
         shop_name: shopInfo.name,

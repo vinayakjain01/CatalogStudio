@@ -9,6 +9,66 @@ type StoreRow = {
   shop_domain: string
   access_token: string
   last_synced_at?: string | null
+  token_expires_at?: string | null
+  refresh_token?: string | null
+}
+
+/** Refresh this many ms before expiry, so a long sync can't outlive its token. */
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
+
+/**
+ * Return a usable access token for the store, refreshing it first if needed.
+ *
+ * Expiring offline tokens last only 1 hour, and this runs from the cron sync and
+ * the worker where no browser session exists to re-trigger token exchange. The
+ * stored refresh token is the only way those paths stay authenticated.
+ *
+ * Best-effort: if the refresh fails we return the existing token and let the
+ * real API call produce the authoritative error, rather than masking a working
+ * token behind a refresh hiccup.
+ */
+async function ensureFreshToken(
+  store: StoreRow,
+  supabase: SupabaseClient
+): Promise<string> {
+  const expiresAt = store.token_expires_at ? Date.parse(store.token_expires_at) : null
+
+  // No expiry recorded means a legacy non-expiring token — nothing to refresh,
+  // and the Admin API will reject it with a clear message of its own.
+  if (!expiresAt || !store.refresh_token) return store.access_token
+  if (Date.now() < expiresAt - TOKEN_REFRESH_MARGIN_MS) return store.access_token
+
+  try {
+    const { refreshOfflineToken } = await import('@/lib/shopify-token')
+    const refreshed = await refreshOfflineToken(store.shop_domain, store.refresh_token)
+
+    await supabase
+      .from('stores')
+      .update({
+        access_token: refreshed.access_token,
+        token_expires_at: refreshed.expires_in
+          ? new Date(Date.now() + refreshed.expires_in * 1000).toISOString()
+          : null,
+        // Shopify invalidates the old refresh token immediately, so the new one
+        // must land in the same write.
+        ...(refreshed.refresh_token ? { refresh_token: refreshed.refresh_token } : {}),
+        ...(refreshed.refresh_token_expires_in
+          ? {
+              refresh_token_expires_at: new Date(
+                Date.now() + refreshed.refresh_token_expires_in * 1000
+              ).toISOString(),
+            }
+          : {}),
+        needs_reauth: false,
+      })
+      .eq('id', store.id)
+
+    console.log(`[sync] refreshed access token for ${store.shop_domain}`)
+    return refreshed.access_token
+  } catch (err: any) {
+    console.error(`[sync] token refresh failed for ${store.shop_domain}:`, err?.message)
+    return store.access_token
+  }
 }
 
 type SyncOptions = {
@@ -120,7 +180,8 @@ async function syncProducts(
     incremental: boolean
   }
 ) {
-  const shopify = createShopifyClient(store.shop_domain, store.access_token)
+  const accessToken = await ensureFreshToken(store, supabase)
+  const shopify = createShopifyClient(store.shop_domain, accessToken)
   const shopifyProducts = await measureAsync(
     'shopify.products.fetch_all',
     () => shopify.getProducts({

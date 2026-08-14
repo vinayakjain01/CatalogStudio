@@ -140,7 +140,7 @@ export async function GET(request: NextRequest) {
 
   if (idToken) {
     try {
-      const { access_token, scope, expires_in } =
+      const { access_token, scope, expires_in, refresh_token, refresh_token_expires_in } =
         await exchangeSessionTokenForOfflineToken(shop, idToken)
 
       await supabase
@@ -152,6 +152,15 @@ export async function GET(request: NextRequest) {
           token_expires_at: expires_in
             ? new Date(Date.now() + expires_in * 1000).toISOString()
             : null,
+          // Keeps background jobs authenticated past the 1-hour access token.
+          ...(refresh_token ? { refresh_token } : {}),
+          ...(refresh_token_expires_in
+            ? {
+                refresh_token_expires_at: new Date(
+                  Date.now() + refresh_token_expires_in * 1000
+                ).toISOString(),
+              }
+            : {}),
         })
         .eq('id', store.id)
 
