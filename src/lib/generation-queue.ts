@@ -330,8 +330,14 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     rules
   )
   if (!templateId) {
+    // 'skipped', not 'completed'. Nothing was generated, and calling that
+    // completed made a stale worker indistinguishable from real success: 303
+    // jobs reported completed while producing zero creatives, because the
+    // deployed worker predated the multi-condition resolver and could not match
+    // a rule defined by `conditions`. Nothing filters generation_jobs on
+    // 'completed', so this is safe and makes the outcome countable.
     await supabase.from('generation_jobs')
-      .update({ status: 'completed', error: 'no matching rule', updated_at: new Date().toISOString() })
+      .update({ status: 'skipped', error: 'no matching rule', updated_at: new Date().toISOString() })
       .eq('id', job.id)
     return
   }
