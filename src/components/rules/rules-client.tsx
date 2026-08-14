@@ -72,7 +72,7 @@ const emptyCondition = (): RuleCondition => ({ field: 'tag', operator: 'is', val
 export function RulesClient({ stores, templates }: Props) {
   const [selectedStore, setSelectedStore] = useState(stores[0]?.id || '')
   const [rules, setRules] = useState<Rule[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   // New rule form
   const [name, setName] = useState('')
@@ -83,16 +83,46 @@ export function RulesClient({ stores, templates }: Props) {
   const [adding, setAdding] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  /**
+   * Reload after a mutation. Safe to call from an event handler, where setting
+   * state synchronously is fine.
+   */
   const fetchRules = useCallback(async () => {
     if (!selectedStore) return
     setLoading(true)
-    const res = await fetch(`/api/rules?storeId=${selectedStore}`)
+    const res = await shopifyFetch(`/api/rules?storeId=${selectedStore}`)
     const data = await res.json()
     setRules(data.rules || [])
     setLoading(false)
   }, [selectedStore])
 
-  useEffect(() => { fetchRules() }, [fetchRules])
+  /**
+   * Load on mount and whenever the store changes.
+   *
+   * State is only set AFTER the request resolves — setting `loading` before the
+   * first await would be a synchronous set-state inside an effect, which
+   * cascades renders (and the React Compiler rejects it). `loading` therefore
+   * starts true instead.
+   *
+   * The `cancelled` flag drops a response whose request was superseded, so
+   * switching stores quickly cannot let a slow earlier response overwrite the
+   * newer one.
+   */
+  useEffect(() => {
+    if (!selectedStore) return
+    let cancelled = false
+
+    shopifyFetch(`/api/rules?storeId=${selectedStore}`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return
+        setRules(data.rules || [])
+        setLoading(false)
+      })
+      .catch(() => { if (!cancelled) setLoading(false) })
+
+    return () => { cancelled = true }
+  }, [selectedStore])
 
   function updateCondition(index: number, patch: Partial<RuleCondition>) {
     setConditions(cur => cur.map((c, i) => {
