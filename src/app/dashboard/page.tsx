@@ -5,7 +5,35 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ShoppingBag, Layers, ImageIcon, Store } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 
-export default async function DashboardPage() {
+/**
+ * Surfaces why a Shopify token refresh failed.
+ *
+ * Without this the failure only reached a serverless log: the app loaded
+ * normally, the "token expired" banner never cleared, and there was no way to
+ * tell a failed exchange apart from one that never ran.
+ */
+function AuthErrorNotice({ reason }: { reason: string }) {
+  const isMissingToken = reason === 'no_id_token'
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+      <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+        Shopify token was not refreshed
+      </p>
+      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+        {isMissingToken
+          ? 'This page was opened outside the Shopify admin, so Shopify did not provide a session token to exchange. Open the app from Shopify admin → Apps → Craftify to refresh it.'
+          : reason}
+      </p>
+    </div>
+  )
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ auth_error?: string }>
+}) {
+  const { auth_error: authError } = await searchParams
   // Both calls share one Supabase auth round-trip (React cache).
   const [user, { activeStoreId, stores: storeList }] = await Promise.all([
     getUser(),
@@ -55,6 +83,8 @@ export default async function DashboardPage() {
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-muted-foreground mt-1">Your catalog creative automation overview</p>
       </div>
+
+      {authError && <AuthErrorNotice reason={authError} />}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map(({ label, value, icon: Icon }) => (

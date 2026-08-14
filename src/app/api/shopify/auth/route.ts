@@ -134,6 +134,10 @@ export async function GET(request: NextRequest) {
   //     tell a fresh expiring token from a legacy non-expiring one.
   //  3. a failed exchange only reached a server log, so the app loaded normally
   //     with a dead token and the merchant had no idea why syncing failed.
+  // Carries the reason a token refresh failed through to the dashboard, so the
+  // merchant sees Shopify's actual message instead of it dying in a server log.
+  let authError: string | null = null
+
   if (idToken) {
     try {
       const { access_token, scope, expires_in } =
@@ -157,12 +161,18 @@ export async function GET(request: NextRequest) {
     } catch (err: any) {
       // Flag the store so the UI keeps prompting a reconnect rather than
       // silently serving a token the Admin API will reject.
-      console.error('[shopify/auth] token exchange failed:', err?.message || err)
+      authError = String(err?.message || err).slice(0, 300)
+      console.error('[shopify/auth] token exchange failed:', authError)
       await supabase
         .from('stores')
         .update({ needs_reauth: true })
         .eq('id', store.id)
     }
+  } else {
+    // No id_token means this was not an embedded launch, so no refresh was even
+    // attempted — worth saying out loud, because the symptom (stale token) is
+    // identical to a failed exchange.
+    authError = 'no_id_token'
   }
 
   // --- 4. Sign the owner into Supabase, server-side. ---
@@ -182,9 +192,9 @@ export async function GET(request: NextRequest) {
   const tokenHash = linkData?.properties?.hashed_token
 
   // Build the response we'll attach cookies to, then redirect to /dashboard.
-  const response = NextResponse.redirect(
-    new URL('/dashboard', getAppOrigin(request))
-  )
+  const dashboardUrl = new URL('/dashboard', getAppOrigin(request))
+  if (authError) dashboardUrl.searchParams.set('auth_error', authError)
+  const response = NextResponse.redirect(dashboardUrl)
   response.cookies.set(ACTIVE_STORE_COOKIE, store.id, {
     httpOnly: false,
     secure: true,
