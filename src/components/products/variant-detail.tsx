@@ -210,7 +210,7 @@ export function VariantDetail({
             <h2 className="truncate text-sm font-medium uppercase tracking-wide text-muted-foreground">
               Generated creative
             </h2>
-            <ProductGenerateButton productId={productId} storeId={storeId} />
+            <ProductGenerateButton productId={productId} storeId={storeId} variantId={selected.id} />
           </div>
 
           {creative ? (

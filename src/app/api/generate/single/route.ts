@@ -41,7 +41,9 @@ export async function POST(request: NextRequest) {
   const [user, body] = await Promise.all([getUser(), request.json()])
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { productId, storeId } = body
+  // variantId is optional: omitted, this renders a product-level creative from
+  // the flattened variant[0] values, which is what the Products list uses.
+  const { productId, storeId, variantId } = body
   if (!productId || !storeId) {
     return NextResponse.json({ error: 'productId and storeId required' }, { status: 400 })
   }
@@ -137,14 +139,35 @@ export async function POST(request: NextRequest) {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Load the selected variant so its own price, stock and options drive the
+    // dynamic fields and conditional badges. Without this the page's variant
+    // picker was cosmetic — every variant rendered variant[0]'s numbers.
+    let variant: any = null
+    if (variantId) {
+      const { data } = await adminSupabase
+        .from('product_variants')
+        .select('id, title, sku, price, compare_at_price, inventory_quantity, is_sold_out, option1, option2, option3')
+        .eq('id', variantId)
+        .eq('product_id', product.id)   // scoped: a variant of another product must not render here
+        .single()
+      variant = data ?? null
+    }
+
     const productLayerSettings = canvasData.productLayerSettings || undefined
     const buffer = await compositeImage(canvasData, {
       title: product.title,
-      price: product.price,
-      compare_at_price: product.compare_at_price,
+      price: variant?.price ?? product.price,
+      compare_at_price: variant?.compare_at_price ?? product.compare_at_price,
       vendor: product.vendor,
       product_type: product.product_type,
       imageUrl,
+      sku:                variant?.sku ?? null,
+      variant_title:      variant?.title ?? null,
+      inventory_quantity: variant?.inventory_quantity ?? null,
+      is_sold_out:        variant?.is_sold_out ?? null,
+      option1:            variant?.option1 ?? null,
+      option2:            variant?.option2 ?? null,
+      option3:            variant?.option3 ?? null,
       transparentImageUrl: productLayerBundle?.transparentUrl ?? null,
       shotTypeOverride: (product as any).shot_type_override ?? null,
       reconstructedBackgroundUrl: null,   // handled by bundle.backgroundUrl now
@@ -164,7 +187,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Image generation produced an invalid buffer.' }, { status: 500 })
     }
 
-    const publicId = `product_${product.id}_${templateId}_default`
+    // Variant-scoped public_id, or every variant of a product would overwrite
+    // the same Cloudinary asset and leave one creative where there should be many.
+    const publicId = variant
+      ? `product_${product.id}_${variant.id}_${templateId}_default`
+      : `product_${product.id}_${templateId}_default`
     const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
 
     const { error: upsertError } = await adminSupabase
@@ -191,6 +218,7 @@ export async function POST(request: NextRequest) {
       supabase: adminSupabase,
       storeId,
       productId: product.id,
+      variantId: variant?.id ?? null,
       templateId,
       url,
       cloudinaryId: cloudPublicId,
