@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { shopifyFetch } from '@/lib/shopify-token'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Wand2, Loader2 } from 'lucide-react'
@@ -31,9 +32,10 @@ export function ProductGenerateButton({
     setLoading(true)
     setError('')
 
-    const res = await fetch('/api/generate/single', {
+    // shopifyFetch attaches the App Bridge session token when running inside
+    // the Shopify admin, and falls back to plain fetch outside it.
+    const res = await shopifyFetch('/api/generate/single', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ productId, storeId, variantId: variantId ?? null, imageId: imageId ?? null }),
     })
 

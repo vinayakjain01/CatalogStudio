@@ -12,6 +12,7 @@
  * labelled — to make the evaluation order unambiguous.
  */
 import { useState, useEffect, useCallback } from 'react'
+import { shopifyFetch } from '@/lib/shopify-token'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
@@ -115,9 +116,8 @@ export function RulesClient({ stores, templates }: Props) {
     }
 
     setAdding(true)
-    const res = await fetch('/api/rules', {
+    const res = await shopifyFetch('/api/rules', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         store_id: selectedStore,
         template_id: templateId,
@@ -142,7 +142,7 @@ export function RulesClient({ stores, templates }: Props) {
   }
 
   async function handleDelete(ruleId: string) {
-    await fetch(`/api/rules/${ruleId}`, { method: 'DELETE' })
+    await shopifyFetch(`/api/rules/${ruleId}`, { method: 'DELETE' })
     setRules(prev => prev.filter(r => r.id !== ruleId))
   }
 

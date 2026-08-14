@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { shopifyFetch } from '@/lib/shopify-token'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -95,7 +96,7 @@ export function StoreCard({ store }: StoreCardProps) {
     setSyncResult(null)
     setSyncError(null)
 
-    const res = await fetch(`/api/stores/${store.id}/sync`, { method: 'POST' })
+    const res = await shopifyFetch(`/api/stores/${store.id}/sync`, { method: 'POST' })
     const data = await res.json()
 
     if (res.ok) {
