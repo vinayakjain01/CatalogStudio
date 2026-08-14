@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
 
   // variantId is optional: omitted, this renders a product-level creative from
   // the flattened variant[0] values, which is what the Products list uses.
-  const { productId, storeId, variantId } = body
+  const { productId, storeId, variantId, imageId } = body
   if (!productId || !storeId) {
     return NextResponse.json({ error: 'productId and storeId required' }, { status: 400 })
   }
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
   const { data: product } = await adminSupabase
     .from('products')
     .select(`id, title, vendor, product_type, tags, price, compare_at_price, shot_type_override,
-      product_images(src, is_primary)`)
+      product_images(id, src, cloudinary_url, is_primary, position)`)
     .eq('id', productId)
     .eq('store_id', storeId)
     .single()
@@ -101,9 +101,15 @@ export async function POST(request: NextRequest) {
     .from('templates').select('canvas_data').eq('id', templateId).single()
   if (!template) return NextResponse.json({ error: 'Matched template not found' }, { status: 404 })
 
+  // Composite from the image the merchant is actually looking at. Without this
+  // the detail page's thumbnail strip was decorative: every creative rendered
+  // the primary photo no matter which of the five was on screen.
   const images = (product as any).product_images || []
-  const primaryImage = images.find((i: any) => i.is_primary) || images[0]
-  const imageUrl: string | null = primaryImage?.src || null
+  const chosenImage =
+    (imageId && images.find((i: any) => i.id === imageId)) ||
+    images.find((i: any) => i.is_primary) ||
+    images[0]
+  const imageUrl: string | null = chosenImage?.cloudinary_url || chosenImage?.src || null
 
   try {
     // ── AI Product Mode: background removal ────────────────────────────────
@@ -189,9 +195,14 @@ export async function POST(request: NextRequest) {
 
     // Variant-scoped public_id, or every variant of a product would overwrite
     // the same Cloudinary asset and leave one creative where there should be many.
-    const publicId = variant
-      ? `product_${product.id}_${variant.id}_${templateId}_default`
-      : `product_${product.id}_${templateId}_default`
+    // Image id is part of the public_id too, so generating from a second photo
+    // adds a creative rather than overwriting the first.
+    const publicId = [
+      'product', product.id,
+      variant ? variant.id : null,
+      chosenImage?.id ?? null,
+      templateId, 'default',
+    ].filter(Boolean).join('_')
     const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
 
     const { error: upsertError } = await adminSupabase
@@ -219,6 +230,7 @@ export async function POST(request: NextRequest) {
       storeId,
       productId: product.id,
       variantId: variant?.id ?? null,
+      imageId: chosenImage?.id ?? null,
       templateId,
       url,
       cloudinaryId: cloudPublicId,

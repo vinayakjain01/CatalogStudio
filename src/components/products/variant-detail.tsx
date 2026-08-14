@@ -5,12 +5,18 @@
  *
  * v2 addresses everything per variant, so this is where a merchant picks which
  * one they are looking at: its own images, its own price and stock, and the
- * creative generated for it. Previously the page showed only the flattened
- * variant[0] values and there was no way to reach the others at all.
+ * creative generated for it.
+ *
+ * The picker is a dropdown, not a row of pills. A real product here has 80
+ * variants (5 sizes x 4 heights x 2 colours); as pills they filled the screen
+ * and pushed the actual product content entirely below the fold.
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { Download, ImageIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/ui/status-badge'
@@ -46,6 +52,7 @@ export interface CreativeRow {
   id: string
   url: string
   variant_id: string | null
+  image_id?: string | null
   created_at: string
   templates?: { name: string } | null
 }
@@ -84,6 +91,40 @@ export function VariantDetail({
   const [selectedId, setSelectedId] = useState(variants[0]?.id ?? '')
   const selected = variants.find(v => v.id === selectedId) ?? variants[0]
 
+  // Images Shopify associated with this variant; fall back to all product
+  // images, because most catalogs never assign images per variant.
+  const shownImages = useMemo(() => {
+    if (!selected) return images
+    const forVariant = images.filter(img =>
+      (img.variant_ids ?? []).includes(selected.shopify_variant_id)
+    )
+    return forVariant.length > 0 ? forVariant : images
+  }, [images, selected])
+
+  const [activeImageId, setActiveImageId] = useState<string | null>(null)
+
+  // Resolved during render rather than reset in an effect: if the stored id is
+  // not in the current set (the variant changed), this falls back to the first
+  // image on its own. An effect would re-render twice and trips the compiler's
+  // set-state-in-effect rule for no benefit.
+  const activeImage =
+    shownImages.find(img => img.id === activeImageId) ?? shownImages[0] ?? null
+
+  // Creative for this exact variant beats a product-level one; when the
+  // merchant is looking at a specific image, one made from that image wins.
+  const creative = useMemo(() => {
+    if (!selected) return null
+    return creatives
+      .filter(c => c.variant_id === selected.id || c.variant_id == null)
+      .sort((a, b) => {
+        const img = Number(b.image_id === activeImage?.id) - Number(a.image_id === activeImage?.id)
+        if (img !== 0) return img
+        const exact = Number(b.variant_id === selected.id) - Number(a.variant_id === selected.id)
+        if (exact !== 0) return exact
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      })[0] ?? null
+  }, [creatives, selected, activeImage])
+
   if (!selected) {
     return (
       <Card className="border-dashed">
@@ -95,96 +136,93 @@ export function VariantDetail({
     )
   }
 
-  // Images Shopify associated with this variant; fall back to all product
-  // images, because most catalogs never assign images per variant.
-  const variantImages = images.filter(img =>
-    (img.variant_ids ?? []).includes(selected.shopify_variant_id)
-  )
-  const shownImages = variantImages.length > 0 ? variantImages : images
-
-  // Creative for this exact variant wins over a product-level one.
-  const variantCreatives = creatives
-    .filter(c => c.variant_id === selected.id || c.variant_id == null)
-    .sort((a, b) => {
-      const exact = Number(b.variant_id === selected.id) - Number(a.variant_id === selected.id)
-      if (exact !== 0) return exact
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    })
-  const creative = variantCreatives[0] ?? null
-
   const price = Number(selected.price ?? 0)
   const compareAt = selected.compare_at_price == null ? null : Number(selected.compare_at_price)
   const onSale = compareAt !== null && compareAt > price
   const discount = onSale ? Math.round(((compareAt - price) / compareAt) * 100) : null
   const qty = selected.inventory_quantity ?? 0
 
+  const inStock = variants.filter(v => !v.is_sold_out)
+  const soldOut = variants.filter(v => v.is_sold_out)
+
   return (
     <div className="space-y-5">
-      {/* Variant picker */}
+      {/* ── Variant picker ─────────────────────────────────────────────── */}
       {variants.length > 1 && (
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground">
-            VARIANTS ({variants.length})
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {variants.map(v => (
-              <button
-                key={v.id}
-                onClick={() => setSelectedId(v.id)}
-                className={cn(
-                  'rounded-lg border px-3 py-1.5 text-sm transition-colors',
-                  v.id === selected.id
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'hover:bg-muted',
-                  v.is_sold_out && v.id !== selected.id && 'opacity-60'
-                )}
-              >
-                {variantLabel(v)}
-                {v.is_sold_out && (
-                  <span className="ml-1.5 text-[10px] uppercase opacity-80">sold out</span>
-                )}
-              </button>
-            ))}
-          </div>
+        <div className="max-w-md">
+          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+            Variant ({variants.length})
+          </label>
+          <Select value={selected.id} onValueChange={setSelectedId}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            {/* Grouped so buyable variants surface first: with 80 options,
+                scrolling past sold-out ones to find stock is the common task. */}
+            <SelectContent className="max-h-80">
+              {inStock.length > 0 && (
+                <SelectGroup>
+                  <SelectLabel>Available ({inStock.length})</SelectLabel>
+                  {inStock.map(v => (
+                    <SelectItem key={v.id} value={v.id}>{variantLabel(v)}</SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
+              {soldOut.length > 0 && (
+                <SelectGroup>
+                  <SelectLabel>Sold out ({soldOut.length})</SelectLabel>
+                  {soldOut.map(v => (
+                    <SelectItem key={v.id} value={v.id}>{variantLabel(v)}</SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
-      {/* Selected variant facts */}
+      {/* ── Selected variant facts ─────────────────────────────────────── */}
       <Card>
-        <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3 p-4 text-sm">
+        <CardContent className="flex flex-wrap items-center gap-x-8 gap-y-3 p-4 text-sm">
           <Fact label="Price">
             <span className="font-semibold">{formatPrice(price, currency)}</span>
             {onSale && (
               <>
-                <span className="ml-2 text-muted-foreground line-through">{formatPrice(compareAt, currency)}</span>
+                <span className="ml-2 text-muted-foreground line-through">
+                  {formatPrice(compareAt, currency)}
+                </span>
                 <StatusBadge tone="sale" className="ml-2">-{discount}%</StatusBadge>
               </>
             )}
           </Fact>
-
           <Fact label="Availability">
             <StockBadge soldOut={Boolean(selected.is_sold_out)} qty={qty} />
           </Fact>
-
           <Fact label="SKU">{selected.sku || '—'}</Fact>
           <Fact label="Barcode">{selected.barcode || '—'}</Fact>
         </CardContent>
       </Card>
 
-      {/* Original vs generated, aligned */}
+      {/* ── Original vs generated ──────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div>
-          <div className="mb-2 flex min-h-8 items-center">
+          <div className="mb-2 flex min-h-8 items-center justify-between gap-2">
             <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
               Original
             </h2>
+            {shownImages.length > 1 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {shownImages.findIndex(i => i.id === activeImage?.id) + 1} / {shownImages.length}
+              </span>
+            )}
           </div>
+
           <Card className="overflow-hidden">
             <div className="aspect-square bg-muted">
-              {shownImages[0] ? (
+              {activeImage ? (
                 <img
-                  src={shownImages[0].cloudinary_url || shownImages[0].src}
-                  alt={variantLabel(selected)}
+                  src={activeImage.cloudinary_url || activeImage.src}
+                  alt={activeImage.alt || variantLabel(selected)}
                   className="h-full w-full object-cover"
                 />
               ) : (
@@ -194,13 +232,35 @@ export function VariantDetail({
               )}
             </div>
           </Card>
+
+          {/* Thumbnails now SELECT the main image. Previously they only
+              displayed it, so images 2-5 were visible but unreachable. */}
           {shownImages.length > 1 && (
-            <div className="mt-2 flex gap-2 overflow-x-auto">
-              {shownImages.map(img => (
-                <div key={img.id} className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-md border bg-muted">
-                  <img src={img.cloudinary_url || img.src} alt="" className="h-full w-full object-cover" />
-                </div>
-              ))}
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+              {shownImages.map((img, i) => {
+                const isActive = img.id === activeImage?.id
+                return (
+                  <button
+                    key={img.id}
+                    type="button"
+                    onClick={() => setActiveImageId(img.id)}
+                    aria-label={`View image ${i + 1} of ${shownImages.length}`}
+                    aria-current={isActive}
+                    className={cn(
+                      'h-16 w-16 flex-shrink-0 overflow-hidden rounded-md border-2 bg-muted transition-all',
+                      isActive
+                        ? 'border-primary ring-2 ring-primary/20'
+                        : 'border-transparent opacity-70 hover:opacity-100'
+                    )}
+                  >
+                    <img
+                      src={img.cloudinary_url || img.src}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>
@@ -210,7 +270,12 @@ export function VariantDetail({
             <h2 className="truncate text-sm font-medium uppercase tracking-wide text-muted-foreground">
               Generated creative
             </h2>
-            <ProductGenerateButton productId={productId} storeId={storeId} variantId={selected.id} />
+            <ProductGenerateButton
+              productId={productId}
+              storeId={storeId}
+              variantId={selected.id}
+              imageId={activeImage?.id ?? null}
+            />
           </div>
 
           {creative ? (

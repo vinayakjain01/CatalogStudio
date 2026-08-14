@@ -15,10 +15,13 @@ export function ProductGenerateButton({
   productId,
   storeId,
   variantId,
+  imageId,
 }: {
   productId: string
   storeId: string
   variantId?: string | null
+  /** Which source photo to composite. Omitted, the primary image is used. */
+  imageId?: string | null
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -31,7 +34,7 @@ export function ProductGenerateButton({
     const res = await fetch('/api/generate/single', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productId, storeId, variantId: variantId ?? null }),
+      body: JSON.stringify({ productId, storeId, variantId: variantId ?? null, imageId: imageId ?? null }),
     })
 
     const data = await res.json()
