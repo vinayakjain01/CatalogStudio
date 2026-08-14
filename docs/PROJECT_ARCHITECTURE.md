@@ -4,6 +4,22 @@ _Compiled 2026-07-08 from a complete read-through of the codebase (8 parallel su
 
 ---
 
+> **v2 STATUS (current).** This document predates the v2 rewrite and several
+> sections below describe features that no longer exist. Removed in v2:
+> Google Drive import, folder upload, Template Adaptation, the Meta section,
+> Product Positioning / Head Space (UI), and the `feed-generation` /
+> `meta-refresh` queues (both were empty placeholder workers). Added in v2:
+> `product_variants` (full variant sync), `generated_creatives`, multi-condition
+> `template_rules`, a variant-level Meta feed (CSV/XML/JSON), per-variant
+> generation, and RLS on every tenant table (see `supabase/001…003`).
+>
+> Still present but no longer user-reachable: the background-removal,
+> background-reconstruction and product-layer/positioning libraries. They remain
+> wired into `compositor.ts` and the live editor preview
+> (`components/builder/canvas-preview.tsx`), so removing them is a renderer
+> rewrite rather than a deletion — deliberately deferred until a generation run
+> has been verified end to end.
+
 ## 1. Project Overview
 
 **Craftify** (formerly CatalogStudio) is an AI-powered creative-automation platform for Shopify brands. A merchant connects a Shopify store, its product catalog syncs in, the merchant builds one or more visual **templates** (layered canvas designs with text/image/logo/badge layers and product-image slots), defines **rules** that map products to templates (by tag/vendor/type/discount/import batch), and the platform bulk-generates a finished marketing creative (PNG) per product by running the product photo through AI background removal / AI outpainting and compositing it into the template. Finished creatives are stored on Cloudinary and exposed to the dashboard, a ZIP export, and a Meta (Facebook/Instagram) Shopping product feed (XML).
