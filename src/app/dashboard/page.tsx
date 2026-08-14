@@ -19,10 +19,13 @@ export default async function DashboardPage() {
     ? Promise.all([
         supabase.from('products').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
         supabase.from('templates').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
+        // generated_creatives carries store_id directly, so this no longer needs
+        // an inner join through products — and it counts per VARIANT, which is
+        // what actually gets generated in v2.
         supabase
-          .from('generated_images')
-          .select('id, products!inner(store_id)', { count: 'exact', head: true })
-          .eq('products.store_id', activeStoreId),
+          .from('generated_creatives')
+          .select('id', { count: 'exact', head: true })
+          .eq('store_id', activeStoreId),
       ])
     : Promise.resolve([{ count: 0 }, { count: 0 }, { count: 0 }] as Array<{ count: number | null }>)
 

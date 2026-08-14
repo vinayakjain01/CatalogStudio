@@ -11,6 +11,7 @@ import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 // CHANGED: replaced getTransparentProductImage + getReconstructedBackground with getProductLayerBundle
 import { getProductLayerBundle } from '@/lib/product-layer-engine'
+import { recordCreative } from '@/lib/creatives'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
@@ -59,13 +60,45 @@ export async function enqueueGeneration(
 
   console.log(`[enqueueGeneration] START storeId=${storeId} products=${productIds.length} batchId=${batchId ?? 'none'}`)
 
-  const rows = productIds.map(pid => ({
-    store_id: storeId,
-    product_id: pid,
-    creative_type: creativeType,
-    status: 'pending',
-    batch_id: batchId ?? null,
-  }))
+  // v2 fans out per VARIANT: each variant carries its own price, stock and
+  // sold-out state, all of which appear in the creative's dynamic fields and
+  // conditional badges. One job per product would render every colour/size with
+  // variant[0]'s numbers.
+  //
+  // Products with no variant rows still get a single product-level job, so a
+  // catalog that has not been re-synced since the variant migration keeps working.
+  const { data: variantRows, error: variantError } = await supabase
+    .from('product_variants')
+    .select('id, product_id')
+    .in('product_id', productIds)
+    .order('position', { ascending: true })
+
+  if (variantError) {
+    console.warn('[enqueueGeneration] variant lookup failed, falling back to product-level jobs:', variantError.message)
+  }
+
+  const variantsByProduct = new Map<string, string[]>()
+  for (const row of variantRows ?? []) {
+    const list = variantsByProduct.get((row as any).product_id) ?? []
+    list.push((row as any).id)
+    variantsByProduct.set((row as any).product_id, list)
+  }
+
+  const rows = productIds.flatMap(pid => {
+    const variantIds = variantsByProduct.get(pid) ?? []
+    const base = {
+      store_id: storeId,
+      product_id: pid,
+      creative_type: creativeType,
+      status: 'pending',
+      batch_id: batchId ?? null,
+    }
+    return variantIds.length > 0
+      ? variantIds.map(vid => ({ ...base, variant_id: vid }))
+      : [base]
+  })
+
+  console.log(`[enqueueGeneration] fan-out: ${productIds.length} products → ${rows.length} variant jobs`)
   const { data, error } = await measureAsync(
     'queue.generation.db_enqueue',
     () => supabase
@@ -375,13 +408,34 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
 
   const productLayerSettings = (canvasData as any).productLayerSettings || undefined
 
+  // Load this job's variant, when it has one. Its price/sku/stock override the
+  // product-level values so the creative shows the numbers for the exact
+  // variant being advertised.
+  let variant: any = null
+  if ((job as any).variant_id) {
+    const { data } = await supabase
+      .from('product_variants')
+      .select('id, title, sku, price, compare_at_price, inventory_quantity, is_sold_out, option1, option2, option3')
+      .eq('id', (job as any).variant_id)
+      .single()
+    variant = data ?? null
+  }
+
   const buffer = await compositeImage(canvasData as any, {
     title:           product.title,
-    price:           product.price,
-    compare_at_price: product.compare_at_price,
+    price:           variant?.price ?? product.price,
+    compare_at_price: variant?.compare_at_price ?? product.compare_at_price,
     vendor:          product.vendor,
     product_type:    product.product_type,
     imageUrl,
+    // v2 variant context — drives dynamic fields and conditional badges.
+    sku:                variant?.sku ?? (product as any).sku ?? null,
+    variant_title:      variant?.title ?? null,
+    inventory_quantity: variant?.inventory_quantity ?? null,
+    is_sold_out:        variant?.is_sold_out ?? null,
+    option1:            variant?.option1 ?? null,
+    option2:            variant?.option2 ?? null,
+    option3:            variant?.option3 ?? null,
     // transparentImageUrl: sourced from bundle when present
     transparentImageUrl: productLayerBundle?.transparentUrl ?? null,
     shotTypeOverride:    (product as any).shot_type_override ?? null,
@@ -404,7 +458,12 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     throw new Error('Invalid image buffer from compositor')
   }
 
-  const publicId = `product_${product.id}_${templateId}_${job.creative_type}`
+  // Variant id is part of the public_id: without it every variant of a product
+  // renders to the same Cloudinary asset and each one overwrites the last,
+  // leaving a single creative where there should be one per variant.
+  const publicId = variant
+    ? `product_${product.id}_${variant.id}_${templateId}_${job.creative_type}`
+    : `product_${product.id}_${templateId}_${job.creative_type}`
   const { deliveredUrl, publicId: cloudPublicId } = await measureAsync(
     'cloudinary.upload',
     () => uploadBuffer(buffer, publicId),
@@ -428,6 +487,19 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     { productId: product.id, templateId }
   )
   if (upsertError) throw new Error(upsertError.message)
+
+  // Mirror into the v2 table the products UI and Meta feed read from.
+  await recordCreative({
+    supabase,
+    storeId: job.store_id,
+    productId: product.id,
+    variantId: (job as any).variant_id ?? null,
+    imageId: (job as any).image_id ?? null,
+    templateId,
+    jobId: job.id,
+    url: deliveredUrl,
+    cloudinaryId: cloudPublicId,
+  })
 
   await supabase.from('generation_jobs')
     .update({ status: 'completed', updated_at: new Date().toISOString() })

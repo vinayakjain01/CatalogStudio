@@ -4,6 +4,7 @@ import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
+import { recordCreative } from '@/lib/creatives'
 import { getProductLayerBundle } from '@/lib/product-layer-engine'
 import { getUser } from '@/lib/supabase/get-user'
 import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
@@ -184,6 +185,16 @@ export async function POST(request: NextRequest) {
     if (upsertError) {
       return NextResponse.json({ error: `Save failed: ${upsertError.message}` }, { status: 500 })
     }
+
+    // Mirror into the v2 table the products UI and Meta feed read from.
+    await recordCreative({
+      supabase: adminSupabase,
+      storeId,
+      productId: product.id,
+      templateId,
+      url,
+      cloudinaryId: cloudPublicId,
+    })
 
     return NextResponse.json({ generated: 1, url })
   } catch (err: any) {

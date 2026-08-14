@@ -6,7 +6,7 @@ import {
   ProductLayerSettings, DEFAULT_PRODUCT_LAYER_SETTINGS,
   ProductPositioningSettings,
 } from '@/types/template'
-import { resolveVariables } from '@/types/template'
+import { resolveVariables, badgeConditionMet } from '@/types/template'
 import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { getExtendedImage, getExtendedImagePositioned, needsExtend } from '@/lib/image-extend'
@@ -90,6 +90,19 @@ interface ProductData {
   transparentImageUrl?: string | null
   shotTypeOverride?: string | null
   reconstructedBackgroundUrl?: string | null
+
+  // ── v2 variant context ────────────────────────────────────────────────────
+  // Supplied when rendering a creative for one variant. Its price/sku override
+  // the product-level values in dynamic fields, and is_sold_out drives
+  // conditional badges. All optional so product-level renders are unchanged.
+  sku?: string | null
+  variant_title?: string | null
+  inventory_quantity?: number | null
+  is_sold_out?: boolean | null
+  option1?: string | null
+  option2?: string | null
+  option3?: string | null
+  currency?: string
 }
 
 export interface CompositeOptions {
@@ -908,6 +921,9 @@ async function drawLayer(
 
     case 'badge': {
       const l = layer as BadgeLayer
+      // Conditional badges (SALE / SOLD OUT) let one template serve every
+      // variant state instead of needing a template per state.
+      if (!badgeConditionMet(l.condition, product)) break
       const text = resolveVariables(l.content, product)
       const radius = l.shape === 'circle' ? Math.min(w, h) / 2 : l.borderRadius
       ctx.fillStyle = l.backgroundColor

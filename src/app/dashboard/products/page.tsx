@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveStore } from '@/lib/active-store'
 import { Button } from '@/components/ui/button'
-import { FolderUp } from 'lucide-react'
+import { Store } from 'lucide-react'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
 
@@ -34,13 +34,13 @@ export default async function ProductsPage({
           <div className="text-muted-foreground">
             <p>No products yet.</p>
             <p className="text-sm mt-1">
-              Upload a folder of product images, or connect a Shopify store in Settings.
+              Connect your Shopify store to sync products and variants.
             </p>
           </div>
           <Button size="lg" asChild>
-            <Link href="/dashboard/upload">
-              <FolderUp className="h-4 w-4" />
-              Upload folder
+            <Link href="/dashboard/settings">
+              <Store className="h-4 w-4" />
+              Connect store
             </Link>
           </Button>
         </div>
@@ -61,9 +61,9 @@ export default async function ProductsPage({
   let query = supabase
     .from('products')
     .select(`
-      id, title, vendor, product_type, tags, price, compare_at_price,
-      inventory_quantity, status, updated_at,
-      product_images(src, is_primary)
+      id, title, vendor, product_type, tags, status, updated_at,
+      product_images(src, is_primary),
+      product_variants(id, price, compare_at_price, inventory_quantity, is_sold_out)
     `)
     .eq('store_id', activeStoreId)
     .eq('product_images.is_primary', true)
@@ -89,12 +89,6 @@ export default async function ProductsPage({
             {totalCount || 0} products total
           </p>
         </div>
-        <Button variant="outline" size="lg" asChild>
-          <Link href="/dashboard/upload">
-            <FolderUp className="h-4 w-4" />
-            Upload folder
-          </Link>
-        </Button>
       </div>
       <ProductsTable products={products || []} />
       <ProductsPagination

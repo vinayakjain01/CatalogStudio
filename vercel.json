@@ -7,10 +7,6 @@
     {
       "path": "/api/cron/generate",
       "schedule": "0 0 * * *"
-    },
-    {
-      "path": "/api/cron/template-adaptation",
-      "schedule": "0 0 * * *"
     }
   ]
 }

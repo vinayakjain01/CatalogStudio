@@ -8,6 +8,12 @@ export interface StoreLite {
   id: string
   shop_name: string | null
   shop_domain: string
+  /**
+   * Public feed token. Safe to expose to the browser by design — it authorises
+   * only the read-only Meta feed endpoint and carries no account access, which
+   * is the whole reason it is separate from the auth session.
+   */
+  feed_token: string | null
 }
 
 /**
@@ -28,7 +34,7 @@ export async function getActiveStore(): Promise<{
   const supabase = await createClient()
   const { data: stores } = await supabase
     .from('stores')
-    .select('id, shop_name, shop_domain')
+    .select('id, shop_name, shop_domain, feed_token')
     .eq('user_id', user.id)
     .order('created_at', { ascending: true })
 

@@ -11,17 +11,21 @@ import { measureAsync } from '@/lib/perf'
  * ("Request failed with status code 403"). All product/shop reads below go
  * through the GraphQL Admin API, which is the supported path.
  *
- * The public shape (ShopifyProduct / ShopifyVariant / ShopifyImage / ShopifyShop)
- * is kept identical to the old REST shape so that shopify-sync.ts and every other
- * caller keep working unchanged:
- *   - ids are numeric (GIDs are stripped to their trailing number)
- *   - tags is a comma-separated string
- *   - status is lowercase ("active" | "draft" | "archived")
- *   - variant.price / compare_at_price are strings
- *   - images have { id, src, alt, position }
+ * v2 — FULL VARIANT SYNC. This previously requested `variants(first: 1)` and
+ * flattened variant[0] onto the product, so a product with three colours synced
+ * as one row and the other two were lost. Everything in v2 is addressed per
+ * variant (generation, the products page, the Meta feed's
+ * {store}_{product}_{variant} ids), so the whole variant set is fetched, along
+ * with image dimensions and which variant each image belongs to.
+ *
+ * ids are still returned numeric (GIDs stripped to their trailing number) and
+ * tags as a comma-separated string, matching what shopify-sync.ts expects.
  */
 
 const API_VERSION = '2026-04'
+
+/** Shopify's default ceiling is 100 variants/product; 250 leaves headroom. */
+const VARIANT_PAGE_SIZE = 250
 
 export interface ShopifyProduct {
   id: number
@@ -31,6 +35,8 @@ export interface ShopifyProduct {
   product_type: string
   tags: string
   status: string
+  description: string
+  published_at: string | null
   variants: ShopifyVariant[]
   images: ShopifyImage[]
   created_at: string
@@ -39,9 +45,22 @@ export interface ShopifyProduct {
 
 export interface ShopifyVariant {
   id: number
+  title: string
+  sku: string | null
+  barcode: string | null
   price: string
   compare_at_price: string | null
   inventory_quantity: number
+  /** 'deny' blocks purchase at zero stock; 'continue' allows overselling. */
+  inventory_policy: 'deny' | 'continue'
+  option1: string | null
+  option2: string | null
+  option3: string | null
+  position: number
+  weight: number | null
+  weight_unit: string | null
+  /** Shopify image id this variant displays, if any. */
+  image_id: number | null
 }
 
 export interface ShopifyImage {
@@ -49,6 +68,10 @@ export interface ShopifyImage {
   src: string
   alt: string | null
   position: number
+  width: number | null
+  height: number | null
+  /** Shopify variant ids that use this image — populated during mapping. */
+  variant_ids: string[]
 }
 
 export interface ShopifyShop {
@@ -147,21 +170,31 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
     }
   }
 
+  /**
+   * Map a variant's selectedOptions ([{name:'Color',value:'Red'}, …]) onto the
+   * positional option1/option2/option3 columns Shopify's own data model uses.
+   */
+  function optionsToPositional(selected: any[]): [string | null, string | null, string | null] {
+    const values = (selected ?? []).map(o => o?.value ?? null)
+    return [values[0] ?? null, values[1] ?? null, values[2] ?? null]
+  }
+
   async function getProducts(
     options: { sinceId?: string; updatedAtMin?: string } | string = {}
   ): Promise<ShopifyProduct[]> {
     const updatedAtMin =
       typeof options === 'string' ? undefined : options.updatedAtMin
 
-    // Build the Shopify search query string (same semantics as the old
-    // ?status=active&updated_at_min=... REST params).
-    const filters = ['status:active']
+    // v2 syncs EVERY status — the products list filters by status itself, and a
+    // draft product still needs a creative before it goes live. Previously this
+    // hard-filtered status:active, so drafts were invisible to the app.
+    const filters: string[] = []
     if (updatedAtMin) filters.push(`updated_at:>='${updatedAtMin}'`)
-    const searchQuery = filters.join(' ')
+    const searchQuery = filters.length ? filters.join(' ') : null
 
     const QUERY = `
       query Products($cursor: String, $q: String) {
-        products(first: 250, after: $cursor, query: $q) {
+        products(first: 100, after: $cursor, query: $q) {
           pageInfo { hasNextPage endCursor }
           nodes {
             id
@@ -171,18 +204,31 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
             productType
             tags
             status
+            description
+            publishedAt
             createdAt
             updatedAt
-            variants(first: 1) {
+            images(first: 250) {
+              nodes { id url altText width height }
+            }
+            variants(first: ${VARIANT_PAGE_SIZE}) {
+              pageInfo { hasNextPage }
               nodes {
                 id
+                title
+                sku
+                barcode
                 price
                 compareAtPrice
                 inventoryQuantity
+                inventoryPolicy
+                position
+                selectedOptions { name value }
+                image { id }
+                inventoryItem {
+                  measurement { weight { unit value } }
+                }
               }
-            }
-            images(first: 250) {
-              nodes { id url altText }
             }
           }
         }
@@ -212,6 +258,51 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
       )
 
       for (const node of data.products.nodes) {
+        const variantNodes = node.variants?.nodes ?? []
+
+        // Never silently truncate a catalog: a product past the page size would
+        // lose variants, and the loss would only surface as missing creatives.
+        if (node.variants?.pageInfo?.hasNextPage) {
+          console.warn(
+            `[shopify] product ${node.title} has more than ${VARIANT_PAGE_SIZE} variants — extras not synced`
+          )
+        }
+
+        const variants: ShopifyVariant[] = variantNodes.map((v: any, idx: number) => {
+          const [option1, option2, option3] = optionsToPositional(v.selectedOptions)
+          const weight = v.inventoryItem?.measurement?.weight
+          return {
+            id: gidToId(v.id),
+            title: v.title ?? '',
+            sku: v.sku || null,
+            barcode: v.barcode || null,
+            price: v.price ?? '0',
+            compare_at_price: v.compareAtPrice ?? null,
+            inventory_quantity: v.inventoryQuantity ?? 0,
+            // Shopify returns the enum uppercase (DENY / CONTINUE).
+            inventory_policy: String(v.inventoryPolicy ?? 'DENY').toLowerCase() === 'continue'
+              ? 'continue'
+              : 'deny',
+            option1,
+            option2,
+            option3,
+            position: v.position ?? idx + 1,
+            weight: weight?.value ?? null,
+            weight_unit: weight?.unit ?? null,
+            image_id: v.image?.id ? gidToId(v.image.id) : null,
+          }
+        })
+
+        // Invert variant -> image into image -> variants, which is the direction
+        // the products page and the feed actually query.
+        const variantIdsByImage = new Map<number, string[]>()
+        for (const v of variants) {
+          if (v.image_id == null) continue
+          const list = variantIdsByImage.get(v.image_id) ?? []
+          list.push(String(v.id))
+          variantIdsByImage.set(v.image_id, list)
+        }
+
         all.push({
           id: gidToId(node.id),
           title: node.title,
@@ -220,20 +311,23 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
           product_type: node.productType ?? '',
           tags: Array.isArray(node.tags) ? node.tags.join(', ') : node.tags ?? '',
           status: (node.status ?? '').toLowerCase(),
+          description: node.description ?? '',
+          published_at: node.publishedAt ?? null,
           created_at: node.createdAt,
           updated_at: node.updatedAt,
-          variants: (node.variants?.nodes ?? []).map((v: any) => ({
-            id: gidToId(v.id),
-            price: v.price ?? '0',
-            compare_at_price: v.compareAtPrice ?? null,
-            inventory_quantity: v.inventoryQuantity ?? 0,
-          })),
-          images: (node.images?.nodes ?? []).map((img: any, idx: number) => ({
-            id: gidToId(img.id),
-            src: img.url,
-            alt: img.altText ?? null,
-            position: idx + 1,
-          })),
+          variants,
+          images: (node.images?.nodes ?? []).map((img: any, idx: number) => {
+            const imageId = gidToId(img.id)
+            return {
+              id: imageId,
+              src: img.url,
+              alt: img.altText ?? null,
+              position: idx + 1,
+              width: img.width ?? null,
+              height: img.height ?? null,
+              variant_ids: variantIdsByImage.get(imageId) ?? [],
+            }
+          }),
         })
       }
 
@@ -250,7 +344,7 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
   async function getProductCount(): Promise<number> {
     const data = await graphql<{ productsCount: { count: number } }>(`
       query {
-        productsCount(query: "status:active") { count }
+        productsCount { count }
       }
     `)
     return data.productsCount?.count ?? 0

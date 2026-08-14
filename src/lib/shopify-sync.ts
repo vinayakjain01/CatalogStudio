@@ -158,16 +158,34 @@ async function syncProducts(
     }
   }
 
+  // Snapshot variant state BEFORE it is overwritten below — this is the only
+  // window in which the previous prices/stock are still readable.
+  const existingVariantPrints = await loadExistingVariantPrints(
+    supabase,
+    Array.from(productIdByShopifyId.values())
+  )
+
   for (const row of productRows) {
     const productId = productIdByShopifyId.get(row.shopify_id)
     if (!productId) continue
 
     const existing = existingByShopifyId.get(row.shopify_id)
-    if (!existing || productChanged(existing, row)) {
+    const shopifyProduct = shopifyProducts.find(sp => sp.id.toString() === row.shopify_id)
+
+    // Product-level fields, OR anything about the variant set. Checking only the
+    // product row would miss a price change on the second variant, because
+    // products.price mirrors variant[0] alone.
+    const variantsChanged =
+      existingVariantPrints.get(productId) !== variantFingerprint(shopifyProduct)
+
+    if (!existing || productChanged(existing, row) || variantsChanged) {
       changedProductIds.push(productId)
     }
   }
 
+  // Variants before images: image rows carry variant_ids, and a variant that
+  // does not exist yet would make that association point at nothing.
+  await replaceProductVariants(supabase, store.id, productIdByShopifyId, shopifyProducts)
   await replaceProductImages(supabase, productIdByShopifyId, shopifyProducts)
 
   if (autoEnqueueChanged && changedProductIds.length > 0) {
@@ -225,16 +243,160 @@ function toProductRow(storeId: string, sp: ShopifyProduct) {
     vendor: sp.vendor || null,
     product_type: sp.product_type || null,
     tags,
+    description: sp.description || null,
+    status: sp.status,
+    // DEPRECATED variant[0] mirror. The authoritative values now live in
+    // product_variants; these columns stay populated only so the pages and
+    // rules that still read products.price keep working until they migrate.
     price,
     compare_at_price: compareAtPrice,
     inventory_quantity: primaryVariant?.inventory_quantity || 0,
-    status: sp.status,
+    sku: primaryVariant?.sku || null,
     updated_at: new Date().toISOString(),
+  }
+}
+
+function toVariantRows(storeId: string, productId: string, sp: ShopifyProduct) {
+  return sp.variants.map(v => ({
+    product_id: productId,
+    store_id: storeId,
+    shopify_variant_id: v.id.toString(),
+    title: v.title || null,
+    sku: v.sku,
+    barcode: v.barcode,
+    price: v.price ? parseFloat(v.price) : 0,
+    compare_at_price: v.compare_at_price ? parseFloat(v.compare_at_price) : null,
+    inventory_quantity: v.inventory_quantity,
+    inventory_policy: v.inventory_policy,
+    option1: v.option1,
+    option2: v.option2,
+    option3: v.option3,
+    position: v.position,
+    weight: v.weight,
+    weight_unit: v.weight_unit,
+    updated_at: new Date().toISOString(),
+    // is_sold_out is a generated column — never written here.
+  }))
+}
+
+/**
+ * Upsert every variant, then remove the ones Shopify no longer has.
+ *
+ * Deletes are scoped to the products in THIS sync batch, so an incremental sync
+ * (which only fetches recently-updated products) cannot wipe the variants of
+ * products it never looked at.
+ */
+async function replaceProductVariants(
+  supabase: SupabaseClient,
+  storeId: string,
+  productIdByShopifyId: Map<string, string>,
+  shopifyProducts: ShopifyProduct[]
+) {
+  const variantRows: ReturnType<typeof toVariantRows> = []
+  const seenByProductId = new Map<string, string[]>()
+
+  for (const sp of shopifyProducts) {
+    const productId = productIdByShopifyId.get(sp.id.toString())
+    if (!productId) continue
+
+    const rows = toVariantRows(storeId, productId, sp)
+    variantRows.push(...rows)
+    seenByProductId.set(productId, rows.map(r => r.shopify_variant_id))
+  }
+
+  for (const batch of chunkArray(variantRows, PRODUCT_BATCH_SIZE)) {
+    const { error } = await measureAsync(
+      'supabase.product_variants.batch_upsert',
+      () => supabase
+        .from('product_variants')
+        .upsert(batch, { onConflict: 'store_id,shopify_variant_id' }),
+      { rows: batch.length, storeId }
+    )
+    if (error) throw new Error(error.message)
+  }
+
+  // Reconcile deletions — a variant removed in Shopify must stop appearing in
+  // the products list and the feed. Upserting alone would leave it orphaned.
+  for (const [productId, keepIds] of seenByProductId) {
+    const query = supabase.from('product_variants').delete().eq('product_id', productId)
+    const { error } = keepIds.length
+      ? await query.not('shopify_variant_id', 'in', `(${keepIds.join(',')})`)
+      : await query
+    if (error) throw new Error(error.message)
   }
 }
 
 function productChanged(existing: ExistingProduct, next: ReturnType<typeof toProductRow>) {
   return fingerprint(existing) !== fingerprint(next)
+}
+
+/**
+ * Stable signature of a product's variant set — the fields whose change should
+ * force a creative to be regenerated (price, sale price, stock, availability).
+ * Sorted by variant id so Shopify's ordering can't produce a false positive.
+ */
+function variantFingerprint(sp: ShopifyProduct | undefined): string {
+  if (!sp) return ''
+  return JSON.stringify(
+    sp.variants
+      .map(v => [
+        v.id.toString(),
+        Number(v.price ?? 0),
+        v.compare_at_price == null ? null : Number(v.compare_at_price),
+        v.inventory_quantity,
+        v.inventory_policy,
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+  )
+}
+
+/** Per-product variant fingerprints as currently stored. */
+async function loadExistingVariantPrints(
+  supabase: SupabaseClient,
+  productIds: string[]
+): Promise<Map<string, string>> {
+  const byProduct = new Map<string, any[]>()
+
+  for (const ids of chunkArray(productIds, 500)) {
+    const { data, error } = await measureAsync(
+      'supabase.product_variants.existing_lookup',
+      () => supabase
+        .from('product_variants')
+        .select('product_id, shopify_variant_id, price, compare_at_price, inventory_quantity, inventory_policy')
+        .in('product_id', ids),
+      { rows: ids.length }
+    )
+    // A missing table (migration 002 not applied yet) must not break syncing —
+    // change detection just falls back to the product-level comparison.
+    if (error) {
+      console.warn('[sync] variant fingerprint lookup skipped:', error.message)
+      return new Map()
+    }
+    for (const row of data || []) {
+      const list = byProduct.get((row as any).product_id) ?? []
+      list.push(row)
+      byProduct.set((row as any).product_id, list)
+    }
+  }
+
+  const prints = new Map<string, string>()
+  for (const [productId, rows] of byProduct) {
+    prints.set(
+      productId,
+      JSON.stringify(
+        rows
+          .map(r => [
+            String(r.shopify_variant_id),
+            Number(r.price ?? 0),
+            r.compare_at_price == null ? null : Number(r.compare_at_price),
+            r.inventory_quantity,
+            r.inventory_policy,
+          ])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      )
+    )
+  }
+  return prints
 }
 
 function fingerprint(value: {
@@ -274,6 +436,10 @@ async function replaceProductImages(
         alt: img.alt || null,
         position: img.position || idx,
         is_primary: idx === 0,
+        width: img.width,
+        height: img.height,
+        // Which variants display this image — drives the per-variant gallery.
+        variant_ids: img.variant_ids,
       })
     }
   }

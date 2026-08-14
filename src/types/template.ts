@@ -41,15 +41,24 @@ export interface RectangleLayer extends BaseLayer {
   borderColor: string
 }
 
+/** When a badge is drawn. Evaluated per variant at generation time. */
+export type BadgeCondition = 'always' | 'if_sold_out' | 'if_on_sale'
+
+/** Pre-styled badge looks offered in the editor. */
+export type BadgePreset = 'sale' | 'new' | 'sold_out' | 'trending' | 'bestseller' | 'custom'
+
 export interface BadgeLayer extends BaseLayer {
   type: 'badge'
-  content: string          // e.g. '{{discount_percentage}}% OFF'
+  content: string          // e.g. '{discount_percent}'
   backgroundColor: string
   color: string
   fontSize: number
   fontWeight: 'normal' | 'bold'
   borderRadius: number
   shape: 'rectangle' | 'circle'
+  /** Defaults to 'always' when absent, so pre-v2 badges keep rendering. */
+  condition?: BadgeCondition
+  preset?: BadgePreset
 }
 
 export interface LogoLayer extends BaseLayer {
@@ -119,35 +128,125 @@ export const DYNAMIC_VARIABLES = [
   { key: '{{product_image}}',       label: 'Product Image' },
 ]
 
-export function resolveVariables(
+/**
+ * Everything a template's dynamic fields can be resolved against.
+ *
+ * Variant fields are optional so a product-level render still works; when a
+ * variant is supplied its price/sku win, because in v2 a creative is generated
+ * per variant and must show that variant's own numbers.
+ */
+export interface TemplateFieldContext {
+  title: string
+  price: number
+  compare_at_price: number | null
+  vendor: string | null
+  product_type: string | null
+  sku?: string | null
+  variant_title?: string | null
+  inventory_quantity?: number | null
+  option1?: string | null
+  option2?: string | null
+  option3?: string | null
+  currency?: string
+}
+
+/** Tokens offered by the editor's field picker. */
+export const TEMPLATE_FIELDS = [
+  '{product_title}', '{variant_title}', '{price}', '{compare_at_price}',
+  '{discount_percent}', '{vendor}', '{sku}', '{inventory_qty}',
+  '{option1}', '{option2}', '{option3}',
+] as const
+
+/**
+ * Substitute dynamic fields in a text/badge layer's content.
+ *
+ * Accepts both the v2 single-brace tokens ({product_title}) and the legacy
+ * double-brace ones ({{title}}). Longer names are replaced before shorter ones
+ * so {compare_at_price} cannot be partially eaten by the {price} rule.
+ *
+ * An unknown token is left verbatim rather than blanked — a visible
+ * "{prodcut_title}" in a preview tells the author they typo'd, whereas an empty
+ * string looks like missing data and gets debugged against the catalog instead.
+ */
+export function resolveTemplateFields(
   content: string,
-  product: {
-    title: string
-    price: number
-    compare_at_price: number | null
-    vendor: string | null
-    product_type: string | null
-  }
+  ctx: TemplateFieldContext
 ): string {
-  const discount =
-    product.compare_at_price && product.compare_at_price > product.price
-      ? Math.round(((product.compare_at_price - product.price) / product.compare_at_price) * 100)
-      : 0
+  if (!content) return ''
+
+  const price = Number(ctx.price ?? 0)
+  const compareAt = ctx.compare_at_price == null ? null : Number(ctx.compare_at_price)
+  const onSale = compareAt !== null && compareAt > price
+  const discount = onSale ? Math.round(((compareAt - price) / compareAt) * 100) : 0
 
   const fmt = (n: number) =>
     new Intl.NumberFormat('en-IN', {
       style: 'currency',
-      currency: 'INR',
+      currency: ctx.currency || 'INR',
       maximumFractionDigits: 0,
     }).format(n)
 
-  return content
-    .replace(/{{title}}/g, product.title)
-    .replace(/{{price}}/g, fmt(product.price))
-    .replace(/{{compare_price}}/g, product.compare_at_price ? fmt(product.compare_at_price) : '')
-    .replace(/{{discount_percentage}}/g, discount.toString())
-    .replace(/{{vendor}}/g, product.vendor || '')
-    .replace(/{{product_type}}/g, product.product_type || '')
+  const variantTitle = ctx.variant_title && ctx.variant_title !== 'Default Title'
+    ? ctx.variant_title
+    : ''
+
+  const values: Record<string, string> = {
+    product_title:     ctx.title ?? '',
+    variant_title:     variantTitle,
+    price:             fmt(price),
+    compare_at_price:  compareAt !== null ? fmt(compareAt) : '',
+    discount_percent:  onSale ? `${discount}% OFF` : '',
+    vendor:            ctx.vendor ?? '',
+    product_type:      ctx.product_type ?? '',
+    sku:               ctx.sku ?? '',
+    inventory_qty:     ctx.inventory_quantity == null ? '' : String(ctx.inventory_quantity),
+    option1:           ctx.option1 ?? '',
+    option2:           ctx.option2 ?? '',
+    option3:           ctx.option3 ?? '',
+    // Legacy aliases — same values under the pre-v2 names.
+    title:             ctx.title ?? '',
+    compare_price:     compareAt !== null ? fmt(compareAt) : '',
+    discount_percentage: String(discount),
+  }
+
+  let out = content
+  for (const key of Object.keys(values).sort((a, b) => b.length - a.length)) {
+    out = out
+      .replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), values[key])
+      .replace(new RegExp(`\\{${key}\\}`, 'g'), values[key])
+  }
+  return out
+}
+
+/** @deprecated Use resolveTemplateFields — kept so existing call sites compile. */
+export function resolveVariables(
+  content: string,
+  product: TemplateFieldContext
+): string {
+  return resolveTemplateFields(content, product)
+}
+
+/**
+ * Should a conditional badge render for this variant?
+ *
+ * Lets one template carry a SOLD OUT and a SALE badge and show the right one
+ * per variant, instead of needing a separate template per state.
+ */
+export function badgeConditionMet(
+  condition: BadgeCondition | undefined,
+  ctx: { is_sold_out?: boolean | null; price?: number | null; compare_at_price?: number | null }
+): boolean {
+  if (!condition || condition === 'always') return true
+
+  if (condition === 'if_sold_out') return Boolean(ctx.is_sold_out)
+
+  if (condition === 'if_on_sale') {
+    const price = Number(ctx.price ?? 0)
+    const compareAt = ctx.compare_at_price == null ? null : Number(ctx.compare_at_price)
+    return compareAt !== null && compareAt > price
+  }
+
+  return true
 }
 
 export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1' | '2:3' | 'custom'
