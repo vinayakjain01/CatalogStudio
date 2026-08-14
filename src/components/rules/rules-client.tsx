@@ -1,42 +1,63 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+/**
+ * Rules Engine — map product criteria to a template.
+ *
+ * v2 — MULTI-CONDITION. A rule was previously a single field/operator/value
+ * triple, so "vendor is Saundh AND type is Kaftan" was unexpressible. A rule now
+ * holds a list of conditions combined with ALL (AND) or ANY (OR).
+ *
+ * Priority is ascending: 0 is evaluated first and the first matching rule wins.
+ * That is the opposite of the pre-v2 behaviour, so the list is ordered — and
+ * labelled — to make the evaluation order unambiguous.
+ */
+import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Trash2, Plus, Zap, ArrowRight } from 'lucide-react'
+import { Trash2, Plus, Zap, ArrowRight, X } from 'lucide-react'
+import type { RuleCondition, RuleField, RuleOperator } from '@/lib/template-resolver'
 
-const RULE_TYPES = [
-  { value: 'tag', label: 'Tag' },
-  { value: 'vendor', label: 'Vendor' },
-  { value: 'product_type', label: 'Product Type' },
-  { value: 'discount', label: 'Discount %' },
-  { value: 'default', label: 'Default (all products)' },
-  { value: 'catalog_import', label: '📁 Entire Line Sheet Import' },
+const FIELDS: { value: RuleField; label: string; kind: 'text' | 'number' | 'none' }[] = [
+  { value: 'tag',            label: 'Tag',              kind: 'text' },
+  { value: 'vendor',         label: 'Vendor',           kind: 'text' },
+  { value: 'product_type',   label: 'Product type',     kind: 'text' },
+  { value: 'collection',     label: 'Collection',       kind: 'text' },
+  { value: 'title_contains', label: 'Title contains',   kind: 'text' },
+  { value: 'sku_prefix',     label: 'SKU starts with',  kind: 'text' },
+  { value: 'price_min',      label: 'Price at least',   kind: 'number' },
+  { value: 'price_max',      label: 'Price at most',    kind: 'number' },
+  { value: 'all_products',   label: 'All products',     kind: 'none' },
 ]
 
-const OPERATORS: Record<string, { value: string; label: string }[]> = {
-  tag: [{ value: 'equals', label: 'equals' }, { value: 'contains', label: 'contains' }],
-  vendor: [{ value: 'equals', label: 'equals' }, { value: 'contains', label: 'contains' }],
-  product_type: [{ value: 'equals', label: 'equals' }, { value: 'contains', label: 'contains' }],
-  discount: [
-    { value: 'greater_than', label: 'greater than' },
-    { value: 'less_than', label: 'less than' },
-    { value: 'equals', label: 'equals' },
-  ],
-  default: [{ value: 'equals', label: 'matches all' }],
+const TEXT_OPERATORS: { value: RuleOperator; label: string }[] = [
+  { value: 'is',          label: 'is' },
+  { value: 'is_not',      label: 'is not' },
+  { value: 'contains',    label: 'contains' },
+  { value: 'starts_with', label: 'starts with' },
+]
+
+function fieldKind(field: RuleField) {
+  return FIELDS.find(f => f.value === field)?.kind ?? 'text'
+}
+
+function fieldLabel(field: string) {
+  return FIELDS.find(f => f.value === field)?.label ?? field
 }
 
 interface Rule {
   id: string
-  rule_type: string
-  rule_operator: string
-  rule_value: string
+  name: string | null
   priority: number
   is_active: boolean
-  templates: { id: string; name: string }
+  conditions: RuleCondition[] | null
+  condition_mode: 'all' | 'any' | null
+  rule_type: string | null
+  rule_operator: string | null
+  rule_value: string | null
+  templates: { id: string; name: string } | null
 }
 
 interface Props {
@@ -44,52 +65,77 @@ interface Props {
   templates: { id: string; name: string }[]
 }
 
+const emptyCondition = (): RuleCondition => ({ field: 'tag', operator: 'is', value: '' })
+
 export function RulesClient({ stores, templates }: Props) {
   const [selectedStore, setSelectedStore] = useState(stores[0]?.id || '')
   const [rules, setRules] = useState<Rule[]>([])
   const [loading, setLoading] = useState(false)
 
   // New rule form
-  const [ruleType, setRuleType] = useState('tag')
-  const [operator, setOperator] = useState('equals')
-  const [ruleValue, setRuleValue] = useState('')
+  const [name, setName] = useState('')
+  const [conditions, setConditions] = useState<RuleCondition[]>([emptyCondition()])
+  const [mode, setMode] = useState<'all' | 'any'>('all')
   const [templateId, setTemplateId] = useState('')
   const [priority, setPriority] = useState(0)
   const [adding, setAdding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (selectedStore) fetchRules()
-  }, [selectedStore])
-
-  async function fetchRules() {
+  const fetchRules = useCallback(async () => {
+    if (!selectedStore) return
     setLoading(true)
     const res = await fetch(`/api/rules?storeId=${selectedStore}`)
     const data = await res.json()
     setRules(data.rules || [])
     setLoading(false)
+  }, [selectedStore])
+
+  useEffect(() => { fetchRules() }, [fetchRules])
+
+  function updateCondition(index: number, patch: Partial<RuleCondition>) {
+    setConditions(cur => cur.map((c, i) => {
+      if (i !== index) return c
+      const next = { ...c, ...patch }
+      // Switching to a field that takes no value must clear any stale value,
+      // otherwise "All products" would submit a leftover string.
+      if (patch.field && fieldKind(patch.field) === 'none') next.value = ''
+      return next
+    }))
   }
 
   async function handleAdd() {
     if (!templateId || !selectedStore) return
-    setAdding(true)
+    setError(null)
 
+    const usable = conditions.filter(c => c.value.trim() !== '' || c.field === 'all_products')
+    if (usable.length === 0) {
+      setError('Add at least one condition with a value')
+      return
+    }
+
+    setAdding(true)
     const res = await fetch('/api/rules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         store_id: selectedStore,
         template_id: templateId,
-        rule_type: ruleType,
-        rule_operator: operator,
-        rule_value: ruleType === 'default' ? 'all' : ruleValue,
+        name: name.trim() || null,
+        conditions: usable,
+        condition_mode: mode,
         priority,
       }),
     })
     const data = await res.json()
     if (res.ok) {
-      setRules(prev => [data.rule, ...prev])
-      setRuleValue('')
+      // Re-fetch rather than prepend: the server orders by priority, and a new
+      // rule rarely belongs at the top of that order.
+      await fetchRules()
+      setName('')
+      setConditions([emptyCondition()])
       setTemplateId('')
+    } else {
+      setError(data.error || 'Could not create rule')
     }
     setAdding(false)
   }
@@ -101,148 +147,210 @@ export function RulesClient({ stores, templates }: Props) {
 
   if (stores.length === 0) {
     return (
-      <div className="text-center py-20 text-muted-foreground">
+      <div className="py-20 text-center text-muted-foreground">
         <p>No stores connected. Go to Settings first.</p>
       </div>
     )
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      {/* Store selector */}
+    <div className="space-y-6">
       {stores.length > 1 && (
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-muted-foreground">Store:</span>
-          <Select value={selectedStore} onValueChange={setSelectedStore}>
-            <SelectTrigger className="w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {stores.map(s => (
-                <SelectItem key={s.id} value={s.id}>{s.shop_name || s.shop_domain}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <Select value={selectedStore} onValueChange={setSelectedStore}>
+          <SelectTrigger className="w-72"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {stores.map(s => (
+              <SelectItem key={s.id} value={s.id}>{s.shop_name || s.shop_domain}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       )}
 
-      {/* Add rule form */}
+      {/* ── New rule ─────────────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2">
-            <Plus className="h-4 w-4" />
-            Add rule
-          </CardTitle>
+          <CardTitle className="text-base">New rule</CardTitle>
           <CardDescription>
-            Rules are evaluated in priority order (highest first). First match wins.
+            Products matching these conditions get the chosen template. Rules are
+            checked in priority order and the first match wins.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground font-medium">IF</span>
-            <Select value={ruleType} onValueChange={v => { setRuleType(v); setOperator(OPERATORS[v][0].value) }}>
-              <SelectTrigger className="w-40 h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {RULE_TYPES.map(r => (
-                  <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Rule name (optional)
+              </label>
+              <Input value={name} onChange={e => setName(e.target.value)} placeholder="Festive kaftans" />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Match
+              </label>
+              <Select value={mode} onValueChange={v => setMode(v as 'all' | 'any')}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">ALL conditions (AND)</SelectItem>
+                  <SelectItem value="any">ANY condition (OR)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
-            <Select value={operator} onValueChange={setOperator}>
-              <SelectTrigger className="w-36 h-8">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(OPERATORS[ruleType] || []).map(o => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {/* Conditions */}
+          <div className="space-y-2">
+            <label className="block text-xs font-medium text-muted-foreground">Conditions</label>
+            {conditions.map((c, i) => {
+              const kind = fieldKind(c.field)
+              return (
+                <div key={i} className="flex flex-wrap items-center gap-2">
+                  <Select value={c.field} onValueChange={v => updateCondition(i, { field: v as RuleField })}>
+                    <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {FIELDS.map(f => (
+                        <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
 
-            {ruleType !== 'default' && (
-              <Input
-                value={ruleValue}
-                onChange={e => setRuleValue(e.target.value)}
-                placeholder={ruleType === 'discount' ? 'e.g. 30' : 'e.g. Saree'}
-                className="w-32 h-8 text-sm"
-              />
-            )}
+                  {kind === 'text' && (
+                    <Select value={c.operator} onValueChange={v => updateCondition(i, { operator: v as RuleOperator })}>
+                      <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {TEXT_OPERATORS.map(o => (
+                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
 
-            <span className="text-muted-foreground font-medium">→ APPLY</span>
+                  {kind !== 'none' && (
+                    <Input
+                      className="w-52"
+                      type={kind === 'number' ? 'number' : 'text'}
+                      value={c.value}
+                      onChange={e => updateCondition(i, { value: e.target.value })}
+                      placeholder={kind === 'number' ? '2000' : 'value'}
+                    />
+                  )}
 
-            <Select value={templateId} onValueChange={setTemplateId}>
-              <SelectTrigger className="w-48 h-8">
-                <SelectValue placeholder="Select template…" />
-              </SelectTrigger>
-              <SelectContent>
-                {templates.map(t => (
-                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                  {conditions.length > 1 && (
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={() => setConditions(cur => cur.filter((_, j) => j !== i))}
+                      aria-label="Remove condition"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+            <Button size="sm" variant="outline" onClick={() => setConditions(cur => [...cur, emptyCondition()])}>
+              <Plus className="h-3.5 w-3.5" />
+              Add condition
+            </Button>
+          </div>
 
-            <div className="flex items-center gap-1">
-              <span className="text-muted-foreground text-xs">Priority:</span>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="sm:col-span-2">
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Template</label>
+              <Select value={templateId} onValueChange={setTemplateId}>
+                <SelectTrigger><SelectValue placeholder="Choose a template" /></SelectTrigger>
+                <SelectContent>
+                  {templates.map(t => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Priority (0 = first)
+              </label>
               <Input
                 type="number"
                 value={priority}
-                onChange={e => setPriority(parseInt(e.target.value) || 0)}
-                className="w-16 h-8 text-xs"
+                onChange={e => setPriority(parseInt(e.target.value, 10) || 0)}
               />
             </div>
           </div>
 
-          <Button
-            size="sm"
-            onClick={handleAdd}
-            disabled={adding || !templateId || (ruleType !== 'default' && !ruleValue)}
-          >
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button onClick={handleAdd} disabled={adding || !templateId}>
+            <Plus className="h-4 w-4" />
             {adding ? 'Adding…' : 'Add rule'}
           </Button>
         </CardContent>
       </Card>
 
-      {/* Rules list */}
+      {/* ── Existing rules ───────────────────────────────────────────────── */}
       <div className="space-y-2">
-        <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-          Active rules ({rules.length})
+        <h2 className="text-sm font-medium text-muted-foreground">
+          Rules in evaluation order
         </h2>
 
         {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
         {!loading && rules.length === 0 && (
-          <div className="text-center py-10 text-muted-foreground border-2 border-dashed rounded-lg">
-            <Zap className="h-7 w-7 mx-auto mb-2 opacity-30" />
-            <p className="text-sm">No rules yet. Add one above.</p>
-          </div>
+          <Card className="border-dashed">
+            <CardContent className="py-10 text-center text-muted-foreground">
+              <Zap className="mx-auto mb-2 h-6 w-6 opacity-30" />
+              <p className="text-sm">No rules yet — products won&apos;t generate until one matches.</p>
+            </CardContent>
+          </Card>
         )}
 
-        {rules.map(rule => (
-          <div
-            key={rule.id}
-            className="flex items-center justify-between p-3 rounded-lg border bg-card"
-          >
-            <div className="flex items-center gap-2 text-sm flex-wrap">
-              <Badge variant="outline" className="text-xs">P{rule.priority}</Badge>
-              <span className="text-muted-foreground">IF</span>
-              <span className="font-medium">{RULE_TYPES.find(r => r.value === rule.rule_type)?.label}</span>
-              <span className="text-muted-foreground">{rule.rule_operator.replace('_', ' ')}</span>
-              <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{rule.rule_value}</code>
-              <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="font-medium text-primary">{rule.templates?.name}</span>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-muted-foreground hover:text-destructive flex-shrink-0"
-              onClick={() => handleDelete(rule.id)}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+        {rules.map((rule, index) => (
+          <Card key={rule.id}>
+            <CardContent className="flex flex-wrap items-center gap-3 p-3 text-sm">
+              <Badge variant="secondary" className="tabular-nums">#{index + 1}</Badge>
+
+              <div className="min-w-0 flex-1">
+                {rule.name && <p className="font-medium">{rule.name}</p>}
+                <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground">
+                  {(rule.conditions?.length ?? 0) > 0 ? (
+                    rule.conditions!.map((c, i) => (
+                      <span key={i} className="flex items-center gap-1.5">
+                        {i > 0 && (
+                          <span className="text-[10px] font-semibold uppercase opacity-70">
+                            {rule.condition_mode === 'any' ? 'or' : 'and'}
+                          </span>
+                        )}
+                        <Badge variant="outline" className="py-0 text-xs">
+                          {fieldLabel(c.field)}
+                          {c.field !== 'all_products' && ` ${c.operator.replace('_', ' ')} ${c.value}`}
+                        </Badge>
+                      </span>
+                    ))
+                  ) : (
+                    <Badge variant="outline" className="py-0 text-xs">
+                      {rule.rule_type
+                        ? `${fieldLabel(rule.rule_type)} ${rule.rule_operator ?? ''} ${rule.rule_value ?? ''}`
+                        : 'No conditions — never matches'}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+
+              <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="shrink-0 font-medium">{rule.templates?.name ?? 'Template removed'}</span>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                priority {rule.priority}
+              </span>
+
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => handleDelete(rule.id)}
+                aria-label="Delete rule"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-destructive" />
+              </Button>
+            </CardContent>
+          </Card>
         ))}
       </div>
     </div>
