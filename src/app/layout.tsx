@@ -1,6 +1,29 @@
 import type { Metadata } from 'next'
+import { Fraunces, Manrope } from 'next/font/google'
 import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
+
+/**
+ * Fraunces for headings, Manrope for UI.
+ *
+ * next/font self-hosts these at build time. That is not a preference: the CSP
+ * in next.config.ts sets `font-src 'self'` and `style-src 'self'`, so a
+ * <link> to fonts.googleapis.com would be blocked outright and the page would
+ * silently fall back to system fonts.
+ */
+const fraunces = Fraunces({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-heading-family',
+  display: 'swap',
+})
+
+const manrope = Manrope({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+  variable: '--font-sans-family',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
   title: 'Catalog Studio',
@@ -17,7 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     ?? ''
 
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className={`${manrope.variable} ${fraunces.variable}`}>
       <head>
         {/*
          * Shopify App Bridge — MUST be synchronous, MUST be first script.

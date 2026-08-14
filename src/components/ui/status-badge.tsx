@@ -10,12 +10,18 @@ import { cn } from '@/lib/utils'
  */
 export type StatusTone = 'in_stock' | 'low_stock' | 'sold_out' | 'sale' | 'neutral'
 
+/**
+ * Warm teal / amber / coral rather than stock green-red, so status reads as
+ * part of the palette instead of browser-default alerting. Each pairs its own
+ * tinted background with a matching foreground, so a pill is legible in both
+ * themes without per-usage overrides.
+ */
 const TONE: Record<StatusTone, string> = {
-  in_stock:  'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300',
-  low_stock: 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
-  sold_out:  'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300',
-  // Sale is an announcement, not a state — solid red so it reads as a label.
-  sale:      'bg-red-600 text-white',
+  in_stock:  'bg-success-bg text-success',
+  low_stock: 'bg-warning-bg text-warning',
+  sold_out:  'bg-danger-bg text-danger',
+  // Sale is an announcement, not a state — solid so it reads as a label.
+  sale:      'bg-danger text-white',
   neutral:   'bg-muted text-muted-foreground',
 }
 
