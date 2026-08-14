@@ -2,7 +2,7 @@
 
 client_id = "a43b10e6f1a97ebe20d14d8d12dd6be9"
 name = "Craftify"
-application_url = "https://craftify.vercel.app/"
+application_url = "https://craft-ify.vercel.app/"
 embedded = true
 
 [webhooks]
@@ -27,4 +27,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://craftify.vercel.app/api/shopify/callback" ]
+redirect_urls = [ "https://craft-ify.vercel.app/api/shopify/callback" ]
