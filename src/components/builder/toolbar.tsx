@@ -1,5 +1,6 @@
 'use client'
 
+import { shopifyFetch } from '@/lib/shopify-token'
 import { useRef, useState } from 'react'
 import { useBuilderStore } from '@/stores/builder-store'
 import { Button } from '@/components/ui/button'
@@ -11,7 +12,7 @@ async function uploadFile(file: File, kind: 'overlay' | 'logo'): Promise<string>
   const form = new FormData()
   form.append('file', file)
   form.append('kind', kind)
-  const res = await fetch('/api/upload', { method: 'POST', body: form })
+  const res = await shopifyFetch('/api/upload', { method: 'POST', body: form })
   const data = await res.json()
   if (!res.ok) throw new Error(data.error || 'Upload failed')
   return data.url as string

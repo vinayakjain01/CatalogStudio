@@ -130,7 +130,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     const tick = async (): Promise<void> => {
       if (!pollingActive.current) return
       try {
-        const pr = await fetch(`/api/generate/enqueue?batchId=${batchId}`)
+        const pr = await shopifyFetch(`/api/generate/enqueue?batchId=${batchId}`)
         const c: BatchCounts = await pr.json()
         setBatchProgress(c)
 
@@ -173,7 +173,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     setStopping(true)
     pollingActive.current = false
     try {
-      const res = await fetch('/api/generate/cancel', {
+      const res = await shopifyFetch('/api/generate/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId: selectedStore, batchId: currentBatchId.current }),
@@ -192,7 +192,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
   async function handleDelete(creativeId: string, publicId: string) {
     if (!confirm('Delete this creative?')) return
-    await fetch(`/api/creatives/${creativeId}`, { method: 'DELETE' })
+    await shopifyFetch(`/api/creatives/${creativeId}`, { method: 'DELETE' })
     setCreatives(prev => prev.filter(c => c.id !== creativeId))
   }
 

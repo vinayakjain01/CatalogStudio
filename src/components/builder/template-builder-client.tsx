@@ -1,5 +1,6 @@
 'use client'
 
+import { shopifyFetch } from '@/lib/shopify-token'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useBuilderStore } from '@/stores/builder-store'
@@ -91,9 +92,8 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
     const url = template ? `/api/templates/${template.id}` : '/api/templates'
     const method = template ? 'PUT' : 'POST'
 
-    const res = await fetch(url, {
+    const res = await shopifyFetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
 
@@ -104,7 +104,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
     } else {
       resetDirty()
       const templateId = template?.id || data.template.id
-      fetch(`/api/templates/${templateId}/thumbnail`, { method: 'POST' }).catch(() => {})
+      shopifyFetch(`/api/templates/${templateId}/thumbnail`, { method: 'POST' }).catch(() => {})
       if (!template) {
         router.push(`/dashboard/templates/${templateId}/edit`)
       } else {

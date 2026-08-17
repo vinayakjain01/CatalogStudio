@@ -43,22 +43,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning className={`${manrope.variable} ${fraunces.variable}`}>
       <head>
         {/*
-         * Shopify App Bridge — MUST be synchronous, MUST be first script.
+         * Shopify App Bridge.
          *
-         * Problem with React 18 + Next.js App Router:
-         *   React automatically adds async="true" to every external
-         *   <script src="..."> element during SSR — even without the async prop.
-         *   App Bridge explicitly checks its own script tag for async/defer and
-         *   ABORTS initialization if found → window.shopify stays undefined forever.
-         *   This was true for both strategy="afterInteractive" AND our raw <script> tag.
+         * Loaded by an inline script rather than a rendered <script src> or
+         * next/script, because App Bridge ABORTS if its own tag is async or
+         * deferred — and every React/Next mechanism adds one:
+         *   <script src> rendered in head  -> lands after ~10 Next chunks
+         *   next/script beforeInteractive  -> emits only a <link preload>
+         *   ReactDOM.preinit               -> emits async=""
+         * (All three verified against the built HTML, not assumed.)
          *
-         * Solution:
-         *   1. <meta name="shopify-api-key"> — React renders meta tags correctly.
-         *   2. Inline <script> (no src) — React never touches inline scripts.
-         *      The inline script creates the App Bridge element with async=false
-         *      and inserts it into the DOM immediately after itself.
-         *      Browser executes it synchronously during HTML parsing.
-         *      App Bridge checks script.async → false → PASSES → window.shopify defined.
+         * An inline script is untouched by React, so it runs during parsing and
+         * inserts app-bridge.js with async=false — which is what actually gets
+         * window.shopify defined. Confirmed working: token exchange succeeds,
+         * and that requires an id_token that only App Bridge can mint.
          */}
         <meta name="shopify-api-key" content={apiKey} />
         <script

@@ -182,7 +182,12 @@ export async function shopifyFetch(
   const token = await getShopifySessionToken()
 
   const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type')) {
+
+  // Never set Content-Type for FormData: the browser must generate it itself so
+  // it can append the multipart boundary. Forcing application/json here silently
+  // breaks every file upload.
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData
+  if (!isFormData && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
   if (token) {

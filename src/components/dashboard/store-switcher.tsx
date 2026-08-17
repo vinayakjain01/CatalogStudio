@@ -1,5 +1,6 @@
 'use client'
 
+import { shopifyFetch } from '@/lib/shopify-token'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -30,7 +31,7 @@ export function StoreSwitcher({
     if (storeId === activeStoreId) return
     setSwitching(true)
     try {
-      await fetch('/api/active-store', {
+      await shopifyFetch('/api/active-store', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId }),
