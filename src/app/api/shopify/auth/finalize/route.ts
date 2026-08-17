@@ -19,7 +19,14 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const storeId = searchParams.get('store_id')
 
-  const response = NextResponse.redirect(new URL('/dashboard', request.url))
+  // Preserve the embedded-context params — App Bridge needs them on the
+  // document URL or it cannot configure itself.
+  const dashboardUrl = new URL('/dashboard', request.url)
+  for (const key of ['shop', 'host', 'embedded'] as const) {
+    const value = searchParams.get(key)
+    if (value) dashboardUrl.searchParams.set(key, value)
+  }
+  const response = NextResponse.redirect(dashboardUrl)
 
   if (storeId) {
     response.cookies.set(ACTIVE_STORE_COOKIE, storeId, {

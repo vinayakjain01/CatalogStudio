@@ -19,6 +19,7 @@ import { createClient as createAdmin } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
 import crypto from 'crypto'
 import { ACTIVE_STORE_COOKIE } from '@/lib/active-store'
+import { SHOPIFY_HOST_COOKIE } from '@/lib/shopify-host'
 import { exchangeSessionTokenForOfflineToken } from '@/lib/shopify-token'
 
 function adminClient() {
@@ -201,9 +202,33 @@ export async function GET(request: NextRequest) {
   const tokenHash = linkData?.properties?.hashed_token
 
   // Build the response we'll attach cookies to, then redirect to /dashboard.
+  //
+  // shop/host/embedded MUST survive this redirect. App Bridge reads them from
+  // the document URL to configure itself; dropping them produced
+  //   "App Bridge Next: missing required configuration fields: shop"
+  // and left window.shopify undefined, which is why Shopify's embedded checks
+  // never saw any App Bridge or session-token activity.
   const dashboardUrl = new URL('/dashboard', getAppOrigin(request))
+  for (const key of ['shop', 'host', 'embedded'] as const) {
+    const value = searchParams.get(key)
+    if (value) dashboardUrl.searchParams.set(key, value)
+  }
   if (authError) dashboardUrl.searchParams.set('auth_error', authError)
   const response = NextResponse.redirect(dashboardUrl)
+
+  // Remembered so a later full page load (a refresh, or a deep link without
+  // params) can restore `host` instead of breaking App Bridge again.
+  const hostParam = searchParams.get('host')
+  if (hostParam) {
+    response.cookies.set(SHOPIFY_HOST_COOKIE, hostParam, {
+      httpOnly: false,
+      secure: true,
+      sameSite: 'none',
+      partitioned: true,
+      maxAge: 60 * 60 * 24 * 30,
+      path: '/',
+    })
+  }
   response.cookies.set(ACTIVE_STORE_COOKIE, store.id, {
     httpOnly: false,
     secure: true,

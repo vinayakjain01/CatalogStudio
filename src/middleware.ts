@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { SHOPIFY_HOST_COOKIE } from '@/lib/shopify-host'
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -46,6 +47,21 @@ export async function middleware(request: NextRequest) {
 
   if (isShopifyAuthRoute) {
     return supabaseResponse
+  }
+
+  // --- Keep App Bridge configurable on every full page load ---
+  // App Bridge reads `host` from the document URL. A refresh or a deep link
+  // into /dashboard/* arrives without it, App Bridge throws "missing required
+  // configuration fields: shop", window.shopify stays undefined, and session
+  // tokens silently stop working. Re-attaching it from the cookie set at launch
+  // makes that self-healing instead of a dead embedded session.
+  if (pathname.startsWith('/dashboard') && !request.nextUrl.searchParams.has('host')) {
+    const savedHost = request.cookies.get(SHOPIFY_HOST_COOKIE)?.value
+    if (savedHost) {
+      const url = request.nextUrl.clone()
+      url.searchParams.set('host', savedHost)
+      return NextResponse.redirect(url)
+    }
   }
 
   // Protect dashboard routes — redirect to login if not authenticated
