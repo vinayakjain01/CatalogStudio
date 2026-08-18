@@ -297,23 +297,28 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           <div className="flex items-center gap-3">
             <span className="w-16 shrink-0 text-sm font-medium">Variants</span>
             <Select value={variantScope} onValueChange={handleVariantScopeChange}>
-              <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="flex-1 *:data-[slot=select-value]:min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent>
+                {/* Label and description sit in ONE row, not stacked: Radix
+                    mirrors an item's children verbatim into the closed
+                    trigger, so whatever layout is used here is also what the
+                    collapsed dropdown shows — a stacked pair would centre two
+                    lines in the trigger instead of reading as a single control. */}
                 <SelectItem value="all">
-                  <div>
-                    <p className="font-medium">All variants</p>
-                    <p className="text-xs text-muted-foreground">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="font-medium shrink-0">All variants</span>
+                    <span className="truncate text-xs text-muted-foreground">
                       Every size, colour, and option for each product
-                    </p>
-                  </div>
+                    </span>
+                  </span>
                 </SelectItem>
                 <SelectItem value="specific">
-                  <div>
-                    <p className="font-medium">Specific option…</p>
-                    <p className="text-xs text-muted-foreground">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="font-medium shrink-0">Specific option…</span>
+                    <span className="truncate text-xs text-muted-foreground">
                       Choose one option value (e.g. Size: M) across all products
-                    </p>
-                  </div>
+                    </span>
+                  </span>
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -359,23 +364,23 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           <div className="flex items-center gap-3">
             <span className="w-16 shrink-0 text-sm font-medium">Images</span>
             <Select value={imageScope} onValueChange={v => setImageScope(v as 'all' | 'first')}>
-              <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="flex-1 *:data-[slot=select-value]:min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">
-                  <div>
-                    <p className="font-medium">All poses</p>
-                    <p className="text-xs text-muted-foreground">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="font-medium shrink-0">All poses</span>
+                    <span className="truncate text-xs text-muted-foreground">
                       Every image for each variant — angles, detail shots, lifestyle
-                    </p>
-                  </div>
+                    </span>
+                  </span>
                 </SelectItem>
                 <SelectItem value="first">
-                  <div>
-                    <p className="font-medium">First pose only</p>
-                    <p className="text-xs text-muted-foreground">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="font-medium shrink-0">First pose only</span>
+                    <span className="truncate text-xs text-muted-foreground">
                       Only the primary / first image for each variant
-                    </p>
-                  </div>
+                    </span>
+                  </span>
                 </SelectItem>
               </SelectContent>
             </Select>
