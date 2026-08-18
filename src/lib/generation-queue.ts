@@ -415,7 +415,18 @@ export async function processBatch(
 
 export async function processGenerationJob(
   jobId: string,
-  supabase: SupabaseClient = getAdminClient()
+  supabase: SupabaseClient = getAdminClient(),
+  /**
+   * Optional shared cache of rules/template canvases. The BullMQ worker path
+   * (this function's only caller) invokes it once per job, whereas the
+   * DB-poll path (processBatch, below) already loops over a whole batch
+   * itself and shares one context across it. Without a context passed in
+   * here, a 739-job batch routed through BullMQ re-fetched the same store's
+   * rules and the same templates up to 739 times — a fresh createJobContext()
+   * per call, thrown away immediately after. Falls back to a fresh one so a
+   * standalone call (tests, manual invocation) still works unchanged.
+   */
+  context?: JobContext
 ): Promise<{ processed: boolean; completed: boolean; failed: boolean }> {
   console.log(`[processGenerationJob] Claiming job jobId=${jobId}`)
 
@@ -449,7 +460,7 @@ export async function processGenerationJob(
   console.log(`[processGenerationJob] Processing jobId=${jobId} productId=${job.product_id} storeId=${job.store_id}`)
 
   try {
-    await runJob(job, supabase, createJobContext())
+    await runJob(job, supabase, context ?? createJobContext())
     console.log(`[processGenerationJob] Completed jobId=${jobId} productId=${job.product_id}`)
     return { processed: true, completed: true, failed: false }
   } catch (err: any) {
@@ -459,12 +470,12 @@ export async function processGenerationJob(
   }
 }
 
-type JobContext = {
+export type JobContext = {
   rulesByStore: Map<string, Promise<TemplateRule[]>>
   templatesById: Map<string, Promise<any>>
 }
 
-function createJobContext(): JobContext {
+export function createJobContext(): JobContext {
   return {
     rulesByStore: new Map(),
     templatesById: new Map(),
@@ -683,6 +694,28 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     throw new Error('Invalid image buffer from compositor')
   }
 
+  // Re-check for cancellation right before the costly network upload.
+  //
+  // Stop can only mark an already-'processing' row 'cancelled' — deleting a
+  // mid-flight row risks FK issues on generation_jobs, and there is no way to
+  // abort the canvas render already in progress above. But without this
+  // check, a job that finished compositing just after Stop was clicked would
+  // still upload to Cloudinary, write a generated_creatives row, and its own
+  // final status update would blindly overwrite 'cancelled' back to
+  // 'completed' — producing exactly the "Stop doesn't stop anything" symptom
+  // this exists to fix. A missing row (defensive — nothing currently deletes
+  // a 'processing' row) is treated the same way: discard, don't throw.
+  const { data: liveStatus } = await supabase
+    .from('generation_jobs')
+    .select('status')
+    .eq('id', job.id)
+    .maybeSingle()
+
+  if (!liveStatus || liveStatus.status === 'cancelled') {
+    console.log(`[runJob] jobId=${job.id} cancelled mid-flight — discarding result, no upload`)
+    return
+  }
+
   // Variant AND image id are part of the public_id: without the variant id,
   // every variant of a product renders to the same Cloudinary asset; without
   // the image id, generating "all poses" for one variant would have every
@@ -734,9 +767,15 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     cloudinaryId: cloudPublicId,
   })
 
+  // Guarded on status still being 'processing': the upload above takes long
+  // enough (network round trip) that a Stop click could land in that window
+  // too. This can't undo the upload/recordCreative that already happened,
+  // but it stops the row from being mis-reported 'completed' after being
+  // cancelled — the merchant's view of what got stopped stays accurate.
   await supabase.from('generation_jobs')
     .update({ status: 'completed', updated_at: new Date().toISOString() })
     .eq('id', job.id)
+    .eq('status', 'processing')
 
   logPerf('queue.generation.job_total', Date.now() - started, {
     jobId: job.id,

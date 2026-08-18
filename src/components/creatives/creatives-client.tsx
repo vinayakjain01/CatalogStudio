@@ -254,8 +254,11 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
         body: JSON.stringify({ storeId: selectedStore, batchId: currentBatchId.current }),
       })
       const data = await res.json()
+      // /api/generate/cancel now deletes pending rows outright rather than
+      // soft-cancelling them, so the response reports both counts separately.
+      const total = (data.deleted ?? 0) + (data.cancelled ?? 0)
       setGenResult(res.ok
-        ? `Stopped. ${data.cancelled} jobs cancelled.`
+        ? `Stopped. ${total} jobs removed (${data.deleted ?? 0} deleted, ${data.cancelled ?? 0} in progress cancelled).`
         : `Stop failed: ${data.error}`)
     } catch (err: any) {
       setGenResult(`Stop error: ${err.message}`)

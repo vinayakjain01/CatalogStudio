@@ -1,7 +1,10 @@
 import { Worker, ConnectionOptions } from 'bullmq'
 import { closeRedisConnection, getRedisConnection } from '@/lib/redis'
 import { QUEUE_NAMES, closeCatalogQueues } from '@/lib/queues'
-import { getAdminClient, processGenerationJob, processBatch } from '@/lib/generation-queue'
+import {
+  getAdminClient, processGenerationJob, processBatch, createJobContext,
+} from '@/lib/generation-queue'
+import type { JobContext } from '@/lib/generation-queue'
 import { syncStoreProducts } from '@/lib/shopify-sync'
 import { logPerf } from '@/lib/perf'
 
@@ -21,6 +24,37 @@ const syncConcurrency = parseInt(process.env.WORKER_SYNC_CONCURRENCY || '2', 10)
 const DB_POLL_INTERVAL_MS = parseInt(process.env.DB_POLL_INTERVAL_MS || '3000', 10)
 
 const admin = getAdminClient()
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared JobContext for the BullMQ generation Worker below.
+//
+// processBatch() (the DB-poll path) already creates ONE JobContext per batch
+// and shares it across every job in that batch — that part was already
+// correct. This BullMQ Worker is the OTHER path into the same runJob(), and
+// BullMQ invokes its processor once per job with no batch boundary we
+// control, so there is no single call site to create a context "per batch"
+// the way processBatch does. Without sharing, a burst of jobs from one
+// enqueue (e.g. 739 jobs from one Generate click) each created and
+// immediately discarded their own JobContext — re-fetching the same store's
+// rules and the same templates up to 739 times.
+//
+// Refreshed on a timer rather than kept for the worker's whole lifetime: a
+// worker-lifetime cache would mean a rule or template edited mid-session
+// stays stale until the process restarts. Reusing DB_POLL_INTERVAL_MS bounds
+// staleness to the same window processBatch's own per-tick cache already has,
+// so this isn't a new class of risk — jobs processed within the same few
+// seconds share one fetch; jobs further apart get a fresh one.
+// ─────────────────────────────────────────────────────────────────────────────
+let sharedGenerationContext: JobContext = createJobContext()
+let sharedGenerationContextAt = Date.now()
+
+function getSharedGenerationContext(): JobContext {
+  if (Date.now() - sharedGenerationContextAt > DB_POLL_INTERVAL_MS) {
+    sharedGenerationContext = createJobContext()
+    sharedGenerationContextAt = Date.now()
+  }
+  return sharedGenerationContext
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // On startup: reset any rows stuck in 'processing' state back to 'pending'.
@@ -80,7 +114,7 @@ const workers = [
       const jobId = String(job.data.jobId || '')
       if (!jobId) throw new Error('jobId is required')
       console.log(`[worker:generation] BullMQ job received bullId=${job.id} dbJobId=${jobId}`)
-      const result = await processGenerationJob(jobId, admin)
+      const result = await processGenerationJob(jobId, admin, getSharedGenerationContext())
       const elapsed = Date.now() - started
       console.log(`[worker:generation] BullMQ job done bullId=${job.id} dbJobId=${jobId} completed=${result.completed} failed=${result.failed} ms=${elapsed}`)
       logPerf('worker.generation.job', elapsed, {

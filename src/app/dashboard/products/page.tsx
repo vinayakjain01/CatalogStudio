@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveStore } from '@/lib/active-store'
 import { Button } from '@/components/ui/button'
@@ -6,6 +7,7 @@ import { Store, Package } from 'lucide-react'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ProductsTable } from '@/components/products/products-table'
 import { ProductsPagination } from '@/components/products/products-pagination'
+import { ProductsSearch } from '@/components/products/products-search'
 
 // 10 per page: each row loads a Cloudinary thumbnail, so a smaller page means
 // fewer image requests per navigation and a faster first paint.
@@ -88,9 +90,17 @@ export default async function ProductsPage({
         <div>
           <h1 className="text-2xl font-semibold">Products</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {totalCount || 0} products total
+            {totalCount || 0} product{totalCount === 1 ? '' : 's'} total
+            {search ? ` — showing results for "${search}"` : ''}
           </p>
         </div>
+
+        {/* Suspense is required: ProductsSearch reads useSearchParams(), and
+            Next bails a Client Component using it to client-only rendering up
+            to the nearest Suspense boundary during prerendering checks. */}
+        <Suspense fallback={<div className="h-9 w-72 animate-pulse rounded-md bg-muted" />}>
+          <ProductsSearch defaultValue={search} />
+        </Suspense>
       </div>
       {(products?.length ?? 0) === 0 ? (
         <EmptyState
