@@ -50,8 +50,28 @@ export async function POST(request: NextRequest) {
   ])
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { storeId, filter, creativeType } = body
+  const {
+    storeId, filter, creativeType,
+    variantScope = 'all', variantOption = null, imageScope = 'all',
+  } = body
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
+
+  // Server-side validation, independent of the UI's own checks — a client
+  // that skips the disabled-button logic must not be able to send a
+  // half-filled scope through.
+  if (variantScope === 'specific') {
+    const name = typeof variantOption?.name === 'string' ? variantOption.name.trim() : ''
+    const value = typeof variantOption?.value === 'string' ? variantOption.value.trim() : ''
+    if (!name || !value) {
+      return NextResponse.json(
+        { error: 'variantOption.name and .value are required when variantScope is "specific"' },
+        { status: 400 }
+      )
+    }
+  }
+  if (imageScope !== 'all' && imageScope !== 'first') {
+    return NextResponse.json({ error: 'imageScope must be "all" or "first"' }, { status: 400 })
+  }
 
   // ── 1. Verify store ownership ─────────────────────────────────────────────
   const supabase = await createClient()
@@ -129,16 +149,33 @@ export async function POST(request: NextRequest) {
   const basePriority = (pendingCount ?? 0) + 1
 
   // ── 6. Enqueue ─────────────────────────────────────────────────────────────
-  const batchId  = randomUUID()
-  const enqueued = await enqueueGeneration(
-    { storeId, productIds, creativeType: creativeType || 'default', batchId, basePriority },
-    admin
-  )
+  const batchId = randomUUID()
+  let enqueued: number
+  try {
+    enqueued = await enqueueGeneration(
+      {
+        storeId, productIds, creativeType: creativeType || 'default', batchId, basePriority,
+        variantOption: variantScope === 'specific'
+          ? { name: variantOption.name.trim(), value: variantOption.value.trim() }
+          : null,
+        imageScope,
+      },
+      admin
+    )
+  } catch (err: any) {
+    // enqueueGeneration throws when the scope would exceed MAX_JOBS_PER_ENQUEUE —
+    // surfaced as a 400 with its own actionable message, not a generic 500.
+    return NextResponse.json({ error: err?.message || 'Failed to enqueue generation' }, { status: 400 })
+  }
+
+  if (enqueued === 0) {
+    return NextResponse.json({ message: 'No variants/images matched this scope', enqueued: 0 })
+  }
 
   const redisEnabled = isRedisEnabled()
   console.log(
     `[enqueue] batchId=${batchId} enqueued=${enqueued} priority=${basePriority} ` +
-    `redisEnabled=${redisEnabled} storeId=${storeId}`
+    `redisEnabled=${redisEnabled} storeId=${storeId} variantScope=${variantScope} imageScope=${imageScope}`
   )
 
   return NextResponse.json(

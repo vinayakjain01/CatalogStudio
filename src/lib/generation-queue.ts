@@ -45,20 +45,57 @@ export interface EnqueueArgs {
    * Defaults to 100 when not provided (low priority / FIFO).
    */
   basePriority?: number
+  /**
+   * Restrict to variants where one named option matches a value
+   * (e.g. Size: M). Omitted/null generates every variant, unchanged.
+   */
+  variantOption?: { name: string; value: string } | null
+  /**
+   * Which of a variant's images to generate from.
+   *
+   *   'first' (default) — one job per variant, its first/primary image. This
+   *      is the ORIGINAL behaviour (one job per variant, image chosen at
+   *      render time) and is the default so every caller that doesn't pass
+   *      this — the sync's auto-enqueue-on-change, in particular — keeps
+   *      producing exactly the job count it always has.
+   *   'all' — one job per variant PER IMAGE. Opt-in, from the Generate
+   *      Creatives page's "All poses" scope.
+   */
+  imageScope?: 'all' | 'first'
 }
 
 /**
- * Enqueue one generation job per product. Idempotent-ish: callers that re-enqueue
- * the same product create a new job row; the worker upserts the resulting creative
- * by (product, template, creative_type), so duplicates collapse at write time.
+ * Above this, a single enqueue call is rejected rather than silently accepted.
+ *
+ * Fanning out per image multiplies job count by however many photos a variant
+ * has: a catalog with ~9.5k variants and ~5 images/product can reach tens of
+ * thousands of rows from one click of "All variants + All poses + All
+ * products". That is real, measured behaviour on this codebase's own test
+ * store, not a hypothetical — hence a hard ceiling rather than just a comment.
+ */
+export const MAX_JOBS_PER_ENQUEUE = 5000
+
+/**
+ * Enqueue one generation job per (variant, image) — or per product, for a
+ * product with no synced variants. Idempotent-ish: callers that re-enqueue the
+ * same variant+image create a new job row; the worker upserts the resulting
+ * creative by (variant, image, template) [or (product, template,
+ * creative_type) for the legacy product-level path], so duplicates collapse
+ * at write time rather than accumulating.
  */
 export async function enqueueGeneration(
-  { storeId, productIds, creativeType = 'default', batchId, basePriority = 100 }: EnqueueArgs,
+  {
+    storeId, productIds, creativeType = 'default', batchId, basePriority = 100,
+    variantOption = null, imageScope = 'first',
+  }: EnqueueArgs,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<number> {
   if (productIds.length === 0) return 0
 
-  console.log(`[enqueueGeneration] START storeId=${storeId} products=${productIds.length} batchId=${batchId ?? 'none'}`)
+  console.log(
+    `[enqueueGeneration] START storeId=${storeId} products=${productIds.length} ` +
+    `batchId=${batchId ?? 'none'} variantOption=${variantOption ? `${variantOption.name}:${variantOption.value}` : 'none'} imageScope=${imageScope}`
+  )
 
   // v2 fans out per VARIANT: each variant carries its own price, stock and
   // sold-out state, all of which appear in the creative's dynamic fields and
@@ -69,7 +106,7 @@ export async function enqueueGeneration(
   // catalog that has not been re-synced since the variant migration keeps working.
   const { data: variantRows, error: variantError } = await supabase
     .from('product_variants')
-    .select('id, product_id')
+    .select('id, product_id, shopify_variant_id, option1, option2, option3')
     .in('product_id', productIds)
     .order('position', { ascending: true })
 
@@ -77,28 +114,94 @@ export async function enqueueGeneration(
     console.warn('[enqueueGeneration] variant lookup failed, falling back to product-level jobs:', variantError.message)
   }
 
-  const variantsByProduct = new Map<string, string[]>()
-  for (const row of variantRows ?? []) {
+  let variants = variantRows ?? []
+
+  // ── Scope: specific option ────────────────────────────────────────────────
+  if (variantOption && variantOption.name && variantOption.value) {
+    variants = await filterVariantsByOption(variants, productIds, variantOption, supabase)
+  }
+
+  const variantsByProduct = new Map<string, typeof variants>()
+  for (const row of variants) {
     const list = variantsByProduct.get((row as any).product_id) ?? []
-    list.push((row as any).id)
+    list.push(row)
     variantsByProduct.set((row as any).product_id, list)
   }
 
-  const rows = productIds.flatMap(pid => {
-    const variantIds = variantsByProduct.get(pid) ?? []
-    const base = {
-      store_id: storeId,
-      product_id: pid,
-      creative_type: creativeType,
-      status: 'pending',
-      batch_id: batchId ?? null,
-    }
-    return variantIds.length > 0
-      ? variantIds.map(vid => ({ ...base, variant_id: vid }))
-      : [base]
-  })
+  // ── Scope: images ─────────────────────────────────────────────────────────
+  // Only fetched when at least one product has a variant to attach images to —
+  // a store with variantOption filtering everything out shouldn't still pay
+  // for this query.
+  const imagesByProduct = variantsByProduct.size > 0
+    ? await loadImagesByProduct(Array.from(variantsByProduct.keys()), supabase)
+    : new Map<string, ImageRow[]>()
 
-  console.log(`[enqueueGeneration] fan-out: ${productIds.length} products → ${rows.length} variant jobs`)
+  const rows: Array<{
+    store_id: string
+    product_id: string
+    variant_id?: string
+    image_id?: string
+    creative_type: string
+    status: string
+    batch_id: string | null
+  }> = []
+
+  for (const pid of productIds) {
+    const productVariants = variantsByProduct.get(pid)
+
+    // Legacy path: no synced variants for this product. Unaffected by
+    // variantOption (nothing to filter) or imageScope (rare/pre-v2 data;
+    // kept as the original single job, image chosen at render time) —
+    // preserving exact prior behaviour for a path real stores no longer hit.
+    if (!productVariants || productVariants.length === 0) {
+      // variantOption filtering removes ALL variants of every product that
+      // doesn't have variant rows to begin with — those never reach this
+      // branch. But a product WITH variants that all got filtered OUT by
+      // variantOption must not fall back to a variant-less product-level job;
+      // that would silently ignore the filter. Only products absent from
+      // variantsByProduct (never had rows) take this path.
+      if (variantOption) continue
+      rows.push({
+        store_id: storeId,
+        product_id: pid,
+        creative_type: creativeType,
+        status: 'pending',
+        batch_id: batchId ?? null,
+      })
+      continue
+    }
+
+    const productImages = imagesByProduct.get(pid) ?? []
+
+    for (const variant of productVariants) {
+      const images = imagesForVariant(productImages, (variant as any).shopify_variant_id, imageScope)
+      for (const img of images) {
+        rows.push({
+          store_id: storeId,
+          product_id: pid,
+          variant_id: (variant as any).id,
+          image_id: img.id,
+          creative_type: creativeType,
+          status: 'pending',
+          batch_id: batchId ?? null,
+        })
+      }
+    }
+  }
+
+  if (rows.length === 0) {
+    console.log('[enqueueGeneration] scope matched 0 jobs — nothing to enqueue')
+    return 0
+  }
+
+  if (rows.length > MAX_JOBS_PER_ENQUEUE) {
+    throw new Error(
+      `This would enqueue ${rows.length.toLocaleString()} jobs, over the ${MAX_JOBS_PER_ENQUEUE.toLocaleString()} limit. ` +
+      `Narrow the scope — a specific option value, "First pose only", or a product filter — and try again.`
+    )
+  }
+
+  console.log(`[enqueueGeneration] fan-out: ${productIds.length} products → ${rows.length} variant×image jobs`)
   const { data, error } = await measureAsync(
     'queue.generation.db_enqueue',
     () => supabase
@@ -132,6 +235,113 @@ export async function enqueueGeneration(
   }
 
   return insertedIds.length > 0 ? insertedIds.length : rows.length
+}
+
+interface ImageRow {
+  id: string
+  product_id: string
+  position: number | null
+  is_primary: boolean | null
+  variant_ids: string[] | null
+}
+
+/**
+ * Narrow a variant list down to the ones matching a named option's value.
+ *
+ * Prefers the NAMED column: products.option{1,2,3}_name records which
+ * position is "Size" for that product (see migration 008), so filtering by
+ * name doesn't rely on every product using the same option order.
+ *
+ * Falls back to checking all three positions for any product with no name
+ * recorded — pre-migration-008 data, until the next sync. Case-insensitive on
+ * both name and value, since merchants are inconsistent about casing
+ * ("Size"/"size", "M"/"m").
+ */
+async function filterVariantsByOption<
+  T extends { product_id: string; option1: string | null; option2: string | null; option3: string | null }
+>(
+  variants: T[],
+  productIds: string[],
+  option: { name: string; value: string },
+  supabase: SupabaseClient
+): Promise<T[]> {
+  const { data: products, error } = await supabase
+    .from('products')
+    .select('id, option1_name, option2_name, option3_name')
+    .in('id', productIds)
+
+  if (error) {
+    console.warn('[enqueueGeneration] option-name lookup failed, matching value against every position:', error.message)
+  }
+
+  const wantName = option.name.trim().toLowerCase()
+  const wantValue = option.value.trim().toLowerCase()
+
+  const columnByProduct = new Map<string, 'option1' | 'option2' | 'option3' | null>()
+  for (const p of products ?? []) {
+    const names = [(p as any).option1_name, (p as any).option2_name, (p as any).option3_name]
+    const idx = names.findIndex(n => typeof n === 'string' && n.trim().toLowerCase() === wantName)
+    columnByProduct.set((p as any).id, idx === 0 ? 'option1' : idx === 1 ? 'option2' : idx === 2 ? 'option3' : null)
+  }
+
+  return variants.filter(v => {
+    const column = columnByProduct.get(v.product_id)
+    if (column) return (v[column] ?? '').trim().toLowerCase() === wantValue
+    // No name recorded for this product — bridge fallback, see migration 008.
+    return [v.option1, v.option2, v.option3].some(
+      val => (val ?? '').trim().toLowerCase() === wantValue
+    )
+  })
+}
+
+/** All images for the given products, keyed by product_id. */
+async function loadImagesByProduct(
+  productIds: string[],
+  supabase: SupabaseClient
+): Promise<Map<string, ImageRow[]>> {
+  const { data, error } = await supabase
+    .from('product_images')
+    .select('id, product_id, position, is_primary, variant_ids')
+    .in('product_id', productIds)
+    .order('position', { ascending: true })
+
+  if (error) {
+    console.warn('[enqueueGeneration] image lookup failed, jobs will carry no image_id:', error.message)
+    return new Map()
+  }
+
+  const byProduct = new Map<string, ImageRow[]>()
+  for (const row of (data ?? []) as ImageRow[]) {
+    const list = byProduct.get(row.product_id) ?? []
+    list.push(row)
+    byProduct.set(row.product_id, list)
+  }
+  return byProduct
+}
+
+/**
+ * Which images a variant should generate from, per the image scope.
+ *
+ * Mirrors the fallback already used on the product/variant detail page and
+ * the Meta feed: a variant-specific image (Shopify's `variant.image`) wins
+ * when Shopify recorded one, but most catalogs never assign images per
+ * variant, so every variant falls back to the product's full image set.
+ */
+function imagesForVariant(
+  productImages: ImageRow[],
+  shopifyVariantId: string,
+  imageScope: 'all' | 'first'
+): ImageRow[] {
+  const assigned = productImages.filter(img => (img.variant_ids ?? []).includes(shopifyVariantId))
+  const pool = assigned.length > 0 ? assigned : productImages
+  if (pool.length === 0) return []
+
+  if (imageScope === 'all') return pool
+
+  // 'first': the primary image if one is flagged, else whatever sorts first —
+  // this is the same image runJob would have picked implicitly before jobs
+  // carried an explicit image_id.
+  return [pool.find(img => img.is_primary) ?? pool[0]]
 }
 
 /**
@@ -306,7 +516,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
       () => supabase
         .from('products')
         .select(`id, title, vendor, product_type, tags, price, compare_at_price, import_id, shot_type_override,
-          product_images(src, is_primary)`)
+          product_images(id, src, cloudinary_url, is_primary)`)
         .eq('id', job.product_id)
         .single(),
       { productId: job.product_id }
@@ -343,9 +553,18 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   }
   const canvasData = await getTemplateCanvas(templateId, supabase, context)
 
+  // Composite from the image THIS JOB was fanned out for, when the enqueue
+  // step recorded one — falling back to primary/first for jobs enqueued
+  // before image scoping existed, or the rare no-variant legacy path.
+  // Without this, every job rendered the primary photo regardless of
+  // job.image_id, making the "all poses" scope a no-op at render time even
+  // though the fan-out had correctly created one job per image.
   const images = (product as any).product_images || []
-  const primary = images.find((i: any) => i.is_primary) || images[0]
-  const imageUrl: string | null = primary?.src || null
+  const chosenImage =
+    ((job as any).image_id && images.find((i: any) => i.id === (job as any).image_id)) ||
+    images.find((i: any) => i.is_primary) ||
+    images[0]
+  const imageUrl: string | null = chosenImage?.cloudinary_url || chosenImage?.src || null
 
   const templateMode: 'standard' | 'ai_product' | 'product_zoom' = (canvasData as any).templateMode || 'standard'
 
@@ -464,12 +683,17 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     throw new Error('Invalid image buffer from compositor')
   }
 
-  // Variant id is part of the public_id: without it every variant of a product
-  // renders to the same Cloudinary asset and each one overwrites the last,
-  // leaving a single creative where there should be one per variant.
-  const publicId = variant
-    ? `product_${product.id}_${variant.id}_${templateId}_${job.creative_type}`
-    : `product_${product.id}_${templateId}_${job.creative_type}`
+  // Variant AND image id are part of the public_id: without the variant id,
+  // every variant of a product renders to the same Cloudinary asset; without
+  // the image id, generating "all poses" for one variant would have every
+  // image overwrite the last, leaving one creative where there should be
+  // several.
+  const publicId = [
+    'product', product.id,
+    variant?.id ?? null,
+    chosenImage?.id ?? null,
+    templateId, job.creative_type,
+  ].filter(Boolean).join('_')
   const { deliveredUrl, publicId: cloudPublicId } = await measureAsync(
     'cloudinary.upload',
     () => uploadBuffer(buffer, publicId),
@@ -495,12 +719,15 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   if (upsertError) throw new Error(upsertError.message)
 
   // Mirror into the v2 table the products UI and Meta feed read from.
+  // imageId is the image ACTUALLY used (chosenImage), not just job.image_id —
+  // a legacy job with no image_id still resolved to a real photo above, and
+  // that is what the uniqueness in recordCreative needs to key on.
   await recordCreative({
     supabase,
     storeId: job.store_id,
     productId: product.id,
     variantId: (job as any).variant_id ?? null,
-    imageId: (job as any).image_id ?? null,
+    imageId: chosenImage?.id ?? null,
     templateId,
     jobId: job.id,
     url: deliveredUrl,

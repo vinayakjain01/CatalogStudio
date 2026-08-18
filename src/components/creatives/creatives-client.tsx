@@ -15,13 +15,14 @@ import { shopifyFetch } from '@/lib/shopify-token'
 
 interface Creative {
   id: string
-  generated_url: string
-  status: string
-  updated_at: string
+  url: string
+  created_at: string
   template_id: string
-  cloudinary_public_id: string
-  products: { title: string; price: number; product_images: { src: string }[] }
-  templates: { name: string }
+  cloudinary_id: string | null
+  variant_id: string | null
+  products: { title: string } | null
+  product_variants: { title: string | null; option1: string | null; option2: string | null; option3: string | null } | null
+  templates: { name: string } | null
 }
 
 interface BatchCounts {
@@ -40,6 +41,18 @@ const FILTER_TYPES = [
   { value: 'product_type', label: 'By product type' },
 ]
 
+/** Shown as suggestions before the store's own option names have loaded (or
+ *  for a store with none recorded yet — see /api/products/option-names). */
+const DEFAULT_OPTION_NAME_SUGGESTIONS = ['Size', 'Colour', 'Material', 'Style']
+
+/** "Red / M" from a variant's title, or its raw options if the title is unset. */
+function variantLabel(v: Creative['product_variants']): string | null {
+  if (!v) return null
+  if (v.title && v.title !== 'Default Title') return v.title
+  const opts = [v.option1, v.option2, v.option3].filter(Boolean)
+  return opts.length ? opts.join(' / ') : null
+}
+
 export function CreativesClient({ stores }: { stores: { id: string; shop_name: string; shop_domain: string }[] }) {
   const [selectedStore, setSelectedStore] = useState(stores[0]?.id || '')
   const [creatives, setCreatives] = useState<Creative[]>([])
@@ -53,41 +66,102 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [page, setPage] = useState(0)
   const [totalCreatives, setTotalCreatives] = useState(0)
 
+  // ── Generate Scope ─────────────────────────────────────────────────────────
+  const [variantScope, setVariantScope] = useState<'all' | 'specific'>('all')
+  const [variantOptionName, setVariantOptionName] = useState('')
+  const [variantOptionValue, setVariantOptionValue] = useState('')
+  const [imageScope, setImageScope] = useState<'all' | 'first'>('all')
+  const [optionNameSuggestions, setOptionNameSuggestions] = useState<string[]>([])
+
   const currentBatchId = useRef<string | null>(null)
   const pollingActive = useRef(false)
   const lastCompletedAt = useRef<{ count: number; time: number }>({ count: 0, time: Date.now() })
 
   const PER_PAGE = 10
 
-  useEffect(() => {
-    if (selectedStore) setPage(0)
-  }, [selectedStore])
-
-  useEffect(() => {
-    if (selectedStore) fetchCreatives()
-  }, [selectedStore, page])
-
+  // Plain function, not useCallback: it's invoked imperatively from event
+  // handlers (Refresh, post-delete, the generation-progress poll), which is
+  // fine. The REACTIVE load below inlines the same query instead of calling
+  // this, because `useEffect(() => { fetchCreatives() }, [fetchCreatives])`
+  // trips the set-state-in-effect lint rule on the setState calls inside it —
+  // the same reason rules-client.tsx's load effect is written this way.
   async function fetchCreatives() {
+    if (!selectedStore) return
     setLoading(true)
     const supabase = (await import('@/lib/supabase/client')).createClient()
     const fromRow = page * PER_PAGE
+    // generated_creatives (v2) carries store_id directly — a plain filter, no
+    // join through products — and one row survives per (variant, image,
+    // template) instead of the legacy table's one row per (product, template).
     const { data, count } = await supabase
-      .from('generated_images')
+      .from('generated_creatives')
       .select(`
-        id, generated_url, status, updated_at, template_id, cloudinary_public_id,
-        products!inner(title, price, store_id, product_images(src, is_primary)),
+        id, url, created_at, template_id, cloudinary_id, variant_id,
+        products(title),
+        product_variants(title, option1, option2, option3),
         templates(name)
       `, { count: 'exact' })
-      .eq('products.store_id', selectedStore)
-      .eq('status', 'completed')
-      .order('updated_at', { ascending: false })
+      .eq('store_id', selectedStore)
+      .order('created_at', { ascending: false })
       .range(fromRow, fromRow + PER_PAGE - 1)
     setCreatives((data as any) || [])
     setTotalCreatives(count || 0)
     setLoading(false)
   }
 
-  function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
+  useEffect(() => {
+    if (selectedStore) setPage(0)
+  }, [selectedStore])
+
+  // Reactive load on store/page change. Inlined + cancellation-guarded rather
+  // than calling fetchCreatives(), so a slow response for a store the user has
+  // since switched away from cannot overwrite the newer selection's data.
+  useEffect(() => {
+    if (!selectedStore) return
+    let cancelled = false
+
+    ;(async () => {
+      setLoading(true)
+      const supabase = (await import('@/lib/supabase/client')).createClient()
+      const fromRow = page * PER_PAGE
+      const { data, count } = await supabase
+        .from('generated_creatives')
+        .select(`
+          id, url, created_at, template_id, cloudinary_id, variant_id,
+          products(title),
+          product_variants(title, option1, option2, option3),
+          templates(name)
+        `, { count: 'exact' })
+        .eq('store_id', selectedStore)
+        .order('created_at', { ascending: false })
+        .range(fromRow, fromRow + PER_PAGE - 1)
+
+      if (cancelled) return
+      setCreatives((data as any) || [])
+      setTotalCreatives(count || 0)
+      setLoading(false)
+    })()
+
+    return () => { cancelled = true }
+  }, [selectedStore, page])
+
+  // Suggestions for the Option name field — best-effort; an empty/failed
+  // response just leaves the four common defaults, never blocks the form.
+  useEffect(() => {
+    if (!selectedStore) return
+    let cancelled = false
+    shopifyFetch(`/api/products/option-names?storeId=${selectedStore}`)
+      .then(res => res.json())
+      .then(data => { if (!cancelled && Array.isArray(data.names)) setOptionNameSuggestions(data.names) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedStore])
+
+  function handleVariantScopeChange(v: string) {
+    setVariantScope(v as 'all' | 'specific')
+    setVariantOptionName('')
+    setVariantOptionValue('')
+  }
 
   async function handleGenerate() {
     setGenerating(true)
@@ -100,10 +174,14 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
     const res = await shopifyFetch('/api/generate/enqueue', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         storeId: selectedStore,
         filter: filterType === 'all' ? { type: 'all' } : { type: filterType, value: filterValue },
+        variantScope,
+        variantOption: variantScope === 'specific'
+          ? { name: variantOptionName.trim(), value: variantOptionValue.trim() }
+          : null,
+        imageScope,
       }),
     })
 
@@ -124,7 +202,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
     const batchId: string = data.batchId
     currentBatchId.current = batchId
-    setGenResult(`Queued ${data.enqueued} products — worker is processing…`)
+    setGenResult(`Queued ${data.enqueued} jobs — worker is processing…`)
 
     // Progress polling loop
     const tick = async (): Promise<void> => {
@@ -136,12 +214,10 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
         const done = (c.completed || 0) + (c.failed || 0) + (c.cancelled || 0)
 
-        // Update progress message
         if (c.completed > lastCompletedAt.current.count) {
           lastCompletedAt.current = { count: c.completed, time: Date.now() }
         }
 
-        // Cancelled
         if (c.cancelled > 0 && (c.pending + c.processing) === 0) {
           setGenResult(`Stopped. ${c.completed} completed, ${c.cancelled} cancelled.`)
           fetchCreatives()
@@ -175,7 +251,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     try {
       const res = await shopifyFetch('/api/generate/cancel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId: selectedStore, batchId: currentBatchId.current }),
       })
       const data = await res.json()
@@ -190,7 +265,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     fetchCreatives()
   }
 
-  async function handleDelete(creativeId: string, publicId: string) {
+  async function handleDelete(creativeId: string) {
     if (!confirm('Delete this creative?')) return
     await shopifyFetch(`/api/creatives/${creativeId}`, { method: 'DELETE' })
     setCreatives(prev => prev.filter(c => c.id !== creativeId))
@@ -204,11 +279,117 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     ? Math.round(((batchProgress.completed + batchProgress.failed + batchProgress.cancelled) / batchProgress.total) * 100)
     : 0
 
+  const generateDisabled =
+    generating ||
+    (variantScope === 'specific' && (!variantOptionName.trim() || !variantOptionValue.trim())) ||
+    (filterType !== 'all' && !filterValue.trim())
+
+  const scopeSummary = buildScopeSummary({
+    variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue,
+  })
+
   return (
     <div className="space-y-6">
+      {/* ── Generate Scope ─────────────────────────────────────────────────── */}
+      <Card>
+        <CardContent className="p-4 space-y-3">
+          {/* Row 1: Variants */}
+          <div className="flex items-center gap-3">
+            <span className="w-16 shrink-0 text-sm font-medium">Variants</span>
+            <Select value={variantScope} onValueChange={handleVariantScopeChange}>
+              <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  <div>
+                    <p className="font-medium">All variants</p>
+                    <p className="text-xs text-muted-foreground">
+                      Every size, colour, and option for each product
+                    </p>
+                  </div>
+                </SelectItem>
+                <SelectItem value="specific">
+                  <div>
+                    <p className="font-medium">Specific option…</p>
+                    <p className="text-xs text-muted-foreground">
+                      Choose one option value (e.g. Size: M) across all products
+                    </p>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Sub-row: option name + value — Option name is free text with
+              suggestions, not a closed Select: there is no fixed list of
+              option names across a whole store (a store can name it "Size",
+              "Taille", or anything else), so a dropdown would either miss
+              real values or need per-store data the merchant can't predict. */}
+          {variantScope === 'specific' && (
+            <div className="ml-[76px] space-y-1.5">
+              <div className="flex items-center gap-2">
+                <Input
+                  list="option-name-suggestions"
+                  className="w-40"
+                  placeholder="Option name"
+                  value={variantOptionName}
+                  onChange={e => setVariantOptionName(e.target.value)}
+                />
+                <datalist id="option-name-suggestions">
+                  {Array.from(new Set([...optionNameSuggestions, ...DEFAULT_OPTION_NAME_SUGGESTIONS])).map(n => (
+                    <option key={n} value={n} />
+                  ))}
+                </datalist>
+                <span className="text-sm text-muted-foreground">=</span>
+                <Input
+                  className="flex-1"
+                  placeholder="e.g. M, Red, XL"
+                  value={variantOptionValue}
+                  onChange={e => setVariantOptionValue(e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Only generate for variants where{' '}
+                <strong>{variantOptionName || 'option'}</strong> is{' '}
+                <strong>{variantOptionValue || '…'}</strong>
+              </p>
+            </div>
+          )}
+
+          {/* Row 2: Images */}
+          <div className="flex items-center gap-3">
+            <span className="w-16 shrink-0 text-sm font-medium">Images</span>
+            <Select value={imageScope} onValueChange={v => setImageScope(v as 'all' | 'first')}>
+              <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  <div>
+                    <p className="font-medium">All poses</p>
+                    <p className="text-xs text-muted-foreground">
+                      Every image for each variant — angles, detail shots, lifestyle
+                    </p>
+                  </div>
+                </SelectItem>
+                <SelectItem value="first">
+                  <div>
+                    <p className="font-medium">First pose only</p>
+                    <p className="text-xs text-muted-foreground">
+                      Only the primary / first image for each variant
+                    </p>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <p className="-mt-3 text-sm text-muted-foreground">
+        Will generate: {scopeSummary}
+      </p>
+
+      {/* ── Controls + progress ───────────────────────────────────────────── */}
       <Card>
         <CardContent className="p-4 space-y-4">
-          {/* Controls row */}
           <div className="flex flex-wrap items-center gap-3">
             {stores.length > 1 && (
               <Select value={selectedStore} onValueChange={setSelectedStore}>
@@ -239,7 +420,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
               />
             )}
 
-            <Button onClick={handleGenerate} disabled={generating || (filterType !== 'all' && !filterValue)}>
+            <Button onClick={handleGenerate} disabled={generateDisabled}>
               {generating
                 ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating…</>
                 : <><Wand2 className="h-4 w-4 mr-2" />Generate creatives</>
@@ -264,7 +445,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           {/* ── Progress bar — visible immediately when Generate is clicked ── */}
           {generating && (
             <div className="space-y-2">
-              {/* Bar always visible; fills as jobs complete */}
               <div className="flex items-center gap-3">
                 <Progress
                   value={batchProgress && batchProgress.total > 0 ? progressPercent : 0}
@@ -277,7 +457,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                 </span>
               </div>
 
-              {/* Detailed counts — shown once the first poll returns */}
               {batchProgress && batchProgress.total > 0 ? (
                 <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1">
@@ -307,7 +486,6 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
             </div>
           )}
 
-          {/* Status message */}
           {genResult && (
             <p className="text-sm text-muted-foreground">{genResult}</p>
           )}
@@ -351,30 +529,34 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       {!loading && creatives.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {creatives.map(creative => {
-            const product = (creative as any).products
-            const template = (creative as any).templates
+            const product = creative.products
+            const template = creative.templates
+            const vLabel = variantLabel(creative.product_variants)
             return (
               <Card key={creative.id} className="overflow-hidden group">
                 <div className="aspect-square relative bg-muted overflow-hidden">
-                  <img src={creative.generated_url} alt={product?.title} className="w-full h-full object-cover" />
+                  <img src={creative.url} alt={product?.title} className="w-full h-full object-cover" />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                    <a href={creative.generated_url} download target="_blank" rel="noopener noreferrer">
+                    <a href={creative.url} download target="_blank" rel="noopener noreferrer">
                       <Button size="icon" variant="secondary" className="h-8 w-8">
                         <Download className="h-3.5 w-3.5" />
                       </Button>
                     </a>
                     <Button size="icon" variant="destructive" className="h-8 w-8"
-                      onClick={() => handleDelete(creative.id, creative.cloudinary_public_id)}>
+                      onClick={() => handleDelete(creative.id)}>
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
                 <CardContent className="p-2.5">
                   <p className="text-xs font-medium truncate">{product?.title}</p>
+                  {vLabel && (
+                    <p className="text-[11px] text-muted-foreground truncate">{vLabel}</p>
+                  )}
                   <div className="flex items-center justify-between mt-1">
                     <Badge variant="outline" className="text-xs py-0">{template?.name}</Badge>
                     <span className="text-xs text-muted-foreground">
-                      {formatDistanceToNow(new Date(creative.updated_at), { addSuffix: true })}
+                      {formatDistanceToNow(new Date(creative.created_at), { addSuffix: true })}
                     </span>
                   </div>
                 </CardContent>
@@ -398,4 +580,29 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       )}
     </div>
   )
+}
+
+function buildScopeSummary({
+  variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue,
+}: {
+  variantScope: 'all' | 'specific'
+  variantOptionName: string
+  variantOptionValue: string
+  imageScope: 'all' | 'first'
+  filterType: string
+  filterValue: string
+}): string {
+  const vPart = variantScope === 'all'
+    ? 'all variants'
+    : `${variantOptionName || 'option'} ${variantOptionValue || '…'} variants`
+
+  const iPart = imageScope === 'all' ? 'all poses' : 'first pose only'
+
+  const pPart = filterType === 'all'
+    ? 'all products'
+    : filterValue
+      ? `products ${filterType === 'tag' ? 'tagged' : `(${filterType})`} "${filterValue}"`
+      : 'all products'
+
+  return `${vPart} · ${iPart} · ${pPart}`
 }

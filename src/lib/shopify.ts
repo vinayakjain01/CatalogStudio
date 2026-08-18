@@ -41,6 +41,8 @@ export interface ShopifyProduct {
   images: ShopifyImage[]
   created_at: string
   updated_at: string
+  /** Positional option names, e.g. ["Size", "Colour"] — matches product_variants.option1/2/3. */
+  option_names: (string | null)[]
 }
 
 export interface ShopifyVariant {
@@ -208,6 +210,7 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
             publishedAt
             createdAt
             updatedAt
+            options { name }
             images(first: 250) {
               nodes { id url altText width height }
             }
@@ -315,6 +318,7 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
           published_at: node.publishedAt ?? null,
           created_at: node.createdAt,
           updated_at: node.updatedAt,
+          option_names: [0, 1, 2].map(i => (node.options?.[i]?.name as string | undefined) ?? null),
           variants,
           images: (node.images?.nodes ?? []).map((img: any, idx: number) => {
             const imageId = gidToId(img.id)

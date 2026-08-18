@@ -22,62 +22,44 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
     setProgress(0)
 
     try {
-      // 1. Get all products for this store, then find their generated images.
-      //    generated_images has no store_id column — it links to store via product_id.
       const { createClient } = await import('@/lib/supabase/client')
       const supabase = createClient()
 
-      // Step A: load product IDs + names for this store
-      const { data: storeProducts, error: prodErr } = await supabase
-        .from('products')
-        .select('id, title, sku')
-        .eq('store_id', storeId)
-
-      if (prodErr) throw new Error(prodErr.message)
-      if (!storeProducts?.length) throw new Error('No products found for this store.')
-
-      const productIdToName = new Map(
-        storeProducts.map(p => [p.id, p.sku || p.title || p.id])
-      )
-      const productIds = storeProducts.map(p => p.id)
-
-      // Step B: get generated images for those products
+      // generated_creatives carries store_id directly — no join through
+      // products needed, and (unlike the legacy generated_images table) one
+      // row per variant/image survives rather than only the last written.
       const { data: creatives, error: dbErr } = await supabase
-        .from('generated_images')
-        .select('id, generated_url, product_id')
-        .in('product_id', productIds)
-        .eq('status', 'completed')
-        .not('generated_url', 'is', null)
-        .order('updated_at', { ascending: false })
+        .from('generated_creatives')
+        .select(`
+          id, url,
+          products(title, sku),
+          product_variants(title, sku, option1, option2, option3)
+        `)
+        .eq('store_id', storeId)
+        .not('url', 'is', null)
+        .order('created_at', { ascending: false })
 
       if (dbErr) throw new Error(dbErr.message)
-      if (!creatives?.length) throw new Error('No generated images found. Generate some creatives first.')
+      if (!creatives?.length) throw new Error('No generated creatives found. Generate some first.')
 
       setTotal(creatives.length)
       setZipState('downloading')
 
-      // 2. Load JSZip dynamically
       const JSZip = (await import('jszip')).default
       const zip = new JSZip()
+      const usedNames = new Set<string>()
 
-      // 3. Download each image and add to ZIP
       for (let i = 0; i < creatives.length; i++) {
-        const creative = creatives[i]
-        const url = creative.generated_url
+        const creative = creatives[i] as any
+        const url: string | null = creative.url
         if (!url) continue
 
         try {
-          // Fetch the Cloudinary image
           const response = await fetch(url)
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
           const blob = await response.blob()
 
-          // Build a clean filename from the product SKU/title
-          const productName = productIdToName.get(creative.product_id) ?? `creative-${i + 1}`
-          const safeName = productName.replace(/[^a-zA-Z0-9\-_ .]/g, '_').slice(0, 60)
-          const ext = blob.type.includes('png') ? 'png' : 'jpg'
-          const filename = `${safeName}.${ext}`
-
+          const filename = buildFilename(creative, i, blob.type, usedNames)
           zip.file(filename, blob)
           setProgress(i + 1)
         } catch {
@@ -87,15 +69,10 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
 
       setZipState('zipping')
 
-      // 4. Generate the ZIP blob
       const zipBlob = await zip.generateAsync(
-        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } },
-        (metadata) => {
-          // Optional: could show zip compression progress here
-        }
+        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } }
       )
 
-      // 5. Trigger browser download
       const zipUrl = URL.createObjectURL(zipBlob)
       const anchor = document.createElement('a')
       anchor.href = zipUrl
@@ -106,7 +83,6 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
       URL.revokeObjectURL(zipUrl)
 
       setZipState('done')
-      // Reset after 3 seconds
       setTimeout(() => setZipState('idle'), 3000)
     } catch (err: any) {
       setError(err.message)
@@ -143,12 +119,10 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
         {label}
       </Button>
 
-      {/* Error */}
       {error && (
         <p className="text-xs text-destructive max-w-xs">{error}</p>
       )}
 
-      {/* Progress bar */}
       {isLoading && zipState === 'downloading' && total > 0 && (
         <div className="w-32 h-1 rounded-full bg-muted overflow-hidden">
           <div
@@ -159,4 +133,40 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
       )}
     </div>
   )
+}
+
+/**
+ * A product with several variant/image creatives now produces several rows,
+ * so the old "one file per product" naming would collide. Prefers the
+ * variant's own SKU/option label, then the product's, and de-dupes with a
+ * numeric suffix as a last resort — no creative is ever silently dropped from
+ * the ZIP for sharing a name with another.
+ */
+function buildFilename(
+  creative: { products?: { title?: string; sku?: string } | null; product_variants?: any },
+  index: number,
+  mimeType: string,
+  usedNames: Set<string>
+): string {
+  const variant = creative.product_variants
+  const product = creative.products
+
+  const variantLabel = variant
+    ? variant.sku || [variant.option1, variant.option2, variant.option3].filter(Boolean).join('-') || null
+    : null
+
+  const base = [product?.sku || product?.title, variantLabel].filter(Boolean).join('-')
+    || `creative-${index + 1}`
+
+  const safeBase = base.replace(/[^a-zA-Z0-9\-_ .]/g, '_').slice(0, 60)
+  const ext = mimeType.includes('png') ? 'png' : 'jpg'
+
+  let filename = `${safeBase}.${ext}`
+  let n = 2
+  while (usedNames.has(filename)) {
+    filename = `${safeBase}-${n}.${ext}`
+    n++
+  }
+  usedNames.add(filename)
+  return filename
 }

@@ -31,11 +31,16 @@ export interface RecordCreativeArgs {
  * Upsert one creative into `generated_creatives`.
  *
  * Delete-then-insert rather than upsert: the table's uniqueness is enforced by
- * a PARTIAL index (variant_id, template_id) WHERE variant_id IS NOT NULL, and
- * Postgres cannot infer a partial index as an ON CONFLICT target through
- * PostgREST. Deleting the matching row first gives the same "regeneration
- * replaces, never accumulates" behaviour, and matches how product_images is
- * already maintained elsewhere in this codebase.
+ * a PARTIAL index (variant_id, image_id, template_id) WHERE variant_id IS NOT
+ * NULL, and Postgres cannot infer a partial index as an ON CONFLICT target
+ * through PostgREST. Deleting the matching row first gives the same
+ * "regeneration replaces, never accumulates" behaviour, and matches how
+ * product_images is already maintained elsewhere in this codebase.
+ *
+ * image_id is part of the match, not just variant_id: the "all poses" scope
+ * generates one creative per image for the same variant, and matching on
+ * variant_id alone would delete the previous image's row on every subsequent
+ * insert — leaving only the last image's creative behind.
  *
  * Best-effort by design: a creative that rendered and uploaded successfully
  * must not be reported as a failed job because this bookkeeping row did not
@@ -55,15 +60,16 @@ export async function recordCreative({
   height = null,
 }: RecordCreativeArgs): Promise<void> {
   try {
-    const existing = supabase
+    let existing = supabase
       .from('generated_creatives')
       .delete()
       .eq('product_id', productId)
       .eq('template_id', templateId)
 
-    const { error: deleteError } = variantId
-      ? await existing.eq('variant_id', variantId)
-      : await existing.is('variant_id', null)
+    existing = variantId ? existing.eq('variant_id', variantId) : existing.is('variant_id', null)
+    existing = imageId ? existing.eq('image_id', imageId) : existing.is('image_id', null)
+
+    const { error: deleteError } = await existing
 
     if (deleteError) {
       console.warn('[creatives] delete before insert failed:', deleteError.message)

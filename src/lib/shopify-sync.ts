@@ -319,6 +319,15 @@ function toProductRow(storeId: string, sp: ShopifyProduct) {
     //   duplicate key value violates unique constraint "products_store_id_sku_key"
     // In v2 the SKU belongs to the variant, which is uniquely keyed on
     // (store_id, shopify_variant_id). Migration 006 drops the stale constraint.
+    //
+    // Option NAMES (as opposed to option1/2/3's values, already on
+    // product_variants) — lets "Generate creatives" filter by e.g. Size: M
+    // instead of an unlabelled position. Null for stores synced before
+    // migration 008; the generation-queue falls back to checking every
+    // position's value in that case.
+    option1_name: sp.option_names[0] || null,
+    option2_name: sp.option_names[1] || null,
+    option3_name: sp.option_names[2] || null,
     updated_at: new Date().toISOString(),
   }
 }
