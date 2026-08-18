@@ -1,36 +1,47 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Craftify
 
-## Getting Started
+Shopify catalog creative automation — sync products & variants, design
+templates, map them to products with rules, bulk-generate creatives, and
+publish a variant-level Meta Shopping feed.
 
-First, run the development server:
+**New to this repo? Read [`docs/PROJECT_ARCHITECTURE.md`](docs/PROJECT_ARCHITECTURE.md) first.**
+It's a full handoff doc — deployment topology, schema, the generation
+pipeline, migration history, and a list of mistakes already made once so
+they aren't repeated. This README is just a quick start.
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev          # Next.js app — http://localhost:3000
+npm run worker        # separate process: BullMQ + DB-poll generation/sync worker
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+You'll need a `.env.local` (gitignored) with Supabase, Cloudinary, and
+Shopify credentials — ask whoever holds them, or check the deployed Vercel
+project's environment variables.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploying
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+This app has **three independently-deployed pieces** — pushing to `main`
+only updates one of them. See
+[§2 of the architecture doc](docs/PROJECT_ARCHITECTURE.md#2-deployment-topology--read-this-first)
+before assuming a code push is "live":
 
-## Learn More
+1. **Vercel** (the Next.js app) — auto-deploys on push to `main`.
+2. **The worker** (DigitalOcean droplet) — deploys manually
+   (`git pull && npm install && pm2 restart all` on the box).
+3. **Supabase migrations** (`supabase/*.sql`) — no migration runner exists;
+   each file is pasted into the Supabase SQL Editor by hand, in numeric
+   order, **before** deploying code that depends on it.
 
-To learn more about Next.js, take a look at the following resources:
+## Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Next.js 16 (App Router) · TypeScript · Supabase (Postgres + Auth) ·
+Cloudinary · BullMQ/Redis · Shopify Admin GraphQL API · `@napi-rs/canvas` ·
+shadcn/ui + Tailwind v4.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Repo layout
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See [§11 of the architecture doc](docs/PROJECT_ARCHITECTURE.md#11-folder-guide)
+for the annotated folder-by-folder guide.

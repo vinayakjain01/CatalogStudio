@@ -1,338 +1,430 @@
-# Craftify — Full Architecture & Knowledge Map
+# Craftify — Project Architecture & Handoff Doc
 
-_Compiled 2026-07-08 from a complete read-through of the codebase (8 parallel subsystem audits). This is a living reference — verify against current code before relying on it for anything load-bearing, especially DB schema (no migrations are checked into this repo)._
+**Read this file before touching anything.** It exists so a session with no prior
+context — a new Claude account, a new engineer, or this same session after a
+long gap — can understand the whole system without re-deriving it from the
+code. It is kept in the repo (not in any one person's tooling) specifically so
+it survives an account change.
 
----
-
-> **v2 STATUS (current).** This document predates the v2 rewrite and several
-> sections below describe features that no longer exist. Removed in v2:
-> Google Drive import, folder upload, Template Adaptation, the Meta section,
-> Product Positioning / Head Space (UI), and the `feed-generation` /
-> `meta-refresh` queues (both were empty placeholder workers). Added in v2:
-> `product_variants` (full variant sync), `generated_creatives`, multi-condition
-> `template_rules`, a variant-level Meta feed (CSV/XML/JSON), per-variant
-> generation, and RLS on every tenant table (see `supabase/001…003`).
->
-> Still present but no longer user-reachable: the background-removal,
-> background-reconstruction and product-layer/positioning libraries. They remain
-> wired into `compositor.ts` and the live editor preview
-> (`components/builder/canvas-preview.tsx`), so removing them is a renderer
-> rewrite rather than a deletion — deliberately deferred until a generation run
-> has been verified end to end.
-
-## 1. Project Overview
-
-**Craftify** (formerly CatalogStudio) is an AI-powered creative-automation platform for Shopify brands. A merchant connects a Shopify store, its product catalog syncs in, the merchant builds one or more visual **templates** (layered canvas designs with text/image/logo/badge layers and product-image slots), defines **rules** that map products to templates (by tag/vendor/type/discount/import batch), and the platform bulk-generates a finished marketing creative (PNG) per product by running the product photo through AI background removal / AI outpainting and compositing it into the template. Finished creatives are stored on Cloudinary and exposed to the dashboard, a ZIP export, and a Meta (Facebook/Instagram) Shopping product feed (XML).
-
-Stack: **Next.js 16.2.9** (App Router, async `params`/`searchParams`, `force-dynamic` opt-outs), **TypeScript**, **Supabase** (Postgres + Auth, no in-repo migrations — schema is dashboard-managed), **Cloudinary** (image hosting/transforms/AI generative fill), **BullMQ + ioredis** against a DigitalOcean-managed **Redis/Valkey**, a standalone **Node/PM2 worker** process, **Shopify Admin GraphQL API** + OAuth, **Meta Catalog** (feed-only, no Graph API calls), browser **directory upload** (local folder import), `@napi-rs/canvas` for server-side compositing, and **Vercel** for hosting + cron.
-
-> Note on `AGENTS.md`: this repo pins Next.js 16.2.9 and ships framework docs under `node_modules/next/dist/docs/`. The codebase already uses the async `params`/`searchParams` convention consistently, and uses the `export const dynamic = 'force-dynamic'` escape hatch (not the newer `connection()`/`cacheLife` APIs) wherever a server component needs a fresh per-request Supabase read.
+Last verified against the live system: **2026-08-18**. Where this doc states a
+fact about production (row counts, migration status, token expiry), it was
+checked directly against the database or a live HTTP call at that time — it is
+a snapshot, not a promise. If something here conflicts with what you observe,
+trust what you observe and update this file.
 
 ---
 
-## 2. Knowledge Map (Dependency Flow)
+## 1. What Craftify is
 
-```
-Frontend (App Router pages/components)
-   │  fetch/POST
-   ▼
-API Routes (src/app/api/**)
-   │  calls
-   ▼
-Business Logic (src/lib/**)
-   │  ├─ template-resolver.ts  (rules → template)
-   │  ├─ compositor.ts         (render final PNG, @napi-rs/canvas)
-   │  ├─ background-removal/*  (4 providers + Cloudinary cache)
-   │  ├─ image-extend/*        (Cloudinary generative fill)
-   │  ├─ shopify.ts / shopify-sync.ts (Admin GraphQL, product sync)
-   │  └─ generation-queue.ts   (orchestrates DB + BullMQ)
-   │
-   ├──► Supabase Postgres (source of truth for everything: stores,
-   │     products, product_images, templates, template_rules,
-   │     generation_jobs, generated_images, sync_logs, catalog_imports,
-   │     bg_removal_cache, image_extend_cache)
-   │
-   └──► queues.ts (BullMQ) ──► Redis/Valkey ──► catalog-worker.ts (PM2 process)
-                                                     │
-                                                     ├─ generation Worker → generation-queue.runJob()
-                                                     │     → background-removal → image-extend → compositor
-                                                     │     → cloudinary.uploadBuffer() → generated_images row
-                                                     ├─ product-sync Worker → shopify-sync.syncStoreProducts()
-                                                     ├─ feed/meta-refresh Workers (stubs, no-op)
-                                                     └─ dbPollTick loop (Supabase-only fallback path, runs
-                                                        regardless of Redis reachability — see §7 bug notes)
+Craftify is a Shopify app: connect a store, its catalog syncs in (products,
+**variants**, images), you build layered canvas **templates**, write **rules**
+that map products/variants to a template, and the platform bulk-generates a
+finished creative (JPEG) per variant by compositing the product photo into the
+template with dynamic text fields and conditional badges. Finished creatives
+go to Cloudinary and are exposed via the dashboard, a ZIP export, and a
+variant-level Meta Shopping feed (CSV/XML/JSON).
 
-Vercel Cron (vercel.json, daily 00:00 UTC)
-   ├─ /api/cron/sync     → syncStoreProducts() for all active stores, inline (no queue)
-   └─ /api/cron/generate → processBatch() inline, drains generation_jobs for 50s budget
-
-Dashboard reads: products/templates/rules/creatives pages query Supabase directly
-                 (server components), independent of the worker.
-
-Meta feed:  /api/feed/[storeId] (token-authed, public) streams products+generated_images
-            as Google Shopping RSS/XML — consumed by Meta Commerce Manager externally.
-```
+This is a **v2 rewrite** of an earlier, broader tool ("Catalog Studio") that
+also did Google Drive import, local folder upload, AI "Template Adaptation",
+a manual Meta integration section, and per-product (not per-variant)
+generation. All of that was deliberately stripped — see §6.
 
 ---
 
-## 3. Folder-by-Folder Guide
+## 2. Deployment topology — READ THIS FIRST
 
-| Folder | Purpose | Critical files | Notes |
+Three independently-deployed systems make up "the app". **Changing code and
+pushing to `main` only updates #1.** This has caused real incidents this
+session (a stale worker silently reported jobs "completed" while generating
+zero creatives, because it was weeks behind the resolver logic).
+
+| # | System | What it runs | How it deploys |
 |---|---|---|---|
-| `src/app/(auth)/` | Login/signup pages, Supabase password auth | `login/page.tsx`, `login/signup/page.tsx` | Plain client-side `signInWithPassword`/`signUp` |
-| `src/app/api/shopify/` | OAuth install/callback/finalize + embedded-app launch | `install`, `callback`, `auth`, `auth/finalize` | Two parallel OAuth flows (manual connect vs. Shopify-embedded launch) — see §5 |
-| `src/app/api/webhooks/` | Shopify GDPR mandatory webhooks | `customers/data_request`, `customers/redact`, `shop/redact` | First two are stubs (HMAC-verified, no-op); `shop/redact` actually deletes the store row |
-| `src/app/api/cron/` | Vercel cron entry points | `generate/route.ts`, `sync/route.ts` | Run pipeline logic **inline**, not via BullMQ; secured by `CRON_SECRET` bearer header |
-| `src/app/api/generate/` | Generation control plane | `enqueue`, `single`, `cancel`, `stats` | `enqueue` = bulk (DB + optional BullMQ), `single` = synchronous on-demand |
-| `src/app/api/background/`, `src/app/api/image-extend/` | Standalone AI endpoints used by the live editor for preview | `remove/route.ts`, `cache/route.ts`, `image-extend/route.ts` | Same cache-check-then-generate pattern as the real pipeline, so editor preview matches final output |
-| `src/app/api/templates/` | Template CRUD + thumbnail render | `route.ts`, `[templateId]/route.ts`, `[templateId]/thumbnail/route.ts` | `PUT` has no field allow-list (see §9) |
-| `src/app/api/rules/` | Rules CRUD | `route.ts` (GET/POST), `[ruleId]/route.ts` (DELETE only) | **No update/reorder endpoint exists** |
-| `src/app/api/products/`, `src/app/api/categories/` | Product listing/filtering API + template categories | | |
-| `src/app/api/upload/folder/`, `/images/`, `/status/`, `/image/`, `/retry/` | Local folder upload → new store + products | `folder/route.ts` (session open/finalise), `images/route.ts` (per-image Cloudinary + product create) | Creates a brand-new store per import; every route re-verifies ownership via `lib/uploads/session.ts` |
-| `src/app/api/catalog/export/` | XLSX/CSV export of one upload batch | `route.ts` | Only works for products with `import_id` set |
-| `src/app/api/feed/[storeId]/` | Public Meta Shopping XML feed | `route.ts` | Token-authed via `stores.feed_token`, always XML regardless of `?format=` |
-| `src/app/api/meta/connect/` | Persists a merchant-entered Meta Catalog ID | `route.ts` | No real Meta Graph API integration |
-| `src/app/api/stores/[storeId]/sync/`, `src/app/api/active-store/`, `src/app/api/upload/` | Manual sync trigger, store-switcher cookie, generic image upload | | |
-| `src/app/dashboard/` | All authenticated pages (products, upload, templates, rules, creatives, meta, settings) | `layout.tsx` (auth gate + active-store load), `page.tsx` (stat cards) | Nested under one server-component layout |
-| `src/components/builder/` | **The live template editor (canonical, actively used)** | `template-builder-client.tsx`, `canvas-preview.tsx`, `layer-panel.tsx`, `layer-properties.tsx`, `smart-background.tsx`, `use-extend-preview.ts`, `use-transparent-preview.ts` | Pure DOM/CSS renderer, drag/resize via raw mouse listeners |
-| `src/components/templates/` | **Legacy/dead** — superseded editor components | `canvas-preview.tsx`, `layer-properties.tsx`, `toolbar.tsx` | Zero live imports except `delete-template-button.tsx`, which **is** used |
-| `src/components/rules/`, `src/components/products/`, `src/components/creatives/`, `src/components/upload/`, `src/components/meta/`, `src/components/settings/`, `src/components/dashboard/` | Feature-scoped UI for each dashboard section | | |
-| `src/components/ui/` | shadcn primitives | | Standard, lightly customized |
-| `src/lib/background-removal/` | Multi-provider abstraction + Cloudinary-backed cache | `index.ts`, `provider.ts`, `clipdrop-provider.ts`, `removebg-provider.ts`, `fal-birefnet-provider.ts`, `cloudinary-provider.ts` | `photoroom` is declared but unimplemented (dead union member) |
-| `src/lib/image-extend/` | Cloudinary generative-fill (AI outpaint) wrapper + cache | `index.ts` | |
-| `src/lib/catalog-import/` | Cloudinary upload + magic-byte type detection for imported images | `image-storage.ts` | Shared by the folder-upload route; the former Drive/Dropbox URL-normalization layer was removed with the Drive import |
-| `src/lib/compositor.ts` | **The core rendering engine** — `@napi-rs/canvas` based, draws all layer types, backgrounds, supersampling/downscale | | Second, independent renderer from the DOM-based live editor — must be kept pixel-compatible by hand |
-| `src/lib/template-resolver.ts` | Rule matching (product → template) | | First-match-wins by `priority DESC`, no tie-break |
-| `src/lib/generation-queue.ts` | Orchestrates `generation_jobs` (DB) + optional BullMQ push; contains `runJob`/`processBatch` (the actual pipeline execution) | | Also the DB-poll fallback executor |
-| `src/lib/queues.ts` | Thin BullMQ `Queue` wrapper (4 named queues) | | |
-| `src/lib/redis.ts` | Singleton ioredis client, TLS auto-detect via `rediss://` | | |
-| `src/lib/concurrency.ts` | Generic `mapWithConcurrency`/`chunkArray` helpers | | Not an external-API rate limiter |
-| `src/lib/shopify.ts` | Shopify Admin **GraphQL** client, product pagination, throttle-retry | | REST API not used (deprecated for new apps) |
-| `src/lib/shopify-sync.ts` | Product sync orchestration (fetch → upsert → image replace → change-detect → auto-enqueue) | | |
-| `src/lib/shopify-token.ts` | Session-token → offline-token exchange (embedded app flow) | | |
-| `src/lib/shopify-webhook.ts` | HMAC verification for Shopify webhooks | | |
-| `src/lib/active-store.ts` | Server-side "current store" resolution + ownership check | | |
-| `src/lib/cloudinary.ts` | Upload + delivery-URL helper (`f_auto,q_auto:best`) | | |
-| `src/lib/uploads/` | Folder-upload support: shared file classification, session/ownership guard, browser-side alpha-safe compression, directory picking | `image-files.ts`, `session.ts`, `client-compress.ts`, `pick-files.ts` | `image-files.ts` predicates run on BOTH client and server so the two cannot drift |
-| `src/lib/editor-preview.ts` | Dead code — its one export is never called (pages duplicate the logic inline) | | |
-| `src/lib/supabase/` | Browser + server Supabase client factories | `client.ts`, `server.ts` | Server client forces `sameSite:none; secure; partitioned` cookies (needed inside the Shopify admin iframe) |
-| `src/stores/builder-store.ts` | Zustand store for the live editor (single flat store, no persist middleware) | | |
-| `src/types/template.ts` | Canonical types: `Template`, `CanvasData`, 7 layer types, `BackgroundSettings`, `ProductLayerSettings` | | |
-| `src/workers/catalog-worker.ts` | PM2/tsx worker entrypoint: 4 BullMQ Workers + a DB-poll loop + stuck-job recovery on boot | | Runs `dbPollTick` unconditionally, even when Redis is reachable — dual execution path (see §9) |
-| `src/middleware.ts` | Auth gate for `/dashboard*`, pass-through for Shopify OAuth routes | | Does **not** gate other API routes — each checks auth itself |
-| `supabase/performance-indexes.sql` | Index definitions only | | **No table-creation migrations are checked into this repo** — schema below is reverse-engineered from query call sites |
-| `docs/performance-infrastructure.md` | Pre-existing perf notes | | |
+| 1 | **Vercel** (`craft-ify.vercel.app`) | The Next.js app — dashboard, all API routes, Vercel cron | Auto-deploys on push to `main` |
+| 2 | **DigitalOcean droplet** | `src/workers/catalog-worker.ts` — the BullMQ + DB-poll generation/sync worker | **Manual**: `git pull && npm install && pm2 restart all` (or equivalent) on the box. Nothing about a `git push` touches this. |
+| 3 | **Supabase** | Postgres + Auth | SQL migrations in `supabase/*.sql` are **not applied automatically** — there is no migration runner. Each must be pasted into the Supabase SQL Editor and run by hand, **in numeric order**, before the code that depends on it deploys. |
+
+**The single most common failure mode this session**: shipping code that reads
+or writes a column/table a migration hasn't created yet. This broke Shopify
+sync twice (once for a stale `sku` unique constraint, once for missing
+`option*_name` columns). Always run pending migrations before merging code
+that depends on them, and say so loudly in the commit message when you don't
+control the timing.
+
+Domain history: the app was `catalogstudio.vercel.app`, then briefly
+`craftify.vercel.app`, and is now **`craft-ify.vercel.app`** (hyphenated —
+easy to mistype). `shopify.app.toml`'s `application_url`/`redirect_urls` and
+Supabase's allowed Redirect URLs must all match this exactly or OAuth breaks.
+The GitHub repo was renamed from `CatalogStudio` to `Craftify`
+(`github.com/vinayakjain01/Craftify`) — if `git push` ever reports the repo
+moved, run `git remote set-url origin https://github.com/vinayakjain01/Craftify.git`.
 
 ---
 
-## 4. Database Design (reverse-engineered — no migrations in repo)
+## 3. Tech stack
 
-No `supabase/migrations` folder exists. Every table/column below is inferred from actual `.from()/.select()/.insert()/.update()` call sites across the codebase, not from a schema file — treat column lists as "columns observed in use," not exhaustive.
-
-| Table | Key columns observed | Relationships |
-|---|---|---|
-| `stores` | `id, user_id, shop_name, shop_domain (unique), shop_email, access_token (plaintext), scope, token_expires_at, currency, needs_reauth, is_active, installed_at, last_synced_at, feed_token, meta_catalog_id, meta_feed_status, meta_feed_last_sync` | root; `user_id` → Supabase auth user |
-| `products` | `id, store_id, shopify_id, title, handle, vendor, product_type, tags[], price, compare_at_price, inventory_quantity, status, sku, import_id, image_url, updated_at` | `store_id`→stores; unique `(store_id, shopify_id)`; `import_id`→catalog_imports |
-| `product_images` | `id, product_id, shopify_image_id, src, alt, position, is_primary` | `product_id`→products; fully delete+reinserted on every Shopify sync |
-| `templates` | `id, store_id, user_id, category_id, name, description, canvas_data (jsonb), thumbnail_url, is_active, created_at, updated_at` | `category_id`→template_categories |
-| `template_categories` | `id, user_id, store_id, name, created_at` | |
-| `template_rules` | `id, store_id, user_id, rule_type, rule_operator, rule_value, priority, template_id, is_active` | `template_id`→templates |
-| `generation_jobs` | `id, store_id, product_id, template_id, creative_type, status (pending/processing/completed/failed/cancelled), batch_id, attempts, max_attempts, locked_at, error, bg_removal_status, transparent_url, created_at, updated_at` | queue-table backing both BullMQ and DB-poll execution |
-| `generated_images` | `id, product_id, template_id, creative_type, cloudinary_public_id, generated_url, status, updated_at` | unique `(product_id, template_id, creative_type)`; **no `store_id` column**; `status` is only ever written as `'completed'` anywhere in the codebase |
-| `sync_logs` | `id, store_id, sync_type, status, products_synced, error_message, completed_at, created_at` | audit trail per sync run |
-| `catalog_imports` | `id, store_id, user_id, filename, source_url, status, total_rows, imported_rows, failed_rows, error_report` | groups one upload batch |
-| `catalog_import_rows` | raw staging rows per import | `import_id`→catalog_imports |
-| `bg_removal_cache` | keyed by sha256 of source URL → Cloudinary transparent-PNG URL | |
-| `image_extend_cache` | keyed by `(source URL, width, height)` hash → extended-image URL | |
-
-Two things worth flagging explicitly since the original brief asked about `creative_status`/`feed_status`: **neither column name exists anywhere in the code.** The actual analogues are `generated_images.status` and `stores.meta_feed_status`.
-
-Also notable: **two parallel product-image models coexist** — the relational `product_images` table (Shopify-sync path, raw Shopify CDN URLs) vs. a single `products.image_url` column (folder-upload path — which also writes a `product_images` row, so uploaded products appear in both). Code written against one will silently misbehave for products created via the other pipeline.
+- **Next.js 16.2.9**, App Router, TypeScript, Tailwind v4. `AGENTS.md` warns
+  this Next version has framework docs bundled at
+  `node_modules/next/dist/docs/` — read them before assuming pre-16 API shape
+  (async `params`/`searchParams`, `force-dynamic`, etc. are all already used
+  consistently in this codebase).
+- **Supabase**: Postgres + Auth. No migration-tracking table — `supabase/*.sql`
+  files are the only record of schema history, applied by hand, in order.
+- **Cloudinary**: all image storage — originals, background-removal cache,
+  and every generated creative.
+- **BullMQ + ioredis** against a DigitalOcean-managed Redis/Valkey instance,
+  **plus** a DB-poll fallback loop in the same worker process (see §7).
+- **Shopify Admin GraphQL API** (REST product endpoints are deprecated and
+  403 for this app). OAuth is the **embedded, session-token** flow — see §5.
+- `@napi-rs/canvas` for server-side compositing (`src/lib/compositor.ts`).
+- **shadcn/ui** + Radix primitives, Tailwind design tokens in
+  `src/app/globals.css`. Brand: deep royal purple `#4B2E83` + gold `#C6922E`
+  on lavender surfaces (see the tokens for exact values; do not reintroduce a
+  generic indigo — that was explicitly replaced once already).
 
 ---
 
-## 5. Authentication & Shopify OAuth
+## 4. Where things live (credentials, accounts)
 
-- **Supabase auth**: `src/middleware.ts` calls `getUser()` on every non-excluded route; redirects unauthenticated users off `/dashboard*` and authenticated users off `/login*`. It does **not** gate other API routes — each one checks auth independently.
-- **Two OAuth flows**:
-  1. **Manual connect** (Settings page → `/api/shopify/install` → Shopify → `/api/shopify/callback`): CSRF nonce in an httpOnly cookie, verified on return; exchanges `code` for an **offline** (non-expiring) token via raw query-string construction (`grant_options[]=offline`, deliberately bypassing `URLSearchParams` encoding).
-  2. **Embedded app launch** (`/api/shopify/auth`): triggered when Shopify opens the app in an iframe; verifies HMAC over launch params, and if an App Bridge `id_token` is present, does a **token-exchange** grant for a fresh offline token (`shopify-token.ts`). Signs the store owner into Supabase via `admin.generateLink` + `verifyOtp` (magic-link, no password).
-- **Tokens are stored in plaintext** in `stores.access_token` — no encryption/KMS wrapping anywhere in the codebase.
-- **GDPR webhooks**: `customers/data_request` and `customers/redact` are HMAC-verified stubs (return 200, do nothing, comment claims no PII is stored). `shop/redact` actually deletes the `stores` row and relies on `ON DELETE CASCADE` (not verified against real schema in this repo).
-- **Active store**: single `active_store_id` cookie, re-validated server-side against the current user on every read (`active-store.ts`).
+- **Env vars**: `.env.local` (gitignored, never commit it). Mirror any change
+  into Vercel's project env vars — `.env.local` only affects local dev and
+  the values you read directly.
+- **Shopify Partner Dashboard**: app is named "Craftify". `shopify.app.toml`
+  is the source of truth for `application_url`/`redirect_urls`/webhook paths;
+  `shopify app deploy` pushes it, then the version must be **released**
+  (a draft has no effect).
+- **Supabase project**: URL/keys in `.env.local`
+  (`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`). No
+  `exec_sql`/arbitrary-DDL RPC exists — migrations genuinely must be pasted
+  into the SQL Editor by a human; Claude cannot run them.
+- **DigitalOcean**: hosts both the Valkey (Redis) instance and the worker
+  droplet. Worker env vars (`WORKER_GENERATION_CONCURRENCY`, `REDIS_URL`,
+  etc.) live on the droplet, not in Vercel.
+- **Cloudinary / Shopify app secrets / AI provider keys**: all in
+  `.env.local` — see that file for the current key names; several
+  (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `WORKER_ADAPTATION_CONCURRENCY`, etc.)
+  are now **dead** — they belonged to Template Adaptation, which was removed
+  in v2, and were deliberately left rather than edited since they're the
+  user's own file.
 
-See the full agent report for a longer list of specific issues (duplicated HMAC/regex helpers, inconsistent cookie flags across the three places that set `active_store_id`, silent swallow of token-exchange failures) — summarized in §9.
+---
 
-## 6. Product Sync
+## 5. Authentication — the two flows, and why both exist
 
-`shopify-sync.ts` pulls products via **GraphQL only** (REST is 403'd for new apps), paginated 250/page, optionally filtered by `updated_at` for incremental syncs. Only `variants[0]`'s price/inventory is captured — multi-variant products lose all other variants' data, and no `variants` table exists. Images are fully deleted and reinserted per sync (not diffed). Upsert key is `(store_id, shopify_id)`. **There is no reconciliation for products deleted/archived in Shopify** — they persist in Craftify forever. Auth failures set `stores.needs_reauth = true`.
+1. **Merchant login**: Supabase Auth (email/password), gated by
+   `src/middleware.ts` on `/dashboard/*`.
+2. **Embedded Shopify session**: the app also runs inside an iframe in
+   Shopify admin. `src/app/layout.tsx` loads **App Bridge** via a hand-rolled
+   inline `<script>` that sets `async=false` on the injected tag — verified
+   this session, against the actual built HTML, that every React/Next-native
+   way of loading a script (`<script src>` in `<head>`, `next/script`
+   `beforeInteractive`, `ReactDOM.preinit`) either lands after ~10 Next chunk
+   scripts or forces `async=""`, and App Bridge **aborts entirely** if its
+   own tag is async/deferred. **Do not "clean up" this inline script** — it
+   is the only approach that actually defines `window.shopify`.
+3. **`shop`/`host` query params must survive every redirect** in the
+   `/api/shopify/auth` → `/dashboard` flow, or App Bridge throws `missing
+   required configuration fields: shop` and session tokens silently stop
+   working. `middleware.ts` re-attaches a cookied `host` to any `/dashboard`
+   load that arrives without one, as a safety net.
+4. **Client → API calls from inside the embedded app use `shopifyFetch`**
+   (`src/lib/shopify-token.ts`), which attaches
+   `Authorization: Bearer <App Bridge idToken>`. This is required for
+   Shopify's own "embedded app checks" (App Store review) to pass — they are
+   *behavioural* checks that only clear once Shopify observes real session-token
+   traffic, not something a code review can satisfy. **Never manually set
+   `Content-Type` when calling `shopifyFetch` with a `FormData` body** — it
+   already skips that header for FormData so the browser can add the
+   multipart boundary; forcing JSON there silently breaks uploads.
+5. **Offline access tokens must be `expiring=1`.** Shopify now rejects
+   non-expiring tokens outright (`"[API] Non-expiring access tokens are no
+   longer accepted"`). Both the OAuth code-grant (`/api/shopify/callback`)
+   and token exchange (`/api/shopify/auth`) pass `expiring=1` and store the
+   returned `refresh_token`. Expiring tokens last **1 hour**; the sync path
+   (`lib/shopify-sync.ts`'s `ensureFreshToken`) refreshes ahead of expiry
+   with a 5-minute margin so background jobs don't silently start failing.
+   If you ever see `stores.token_expires_at` null after a fresh connect, the
+   `expiring=1` param is not reaching Shopify — that is the whole bug class
+   that caused the multi-round "reconnect doesn't work" saga earlier in this
+   project's history.
 
-## 7. Template System
+---
 
-A template is a `name` + JSON `canvas_data` blob: `{width, height, aspectRatio, backgroundColor, backgroundImageUrl, layers[], backgroundSettings?, templateMode?, productLayerSettings?}`. Seven layer types (`text, image, rectangle, badge, logo, overlay, sticker`), all sharing `x/y/width/height` as **percentages** plus `rotation/opacity/zIndex`. Text/badge content supports `{{variables}}` (title, price, etc.) resolved by `resolveVariables()`.
+## 6. What v2 removed, and why
 
-Two renderers exist and must be kept in sync by hand:
-1. **Live editor** (`src/components/builder/canvas-preview.tsx`) — pure DOM/CSS, hand-rolled drag/resize.
-2. **Server compositor** (`src/lib/compositor.ts`, `@napi-rs/canvas`) — used for thumbnails and final generation output.
-
-"AI Product Mode" and "Smart Background" are v2 additions layered on top of the same `CanvasData` shape (optional fields, backward-compatible with older saved templates). The live editor calls the same `/api/background/remove` and `/api/image-extend` endpoints the real pipeline uses, so editor preview should visually match final output.
-
-**`src/components/templates/*` (except `delete-template-button.tsx`) is dead code** — a superseded prior iteration of the builder, unreferenced by any route.
-
-## 8. Rules Engine
-
-A rule is `{rule_type, rule_operator, rule_value, priority, template_id}`. Types: `tag`, `vendor`, `product_type`, `discount` (computed from price/compare_at_price), `default` (matches everything), `catalog_import` (matches `product.import_id`). Matching (`template-resolver.ts`) is a **linear scan in `priority DESC` order, first match wins** — not most-specific-wins, and ties have no secondary sort key (DB-order-dependent). No match → `null`, and callers treat that as a silent no-op (bulk worker marks the job `completed` with an error string rather than a distinct `skipped` status). **There is no update/reorder API for rules — only create and delete.**
-
-## 9. Generation Pipeline (end-to-end)
-
-```
-POST /api/generate/enqueue (or /api/generate/single for one product)
-  → paginate matching products
-  → generation-queue.enqueueGeneration()
-      → insert generation_jobs rows (status=pending)  [DB is always source of truth]
-      → if Redis configured: BullMQ addBulk onto "creative-generation" queue,
-        payload = { jobId } only (worker re-fetches everything from the DB)
-      → if Redis push fails: silently logged, job stays DB-only pending
-
-Execution (either via BullMQ Worker in catalog-worker.ts, or the DB-poll
-fallback / Vercel cron drain) converges on generation-queue.runJob():
-  1. Load product + images, resolve template (job.template_id or
-     template-resolver.resolveTemplateFromRules)
-  2. If templateMode === 'ai_product': background-removal (4-provider
-     abstraction, cached in bg_removal_cache, Cloudinary as default provider)
-  3. compositor.compositeImage(): @napi-rs/canvas — draws background,
-     product layer (with optional image-extend/AI-outpaint via Cloudinary
-     generative fill, cached in image_extend_cache), then foreground layers
-     (text/badge/logo/overlay), supersampled then downscaled to 2048px PNG
-  4. cloudinary.uploadBuffer() → catalog-creatives/ folder
-  5. Upsert generated_images (onConflict product_id,template_id,creative_type)
-  6. Mark generation_jobs completed
-```
-
-Background removal providers: `cloudinary` (default), `clipdrop`, `removebg`, `fal-birefnet`, with configurable fallback chain (`BG_REMOVAL_FALLBACK_PROVIDERS`). Image extend = Cloudinary Generative Fill (AI outpainting) to fit a product photo to the template's aspect ratio without cropping, skipped if AR is already within 1%.
-
-## 10. Queue & Worker Architecture
-
-Four BullMQ queues (`queues.ts`): `creative-generation`, `product-sync`, `feed-generation`, `meta-refresh` — only the first two have real processors; the latter two are logging stubs. `catalog-worker.ts` (run via `npm run worker`, presumably under PM2 in production — no `ecosystem.config.js` is checked into this repo) runs all four BullMQ Workers **plus** a separate `dbPollTick` loop that polls `generation_jobs`/`processBatch` directly against Supabase every `DB_POLL_INTERVAL_MS` (default 3s) — explicitly because, per the code's own comment, Vercel (AWS) cannot reach the DigitalOcean Valkey instance over VPC in some deployment topologies. This means **generation jobs can be picked up by two independent code paths** in the same process; correctness is preserved by an atomic `status='pending'` claim check, but it's redundant. Vercel cron (`/api/cron/generate`, `/api/cron/sync`, daily per `vercel.json` despite a stale code comment claiming "every minute") provides a third, fully inline execution path independent of the worker.
-
-BullMQ retry: 3 attempts, exponential backoff (5s base), no dead-letter queue. `@bull-board/express` is a declared dependency but **never wired up** — there is no queue monitoring dashboard.
-
-## 11. Import System
-
-- **Shopify sync**: see §6.
-- **Local folder upload** (`/dashboard/upload`): the browser's directory-upload capability hands over the whole tree (nested folders included); the client classifies and de-duplicates files, downscales anything over the ~4.5 MB request-body ceiling (PNGs resized only, never JPEG-converted, so alpha survives for the background-removal path), then POSTs one image per request. Each image becomes a product with the filename minus extension as both `title` and `sku`; colliding basenames across subfolders are disambiguated by parent folder, because `(store_id, sku)` is an upsert key and would otherwise silently overwrite. Creates a brand-new store per upload.
-- **Excel/CSV/"line sheet" file upload import does not exist in this codebase.** `exceljs` is an unused dependency; `xlsx` is used only for the export route.
-- `jszip` is used only client-side for the "download all creatives as ZIP" button — unrelated to import.
-
-## 12. API Structure (full route inventory)
-
-| Route | Method(s) | Purpose |
-|---|---|---|
-| `/api/active-store` | POST | Set active-store cookie (ownership-checked) |
-| `/api/background/remove`, `/api/background/cache` | GET/POST, GET/DELETE | Background-removal trigger + cache inspect/invalidate |
-| `/api/catalog/export` | GET | XLSX/CSV export of one upload batch |
-| `/api/categories` | GET/POST | Template categories |
-| `/api/creatives/[creativeId]` | GET/DELETE(?) | Single creative |
-| `/api/cron/generate`, `/api/cron/sync` | GET | Vercel cron entry points, `CRON_SECRET`-gated |
-| `/api/upload/folder` | POST/PATCH | Open / finalise a folder-upload session (creates store + `catalog_imports` row) |
-| `/api/upload/images` | POST | Multipart image(s) → Cloudinary + product + `product_images` + audit row |
-| `/api/upload/status` | GET | Server-side progress for an upload session |
-| `/api/upload/image` | DELETE | Remove one uploaded product + its Cloudinary asset |
-| `/api/upload/retry` | POST | Reset failure accounting so the client can re-send failed images |
-| `/api/feed/[storeId]` | GET | Public Meta Shopping XML feed, `feed_token`-gated |
-| `/api/generate/enqueue`, `/single`, `/cancel`, `/stats` | POST/GET | Generation control plane |
-| `/api/image-extend` | GET/POST | Standalone AI-extend for editor preview |
-| `/api/meta/connect` | POST | Save merchant's Meta Catalog ID |
-| `/api/products` | GET | Paginated/filtered product list |
-| `/api/rules`, `/api/rules/[ruleId]` | GET/POST, DELETE only | Rules CRUD (no update) |
-| `/api/shopify/auth`, `/finalize`, `/callback`, `/install` | GET | OAuth flows (§5) |
-| `/api/stores/[storeId]/sync` | POST | Manual sync trigger |
-| `/api/templates`, `/api/templates/[templateId]`, `/[templateId]/thumbnail` | GET/POST/PUT, POST | Template CRUD + thumbnail render |
-| `/api/upload` | POST | Generic image upload (PNG/JPG/WEBP, 10MB cap) |
-| `/api/webhooks/customers/data_request`, `/customers/redact`, `/shop/redact` | POST | Shopify GDPR mandatory webhooks |
-
-## 13. Deployment Flow
-
-- **App + API routes**: Vercel (serverless functions), Next.js 16.
-- **Cron**: `vercel.json` — `/api/cron/sync` and `/api/cron/generate`, both daily at `0 0 * * *`.
-- **Worker**: a long-running Node process (`npm run worker` → `tsx src/workers/catalog-worker.ts`), intended to run under PM2, hosted separately (comments reference DigitalOcean) because Vercel functions can't hold a persistent BullMQ connection and, per an in-code comment, can't always reach the DO-hosted Valkey over VPC — hence the DB-poll fallback loop living in the same worker process.
-- **Data**: Supabase Postgres (schema managed outside this repo — no migrations checked in) + Supabase Auth.
-- **Media**: Cloudinary (all AI processing outputs + final creatives + user uploads).
-- **Redis/Valkey**: DigitalOcean-managed, TLS auto-detected via `rediss://` URL scheme.
-
-## 14. Environment Variables (as referenced in code)
-
-| Variable | Used for |
+| Removed | Why |
 |---|---|
-| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase client (browser + server, RLS-scoped) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Admin client, bypasses RLS (used widely — see §9 for the audit flag) |
-| `SHOPIFY_CLIENT_ID`, `NEXT_PUBLIC_SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` | Shopify OAuth app credentials |
-| `SHOPIFY_SCOPES` | Requested OAuth scopes |
-| `NEXT_PUBLIC_APP_URL` | Base URL for building redirect/feed URLs |
-| `CRON_SECRET` | Bearer-auth for `/api/cron/*` and internal sync calls |
-| `REDIS_URL` | BullMQ/ioredis connection (TLS auto-enabled if `rediss://`) |
-| `WORKER_GENERATION_CONCURRENCY`, `WORKER_SYNC_CONCURRENCY`, `DB_POLL_INTERVAL_MS` | Worker tuning |
-| `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Cloudinary SDK |
-| `BG_REMOVAL_PROVIDER`, `BG_REMOVAL_FALLBACK_PROVIDERS` | Background-removal provider selection |
-| `CLIPDROP_API_KEY`, `REMOVEBG_API_KEY`, `FAL_API_KEY` | Individual background-removal provider credentials |
-| `NODE_ENV` | Cookie `secure` flag branching in OAuth routes |
+| Google Drive import | Replaced, then the replacement itself was also cut — see next row |
+| Local folder upload | Spec-scoped out of v2 entirely |
+| Template Adaptation (AI image editing) | Out of v2 scope; its whole provider layer (`lib/image-editing/`), queue, and worker path were deleted |
+| Meta section (manual Catalog ID entry) | Replaced by the always-visible feed URL in the sidebar footer — the section existed mainly to show that one string |
+| Product Positioning / Head Space panel | Out of v2 scope (UI only removed — the underlying libs are still wired into the live editor preview; see §11's caveat) |
+| Product Zoom template mode | UI picker only shows Standard / AI Product now; the compositor still renders `product_zoom` if a legacy template has it, so nothing existing breaks |
+| `feed-generation` / `meta-refresh` BullMQ queues | Discovered to be dead placeholder workers that only logged and returned `{ generated: false }` — never did anything, safe to delete |
 
-## 15. External Services
-
-Supabase (DB + Auth) · Cloudinary (media hosting, transforms, generative fill) · Shopify Admin GraphQL API + OAuth · Meta Commerce Manager (feed-consumer only, no API integration) · DigitalOcean Managed Redis/Valkey · Clipdrop / remove.bg / fal.ai BiRefNet (background removal) · Vercel (hosting + cron).
-
----
-
-## 16. Known Limitations / Technical Debt (documented, not fixed)
-
-Grouped by severity/theme; each item was found and cited with file:line by the subsystem audits.
-
-**Security**
-- Shopify `access_token` stored in **plaintext** in `stores.access_token` — no column encryption.
-- Inconsistent cookie flags for `active_store_id` across three different set-sites (`httpOnly` true in one, false in two others; mixed `sameSite`) — could silently fail to persist depending on entry path.
-- Embedded-app OAuth launch (`/api/shopify/auth`) has no replay protection (HMAC verified, but Shopify's `timestamp` param is present and never checked for staleness).
-- `PUT /api/templates/[templateId]` spreads the raw request body into the update with no field allow-list — currently safe only because the client only ever sends 3 fields.
-- `/api/upload` (generic editor-asset upload) allows png/jpg/webp only, while the folder-import path (`/api/upload/images`) also accepts avif — two allowlists, deliberately different, but worth collapsing if avif support is ever wanted in the editor.
-
-**Correctness / reliability**
-- DB-poll retry path (`generation-queue.ts` `failJob`) compares `attempts < max_attempts` but **`attempts` is never incremented anywhere in that file** — retry accounting is effectively broken (verify against the worker's own increment logic, if any, before relying on retry limits).
-- Two independent execution paths (BullMQ Worker + `dbPollTick`) always run concurrently in the worker process regardless of whether Redis is actually reachable.
-- Meta feed URL shown in the dashboard (`MetaStoreCard`) points at `/api/meta/feed/[storeId]`, which **does not exist**; the real route is `/api/feed/[storeId]` — a broken link a merchant would paste into Meta Commerce Manager.
-- Settings page shows `?format=json`/`?format=csv` feed links that the feed route entirely ignores (always returns XML) — dead/misleading UI, comment suggests it's unfinished "Phase 5" work.
-- No reconciliation for Shopify products deleted/archived upstream — they persist in Craftify indefinitely.
-- Only `variants[0]` is synced per product — multi-variant price/inventory data is lost, with no `variants` table.
-- `product_images` is fully deleted and reinserted on every sync (not diffed), non-atomically (separate HTTP calls, no transaction) — a crash mid-sync can leave a product with zero images.
-- Folder upload creates a new store per upload, making its `(store_id, sku)` dedup key ineffective across repeated uploads of the same folder (inherited from the Drive import it replaced).
-- Rules engine has no update/reorder API — editing a rule requires delete + recreate; `GET /api/rules` doesn't filter `is_active` while the resolver does, so the UI can show rules that aren't actually being evaluated.
-- Rule priority ties have no secondary sort key (Postgres row order is unspecified) — match order can be unstable.
-- `generated_images.status` is only ever written as `'completed'`, yet three separate call sites filter on it defensively — logic drift risk if a future write path ever inserts another value.
-- Vercel cron schedule (daily) contradicts an in-code comment claiming "every minute"; `/api/cron/sync` has no time budget and can hit the function timeout mid-loop over many stores with no resumption logic.
-
-**Dead code / tech debt**
-- `src/components/templates/{canvas-preview,layer-properties,toolbar}.tsx` — fully superseded, unreferenced.
-- `src/lib/editor-preview.ts` — its export is never called.
-- `exceljs` and `@bull-board/express` are declared dependencies with zero usage in `src/`.
-- `photoroom` is a declared-but-unimplemented background-removal provider (silently falls back to Cloudinary if selected).
-- Duplicated HMAC-verification, `getAppOrigin`, and Shopify-domain-regex implementations across `auth/route.ts`/`callback/route.ts`/`install/route.ts`/`connect-store-form.tsx`.
-- Two independent rendering engines (DOM/CSS editor vs. `@napi-rs/canvas` compositor) must be kept pixel-compatible by hand — no shared rendering core.
-- Compositor's text layers do not word-wrap (canvas `fillText` only horizontally compresses overflow) — long titles render squished rather than wrapping.
-- Cloudinary fonts are registered under the family name `"Inter"` but are actually Noto Sans TTFs — cosmetic mislabeling with real metric implications.
-
-**Performance**
-- Products list page uses `count: 'exact'` (full table scan cost on Postgres) plus a leading-wildcard `ilike` search that can't use the existing b-tree index.
-- Image-extend's eager-generation path appears to re-upload the source image to Cloudinary a second time even after `ensureOnCloudinary` already uploaded it once per cache miss.
+**Deliberately NOT done**: a full renderer rewrite that strips the
+background-removal / product-layer-engine internals out of `compositor.ts`
+and `generation-queue.ts`. Those libraries are not dormant — they're wired
+into the **live editor preview** (`components/builder/canvas-preview.tsx` via
+`useProductLayerBundle`). Removing them is a renderer rewrite, not a
+deletion, and was intentionally parked until generation could be verified
+working end-to-end (it now has been — see §7).
 
 ---
 
-## 17. Suggested Future Improvements (not implemented, for discussion only)
+## 7. The generation pipeline — variant-first, two execution paths
 
-- Encrypt `stores.access_token` at rest (KMS-wrapped or pgsodium).
-- Add a `PATCH /api/rules/[ruleId]` endpoint and drag-to-reorder UI; make `GET /api/rules` respect `is_active` consistently with the resolver.
-- Fix or remove the dead `/api/meta/feed/[storeId]` reference and the non-functional `?format=json|csv` feed links.
-- Add a reconciliation step for Shopify-side deletes/archives during sync.
-- Populate a real `variants` table instead of collapsing to `variants[0]`.
-- Wire up `@bull-board/express` (already a dependency) for queue visibility, or remove it.
-- Decide on a single generation execution path (BullMQ vs. DB-poll) per deployment rather than always running both.
-- Delete the dead `src/components/templates/*` files and `src/lib/editor-preview.ts`.
-- Add real word-wrap to compositor text layers.
-- If a spreadsheet/line-sheet import is still a product goal, it needs to be built from scratch — `image-resolver.ts` only covers the URL-normalization half of that problem.
+**Everything is per-variant, and (as of the scope-selector feature) optionally
+per-image too.** This is the core v2 change: the original Shopify sync only
+fetched `variants(first: 1)`, so a product with three colours synced as one
+row and silently dropped the other two. `product_variants` now holds the full
+set, and generation fans out across it.
+
+### Two independent code paths reach the same `runJob()`
+
+- **`processBatch()`** — a DB-poll loop (`dbPollTick` in
+  `catalog-worker.ts`, every `DB_POLL_INTERVAL_MS`) that claims a batch of
+  `pending` rows and runs them with `mapWithConcurrency`, sharing **one**
+  `JobContext` (cached rules + template canvases) across the whole batch.
+  This exists because Vercel (AWS) cannot reach the DigitalOcean Valkey
+  instance over VPC in some topologies — jobs written to Supabase by Vercel
+  need a way to run even if Redis is unreachable from the writer.
+- **BullMQ `Worker(QUEUE_NAMES.generation, ...)`** — pulls jobs pushed to
+  Redis by `enqueueGeneration`, one job per processor invocation, calling
+  `processGenerationJob(jobId, ...)`.
+
+**Both paths run in the same worker process simultaneously**, racing to claim
+the same rows via an atomic `status='pending' → 'processing'` guard — this is
+correct and intentional, not a bug, but it means "the worker" is really two
+schedulers sharing one pipeline. When diagnosing "generation is slow" or "a
+job never ran", check both paths, not just one.
+
+### Fan-out shape
+
+`enqueueGeneration()` (`src/lib/generation-queue.ts`) builds one
+`generation_jobs` row per `(variant, image)` pair (or one product-level row
+for the rare product with no synced variants — a legacy fallback). Scope
+controls, added via the Creatives page's scope selector:
+
+- **Variant scope**: all variants, or a specific named option value (e.g.
+  `Size: M`) — matched against `products.option{1,2,3}_name` when a sync has
+  populated them, falling back to checking all three positional value
+  columns when it hasn't (pre-migration-008 data).
+- **Image scope**: `'all'` (one job per image) or `'first'` (one job per
+  variant, its primary/first image). **`imageScope` defaults to `'first'`
+  inside `enqueueGeneration` itself** — not `'all'` — specifically so callers
+  that don't pass it (the sync's auto-enqueue-on-change) keep producing
+  exactly the job count they always have. Only the Creatives page's own API
+  call defaults to `'all'`.
+- **`MAX_JOBS_PER_ENQUEUE = 5000`**: fanning out per image multiplies job
+  count by however many photos a variant has. Measured against this
+  project's own test store (~9.5k variants, ~5 images/product, no
+  per-variant image assignment so every variant falls back to the full
+  image set): "all variants + all poses + all products" would be **~47,000
+  jobs** from one click. The cap rejects that with an actionable message
+  instead of silently accepting it.
+
+### Storage: two tables, one dual-written
+
+- **`generated_images`** (legacy) — keyed `(product_id, template_id,
+  creative_type)`. No variant/image dimension, so it can only ever hold the
+  *last* creative written for a product+template — multiple variants or
+  images collapse into one row here.
+- **`generated_creatives`** (v2) — carries `store_id`, `variant_id`,
+  `image_id` directly; unique on `(variant_id, image_id, template_id)`. This
+  is what the Products page, the Creatives grid, the ZIP download, and the
+  feed all read.
+- `lib/creatives.ts`'s `recordCreative()` writes both, delete-then-insert
+  (not upsert — the uniqueness is a *partial* index, which PostgREST can't
+  target via `ON CONFLICT`). **If you add a new field that changes a
+  creative's identity, update the match clause in `recordCreative` too**, or
+  regenerating will silently overwrite a row it shouldn't.
+
+### Rules
+
+Multi-condition (`template_rules.conditions` jsonb array, AND/OR via
+`condition_mode`), resolved in `src/lib/template-resolver.ts`. **Priority is
+ascending** — 0 evaluates first, first match wins. This is the opposite of
+the pre-v2 single-condition model's ordering; if you ever see rules
+evaluating "backwards", check which convention a given row predates.
+Legacy single-condition rows (`rule_type`/`rule_operator`/`rule_value`) are
+still evaluated as a fallback when `conditions` is empty — both models coexist.
+
+---
+
+## 8. Database schema (as of migration 008)
+
+No migration-tracking table exists — this list *is* the schema history.
+Column lists are from the migration files plus reverse-engineering active
+code; treat them as "columns observed in use," not a formal DDL dump.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `stores` | `id, user_id, shop_domain, access_token, refresh_token, token_expires_at, refresh_token_expires_at, needs_reauth, feed_token, currency, sync_status, last_synced_at` | `access_token` is plaintext (known debt, not fixed) |
+| `products` | `id, store_id, shopify_id, title, handle, vendor, product_type, tags[], status, description, option1_name, option2_name, option3_name, price, compare_at_price, inventory_quantity, sku` | The last four are **deprecated variant[0] mirrors** — authoritative values live on `product_variants`. `option*_name` added in migration 008. No unique constraint on `sku` (migration 006 dropped a stale one that broke real-catalog sync). |
+| `product_variants` | `id, product_id, store_id, shopify_variant_id, title, sku, barcode, price, compare_at_price, inventory_quantity, inventory_policy, is_sold_out (generated), option1, option2, option3, position, weight, weight_unit` | `is_sold_out` is a Postgres generated column: `inventory_quantity <= 0 AND inventory_policy = 'deny'` |
+| `product_images` | `id, product_id, shopify_image_id, src, cloudinary_url, alt, width, height, position, is_primary, variant_ids text[]` | `variant_ids` holds Shopify variant ids (strings) an image is assigned to — on the one real store checked, this is `[]` for every image (Shopify itself has no per-variant image assignment there), so the fallback "use all product images" path is the common case, not the exception |
+| `templates` | `id, store_id, user_id, category_id, name, canvas_data jsonb, canvas_width, canvas_height, version, thumbnail_url, is_active` | `canvas_data` holds the full layer tree — see `src/types/template.ts` |
+| `template_rules` | `id, store_id, template_id, name, priority, conditions jsonb, condition_mode, is_active`, plus legacy `rule_type/rule_operator/rule_value` (nullable since migration 007) | Priority ascending, see §7 |
+| `generation_jobs` | `id, store_id, product_id, variant_id, image_id, template_id, creative_type, status, batch_id, attempts, max_attempts, error, locked_at` | `status`: `pending → processing → completed \| failed \| skipped \| cancelled`. `skipped` (not `completed`) means no rule matched — added after a stale worker reported 303 no-op jobs as "completed" |
+| `generated_images` | `id, product_id, template_id, creative_type, cloudinary_public_id, generated_url, status` | Legacy — see §7 |
+| `generated_creatives` | `id, store_id, product_id, variant_id, image_id, template_id, job_id, cloudinary_id, url, width, height` | v2 — see §7. Unique `(variant_id, image_id, template_id)` where `variant_id is not null` |
+| `catalog_imports`, `catalog_import_rows` | — | Vestigial — belonged to the removed Drive/folder-upload flow. Not dropped, just unused by any current code path. |
+| `bg_removal_cache`, `image_extend_cache`, `background_reconstruction_cache` | — | Cloudinary AI derivative caches, keyed by source-URL hash. Only exercised via the still-present (but UI-unreachable) product-layer-engine/AI-Product template mode. |
+| `sync_logs` | `id, store_id, sync_type, status, products_synced, error_message` | Audit trail per sync run |
+
+**RLS**: every tenant table enforces owner-via-`stores.user_id`, `to
+authenticated` only (service_role bypasses, used by the worker/sync/feed).
+This was **not true by default** — migrations 001 and 004 closed a real
+anon-key data leak found by testing with actual rows present (an empty
+table returning 0 to anon proves nothing; it was only caught once real data
+existed). If you add a new tenant table, give it an RLS policy in the same
+migration that creates it, not later.
+
+---
+
+## 9. Migration history
+
+Run in this order if starting a database from scratch; each file documents
+its own verification query.
+
+| # | File | What it did |
+|---|---|---|
+| 001 | `001-rls-hardening.sql` | First RLS pass — closed anon-read access to 6 tenant tables |
+| 002 | `002-v2-variants-schema.sql` | The big one: `product_variants`, `generated_creatives`, `option1/2/3` on variants, `variant_id`/`image_id` on `generation_jobs`, multi-condition columns on `template_rules` |
+| 003 | `003-fresh-start-wipe.sql` | One-time destructive wipe of all pre-v2 tenant data (kept `profiles`/auth) to re-sync clean against the new schema |
+| 004 | `004-rls-fix-products.sql` | `products` was still readable by anon *after* 001 — a legacy permissive policy survived because 001 only dropped policies by name. Rewritten to enumerate and drop every policy on the tenant tables before recreating them. |
+| 005 | `005-expiring-tokens.sql` | Added `stores.refresh_token` / `refresh_token_expires_at` |
+| 006 | `006-drop-stale-product-sku-unique.sql` | Dropped a `UNIQUE(store_id, sku)` constraint left over from the removed folder-import flow — broke sync on any real catalog with duplicate SKUs across products |
+| 007 | `007-relax-legacy-rule-columns.sql` | Dropped `NOT NULL` on the legacy `rule_type/rule_operator/rule_value` columns — a v2 (`conditions`-only) rule had nothing valid to put there |
+| 008 | `008-option-names-and-image-scoped-creatives.sql` | Added `products.option{1,2,3}_name`; extended `generated_creatives`' unique index to include `image_id` so "generate every pose" doesn't overwrite itself |
+
+`supabase/performance-indexes.sql` is index-only, no schema changes, safe to
+run any time.
+
+---
+
+## 10. API route inventory (current)
+
+```
+Auth / Shopify
+  /api/shopify/install              POST  legacy OAuth code-grant install
+  /api/shopify/callback             GET   OAuth callback → token exchange → session
+  /api/shopify/auth                 GET   embedded launch handler → token exchange
+  /api/shopify/auth/finalize        GET   completes server-side Supabase sign-in
+  /api/shopify/sync                 POST  manual re-sync (storeId in body)
+  /api/shopify/sync/status          GET   sync progress + counts
+  /api/stores/[storeId]/sync        POST  the actual per-store sync implementation
+  /api/webhooks/customers/*, /shop/redact   GDPR mandatory webhooks, HMAC-verified
+
+Products
+  /api/products                     GET   paginated/filtered list
+  /api/products/[productId]         GET   detail incl. variants + images + creatives
+  /api/products/[productId]/variants GET  variant list only
+  /api/products/[productId]/generate POST single-image generation for one product/variant
+  /api/products/option-names        GET   distinct option names for the scope selector
+
+Templates
+  /api/templates                    GET/POST
+  /api/templates/[templateId]       GET/PUT/DELETE
+  /api/templates/[templateId]/thumbnail POST
+
+Rules
+  /api/rules                        GET/POST   (conditions[] or legacy triple)
+  /api/rules/[ruleId]                PUT/DELETE
+  /api/rules/reorder                 PUT   whole-array priority reorder
+
+Generation
+  /api/generate/enqueue             POST/GET   bulk enqueue + batch progress poll
+  /api/generate/single               POST  one product/variant/image
+  /api/generate/cancel               POST  stop a batch
+  /api/generate/stats                GET
+  /api/generate/bulk, /status/[batchId], /cancel/[batchId]   path-param aliases, forward to the above
+
+Creatives
+  /api/creatives                    GET   paginated/filtered (reads generated_creatives)
+  /api/creatives/[creativeId]        DELETE
+
+Feed
+  /api/feed/[storeId]                GET   public, token-authed, CSV/XML/JSON, one row per variant
+
+Uploads (generic asset upload — logos/overlays in the template builder; NOT
+a product-import path, that was removed)
+  /api/upload                        POST
+
+Cron (Vercel, CRON_SECRET-gated)
+  /api/cron/generate, /api/cron/sync
+```
+
+---
+
+## 11. Folder guide
+
+```
+src/
+  app/
+    dashboard/           Products, Templates, Rules Engine, Creatives, Settings
+      products/[productId]/   variant selector + image gallery + generate
+    api/                 see §10
+    layout.tsx           App Bridge inline-loader — see §5, do not "simplify"
+  components/
+    builder/             The live template editor (canvas-preview.tsx,
+                          template-builder-client.tsx). Still imports the
+                          product-layer-engine/background-removal stack for
+                          its AI-Product preview — see §6's caveat.
+    products/             ProductsTable, VariantDetail (dropdown + gallery),
+                          ProductGenerateButton
+    rules/                RulesClient — multi-condition editor
+    creatives/             CreativesClient — scope selector + grid + ZIP
+    ui/                    shadcn primitives + EmptyState/StatusBadge (this
+                          project's own small design-system additions)
+    brand/                CraftifyLogo / CraftifyMark (inline SVG, no asset file)
+  lib/
+    shopify.ts             GraphQL client — full variant + option-name fetch
+    shopify-sync.ts        Sync orchestration, incremental diffing, auto-enqueue
+    shopify-token.ts       Token exchange, refresh, shopifyFetch()
+    template-resolver.ts   Multi-condition rule matching
+    compositor.ts          The actual @napi-rs/canvas renderer
+    generation-queue.ts    enqueueGeneration, processBatch, processGenerationJob,
+                          runJob — the whole pipeline, see §7
+    creatives.ts            recordCreative() — dual-write, see §7
+    queues.ts               BullMQ Queue wrappers (2 live queues: generation, productSync)
+    product-layer-engine.ts, background-removal/, image-extend/
+                          Still-wired-in AI stack for the AI-Product template
+                          mode and the live editor preview — not dead code,
+                          just not part of the v2 feature surface
+  workers/
+    catalog-worker.ts     The DigitalOcean process — BullMQ workers + DB-poll
+                          loop + stuck-job recovery. Deploys manually, see §2.
+supabase/
+  *.sql                   Migrations, run by hand, in order — see §9
+docs/
+  PROJECT_ARCHITECTURE.md This file
+```
+
+---
+
+## 12. Hard-won lessons (read before repeating them)
+
+- **A worker that "completes" a job proves nothing about correctness.**
+  `generation_jobs.status = 'skipped'` exists specifically because a stale
+  worker deployment reported 303 jobs "completed" while a rule-matching
+  change meant zero creatives were actually produced. Verify output (row
+  counts in `generated_creatives`, actual Cloudinary URLs), not just status.
+- **An empty table returning 0 rows to the anon key proves nothing about
+  RLS.** Two separate RLS leaks (migrations 001, 004) were only caught by
+  seeding a real row and re-checking — always test policies with data present.
+- **Session/embedded-app behaviour can't be verified by reading code alone.**
+  The App Bridge loading order and the `shop`/`host` param-dropping bug were
+  only found by reading the actual browser console inside the Shopify admin
+  iframe. If a fix "should" work per the code but the merchant reports it
+  doesn't, ask for the console output before iterating further.
+- **Pasted specs (from any source, including product docs) may assume schema
+  that doesn't exist.** Several rounds this session included a detailed
+  pseudocode spec assuming columns/tables (`products.options` jsonb,
+  `generation_jobs.image_id` as a new addition when it already existed) that
+  turned out to be wrong on inspection. Always verify against the live
+  schema before implementing a pasted plan literally.
+- **Two schedulers, one pipeline** (§7) — a performance or correctness fix
+  applied to only one of `processBatch`/`processGenerationJob` silently
+  doesn't apply to jobs the other path claims first.
