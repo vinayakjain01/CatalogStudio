@@ -91,6 +91,12 @@ function buildRow(
   currency: string,
   domain: string
 ): FeedRow | null {
+  // In-Stock Only: a sold-out variant has no row in the feed at all — not
+  // "out of stock", absent entirely. The query below already filters these
+  // out at the DB level; this is a defensive second guard so a row can never
+  // slip through if buildRow is ever called from somewhere that doesn't.
+  if (variant.is_sold_out) return null
+
   const creatives: any[] = product.generated_creatives ?? []
 
   // Creative for THIS variant wins; a product-level creative is the fallback.
@@ -134,7 +140,10 @@ function buildRow(
     title,
     // Meta requires a non-empty description; the title is a safe stand-in.
     description: stripHtml(product.description) || title,
-    availability: variant.is_sold_out ? 'out of stock' : 'in stock',
+    // Only in-stock variants ever reach this line (see the guard above and
+    // the query filter below), so this is always 'in stock' — kept as an
+    // explicit literal, not a ternary on a condition that can't be true.
+    availability: 'in stock',
     condition: 'new',
     price: `${(onSale ? compareAt : price).toFixed(2)} ${currency}`,
     sale_price: onSale ? `${price.toFixed(2)} ${currency}` : '',
@@ -212,6 +221,7 @@ export async function GET(
               )
             `)
             .eq('store_id', storeId)
+            .eq('is_sold_out', false)
             .eq('products.status', 'active')
             .order('id', { ascending: true })
             .range(from, from + PAGE - 1)

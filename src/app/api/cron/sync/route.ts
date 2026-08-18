@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { syncStoreProducts } from '@/lib/shopify-sync'
 
+// Matches the other sync routes (shopify/sync, stores/[storeId]/sync): a full
+// sync loops every product for every active store, which the previous
+// incremental-only cron never needed this much headroom for.
+export const dynamic = 'force-dynamic'
+export const maxDuration = 300
+
 function getAdminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -32,7 +38,14 @@ export async function GET(request: NextRequest) {
       const synced = await syncStoreProducts({
         storeId: store.id,
         syncType: 'cron',
-        incremental: true,
+        // Full sync: a sale through the POS/checkout depletes inventory
+        // without necessarily touching product.updated_at, so an incremental
+        // ("only products modified since last sync") sync can miss the exact
+        // stock changes this feature depends on.
+        incremental: false,
+        // Runs autoGenerateRestockedVariants after the sync — catches
+        // restocks the changed-product diff alone would miss.
+        autoEnqueueChanged: true,
         supabase,
       })
       results.push({ store: store.shop_domain, synced })

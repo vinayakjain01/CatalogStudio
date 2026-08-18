@@ -470,6 +470,13 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
               {estimate.softWarn && !estimate.overLimit ? ' (large batch)' : ''}
             </span>
           )}
+          <span className="ml-2 inline-flex items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            In-stock only
+          </span>
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Sold-out variants are skipped during generation and excluded from your feed.
         </p>
         {estimate?.overLimit && (
           <p className="text-xs text-destructive">

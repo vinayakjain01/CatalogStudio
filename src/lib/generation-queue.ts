@@ -104,6 +104,58 @@ export async function collectFilteredProductIds(
   return productIds
 }
 
+/**
+ * In-stock variants (of active products) with no generated_creatives row yet
+ * — newly restocked, or in stock since the store's first sync but never
+ * covered. Used by the daily sync's auto-generate-on-restock check and the
+ * dashboard's feed-coverage stat, so both agree on exactly what "uncovered"
+ * means.
+ *
+ * PostgREST has no server-side anti-join through the JS client — a raw SQL
+ * subquery is not a valid filter value, it can only compare a column against
+ * a literal list — so this fetches both id sets and diffs them in JS. Same
+ * pattern already used for the stale-variant reconciliation in
+ * shopify-sync.ts's replaceProductVariants.
+ */
+export async function findUncoveredInStockVariants(
+  storeId: string,
+  supabase: SupabaseClient
+): Promise<Array<{ id: string; product_id: string }>> {
+  const PAGE = 1000
+
+  const inStock: Array<{ id: string; product_id: string }> = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('product_variants')
+      .select('id, product_id, products!inner(status)')
+      .eq('store_id', storeId)
+      .eq('is_sold_out', false)
+      .eq('products.status', 'active')
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`[findUncoveredInStockVariants] in-stock lookup failed: ${error.message}`)
+    if (!data || data.length === 0) break
+    inStock.push(...(data as any[]).map(v => ({ id: v.id, product_id: v.product_id })))
+    if (data.length < PAGE) break
+  }
+  if (inStock.length === 0) return []
+
+  const covered = new Set<string>()
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('generated_creatives')
+      .select('variant_id')
+      .eq('store_id', storeId)
+      .not('variant_id', 'is', null)
+      .range(from, from + PAGE - 1)
+    if (error) throw new Error(`[findUncoveredInStockVariants] coverage lookup failed: ${error.message}`)
+    if (!data || data.length === 0) break
+    for (const row of data as any[]) covered.add(row.variant_id)
+    if (data.length < PAGE) break
+  }
+
+  return inStock.filter(v => !covered.has(v.id))
+}
+
 export function getAdminClient(): SupabaseClient {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -179,6 +231,7 @@ interface VariantRow {
   option1: string | null
   option2: string | null
   option3: string | null
+  is_sold_out: boolean | null
 }
 
 export interface GenerationRow {
@@ -229,20 +282,39 @@ export async function computeGenerationRows(
   // that into `variants = []` — every product then silently took the
   // no-variant legacy branch below, which is why "all variants + all poses"
   // only ever rendered one fallback image per product on a large catalog.
-  let variants = await fetchAllChunked<VariantRow>(
+  const allVariants = await fetchAllChunked<VariantRow>(
     productIds,
     'variant lookup',
     idChunk => supabase
       .from('product_variants')
-      .select('id, product_id, shopify_variant_id, option1, option2, option3')
+      .select('id, product_id, shopify_variant_id, option1, option2, option3, is_sold_out')
       .in('product_id', idChunk)
       .order('position', { ascending: true })
   )
+
+  // Products with at least one synced variant row, in or out of stock — needed
+  // below to tell "this product never had variants synced" (legacy
+  // product-level path) apart from "it has variants, every one sold out"
+  // (zero jobs — see the is_sold_out filter right after this).
+  const productsWithVariantRows = new Set(allVariants.map(v => v.product_id))
+
+  // In-Stock Only: a sold-out variant is never generated and never reaches the
+  // feed (product_variants.is_sold_out is generated from inventory_quantity +
+  // inventory_policy — see migration 002 — so this already accounts for
+  // "continue" inventory policy variants that oversell and are never sold out
+  // even at 0 stock). Filtered before the option-value scope so
+  // filterVariantsByOption never needs to reason about stock itself.
+  let variants = allVariants.filter(v => !v.is_sold_out)
 
   // ── Scope: specific option ────────────────────────────────────────────────
   if (variantOption && variantOption.name && variantOption.value) {
     variants = await filterVariantsByOption(variants, productIds, variantOption, supabase)
   }
+
+  console.log(
+    `[computeGenerationRows] ${variants.length} in-stock variant(s) matched across ` +
+    `${productIds.length} product(s) — sold-out variants excluded`
+  )
 
   const variantsByProduct = new Map<string, typeof variants>()
   for (const row of variants) {
@@ -269,13 +341,17 @@ export async function computeGenerationRows(
     // kept as the original single job, image chosen at render time) —
     // preserving exact prior behaviour for a path real stores no longer hit.
     if (!productVariants || productVariants.length === 0) {
-      // variantOption filtering removes ALL variants of every product that
-      // doesn't have variant rows to begin with — those never reach this
-      // branch. But a product WITH variants that all got filtered OUT by
-      // variantOption must not fall back to a variant-less product-level job;
-      // that would silently ignore the filter. Only products absent from
-      // variantsByProduct (never had rows) take this path.
-      if (variantOption) continue
+      // Two different reasons a product can have no rows here, and only one
+      // of them should fall back to a product-level job:
+      //  - It never had variant rows synced at all (pre-v2 data) → legacy
+      //    product-level job, same as always.
+      //  - It DOES have variant rows, but every one was excluded — either
+      //    sold out, or filtered out by variantOption — → zero jobs. A
+      //    sold-out product must never fall back to a product-level job;
+      //    that would silently generate (and feed) a creative for a product
+      //    that is entirely out of stock, defeating the whole point of the
+      //    is_sold_out filter above.
+      if (variantOption || productsWithVariantRows.has(pid)) continue
       rows.push({
         store_id: storeId,
         product_id: pid,

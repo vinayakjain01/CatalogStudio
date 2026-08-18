@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'
 import { getActiveStore } from '@/lib/active-store'
+import { findUncoveredInStockVariants } from '@/lib/generation-queue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ShoppingBag, Layers, ImageIcon, Store } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
@@ -61,14 +62,39 @@ export default async function DashboardPage({
     ? supabase.from('stores').select('*').eq('id', activeStoreId).single()
     : Promise.resolve({ data: null })
 
-  const [[pc, tc, cc], { data: activeStore }] = await Promise.all([
+  // Feed coverage: how much of what will actually show in the Meta feed (only
+  // in-stock variants of active products — see the In-Stock Only feed rule)
+  // already has a generated creative. The "covered" half can't be a plain
+  // count query — PostgREST has no distinct-count-across-a-join filter — so
+  // it reuses the same uncovered-variant lookup the sync's restock check
+  // uses, and derives covered = total - uncovered.
+  const totalInStockQuery = activeStoreId
+    ? supabase
+        .from('product_variants')
+        .select('id, products!inner(status)', { count: 'exact', head: true })
+        .eq('store_id', activeStoreId)
+        .eq('is_sold_out', false)
+        .eq('products.status', 'active')
+    : Promise.resolve({ count: 0 })
+
+  const uncoveredQuery = activeStoreId
+    ? findUncoveredInStockVariants(activeStoreId, supabase).catch(() => [])
+    : Promise.resolve([] as Array<{ id: string; product_id: string }>)
+
+  const [[pc, tc, cc], { data: activeStore }, totalInStockResult, uncoveredInStock] = await Promise.all([
     countQueries,
     activeStoreQuery,
+    totalInStockQuery,
+    uncoveredQuery,
   ])
 
   const productCount  = pc.count  || 0
   const templateCount = tc.count  || 0
   const creativeCount = cc.count  || 0
+
+  const totalInStock    = totalInStockResult.count || 0
+  const uncoveredCount  = uncoveredInStock.length
+  const coveredInStock  = Math.max(0, totalInStock - uncoveredCount)
 
   const stats = [
     { label: 'Connected stores',    value: storeList.length, icon: Store },
@@ -99,6 +125,32 @@ export default async function DashboardPage({
           </Card>
         ))}
       </div>
+
+      {activeStore && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Feed Coverage
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-semibold">
+              {coveredInStock.toLocaleString('en-IN')}
+              <span className="text-sm font-normal text-muted-foreground">
+                /{totalInStock.toLocaleString('en-IN')}
+              </span>
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              In-stock variants with a creative
+            </p>
+            {uncoveredCount > 0 && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                {uncoveredCount.toLocaleString('en-IN')} still need generation
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {activeStore && (
         <Card>

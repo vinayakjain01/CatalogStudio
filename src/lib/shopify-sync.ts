@@ -1,8 +1,9 @@
 import { SupabaseClient } from '@supabase/supabase-js'
+import { randomUUID } from 'crypto'
 import { chunkArray } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { createShopifyClient, ShopifyProduct } from '@/lib/shopify'
-import { enqueueGeneration } from '@/lib/generation-queue'
+import { enqueueGeneration, findUncoveredInStockVariants } from '@/lib/generation-queue'
 
 type StoreRow = {
   id: string
@@ -257,7 +258,84 @@ async function syncProducts(
     }
   }
 
+  // In-Stock Only: catches restocks that changedProductIds' fingerprint diff
+  // misses — a product sold out since before this feature existed (never had
+  // a creative, hasn't "changed" since) — as a backstop alongside the
+  // change-driven enqueue above.
+  if (autoEnqueueChanged) {
+    await autoGenerateRestockedVariants(store.id, supabase)
+  }
+
   return productRows.length
+}
+
+/** Cap per sync cycle — avoids flooding the queue on a big restock event. */
+const RESTOCK_ENQUEUE_LIMIT = 500
+
+/**
+ * Find in-stock variants with no generated creative AND no generation job
+ * already in flight for them, then queue generation so they reach the feed as
+ * soon as possible.
+ */
+async function autoGenerateRestockedVariants(
+  storeId: string,
+  supabase: SupabaseClient
+): Promise<void> {
+  let uncovered: Array<{ id: string; product_id: string }>
+  try {
+    uncovered = await findUncoveredInStockVariants(storeId, supabase)
+  } catch (err: any) {
+    console.error('[sync] restock check failed:', err.message)
+    return
+  }
+  if (uncovered.length === 0) return
+
+  // Exclude variants with a job already pending/processing — without this, a
+  // restock queued today but not yet drained gets queued AGAIN by tomorrow's
+  // sync, since it still has no generated_creatives row until the first job
+  // actually completes.
+  const { data: inFlight, error: inFlightError } = await supabase
+    .from('generation_jobs')
+    .select('variant_id')
+    .eq('store_id', storeId)
+    .in('status', ['pending', 'processing'])
+    .not('variant_id', 'is', null)
+
+  if (inFlightError) {
+    console.error('[sync] restock check: in-flight job lookup failed:', inFlightError.message)
+    return
+  }
+
+  const inFlightIds = new Set((inFlight ?? []).map((j: any) => j.variant_id))
+  const stillUncovered = uncovered.filter(v => !inFlightIds.has(v.id))
+  if (stillUncovered.length === 0) return
+
+  const capped = stillUncovered.slice(0, RESTOCK_ENQUEUE_LIMIT)
+  const productIds = [...new Set(capped.map(v => v.product_id))]
+
+  console.log(
+    `[sync] ${stillUncovered.length} in-stock variant(s) with no creative — ` +
+    `queuing ${capped.length} across ${productIds.length} product(s)` +
+    (stillUncovered.length > capped.length
+      ? ` (${stillUncovered.length - capped.length} more will be picked up next sync)`
+      : '')
+  )
+
+  try {
+    await enqueueGeneration(
+      {
+        storeId,
+        productIds,
+        batchId: `restock-${randomUUID()}`,
+        imageScope: 'first',   // first pose only on auto-restock
+        basePriority: 200,     // lower than user-triggered generates
+      },
+      supabase
+    )
+  } catch (err: any) {
+    // Non-fatal — sync must not fail because generation is temporarily unavailable.
+    console.error('[sync] restock generation enqueue failed:', err.message)
+  }
 }
 
 async function loadExistingProducts(
