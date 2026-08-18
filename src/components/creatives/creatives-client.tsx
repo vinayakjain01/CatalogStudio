@@ -36,6 +36,7 @@ interface BatchCounts {
 
 interface GenerationEstimate {
   count: number
+  variants: number
   products: number
   overLimit: boolean
   softWarn: boolean
@@ -467,6 +468,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                 : 'ml-1 font-medium text-foreground'
             }>
               — {estimate.count.toLocaleString()} job{estimate.count === 1 ? '' : 's'}
+              {' '}({estimate.variants.toLocaleString()} variant{estimate.variants === 1 ? '' : 's'})
               {estimate.softWarn && !estimate.overLimit ? ' (large batch)' : ''}
             </span>
           )}
@@ -476,7 +478,8 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           </span>
         </p>
         <p className="text-xs text-muted-foreground">
-          Sold-out variants are skipped during generation and excluded from your feed.
+          Sold-out variants are skipped during generation and excluded from your feed. A job
+          is one image; the variant count is what to compare against Feed Coverage on the dashboard.
         </p>
         {estimate?.overLimit && (
           <p className="text-xs text-destructive">

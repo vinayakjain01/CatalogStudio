@@ -70,8 +70,15 @@ export async function GET(request: NextRequest) {
       admin
     )
 
+    // Distinct variants, not just job count: "All poses" fans out several
+    // jobs per variant, so `count` alone can't be compared against the
+    // dashboard's Feed Coverage card, which counts VARIANTS. Surfacing both
+    // lets the two numbers actually be checked against each other.
+    const distinctVariants = new Set(rows.map(r => r.variant_id).filter(Boolean)).size
+
     return NextResponse.json({
       count: rows.length,
+      variants: distinctVariants,
       products: productIds.length,
       overLimit: rows.length > MAX_JOBS_PER_ENQUEUE,
       softWarn: rows.length > SOFT_WARN_JOBS,

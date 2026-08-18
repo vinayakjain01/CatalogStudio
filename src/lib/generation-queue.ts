@@ -29,6 +29,21 @@ import type { CompositorBundle } from '@/types/product-layer'
  */
 const IN_QUERY_CHUNK_SIZE = 200
 
+/**
+ * Supabase/PostgREST caps rows returned per request (project default is
+ * 1,000, via the API's "max rows" setting) regardless of how the `.in()` list
+ * was chunked. A chunk of 200 PRODUCTS can still return many more than 1,000
+ * VARIANT or IMAGE rows — one row per product is not the shape being
+ * fetched — so chunking the input ids alone does not bound the output size.
+ * Hit in production: with only IN_QUERY_CHUNK_SIZE applied, a 741-product
+ * store returned a small, effectively arbitrary slice of its variants (no
+ * error, no warning — PostgREST just returns up to its row cap and stops),
+ * so "all variants + all poses" silently skipped most products **and**
+ * specific in-stock variants within products it did reach, depending on
+ * where in the untruncated-but-uncapped result set they happened to fall.
+ */
+const RESULT_PAGE_SIZE = 1000
+
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
@@ -36,10 +51,19 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 /**
- * Run a `.in()`-based query across `ids` in chunks of IN_QUERY_CHUNK_SIZE,
- * concatenating the results. Throws on the first chunk that errors — a
- * partial result set here silently drops products from the fan-out, which is
- * strictly worse than failing the whole enqueue loudly.
+ * Run a `.in()`-based query across `ids` in chunks of IN_QUERY_CHUNK_SIZE
+ * (keeps the request URL short), paginating each chunk's result in pages of
+ * RESULT_PAGE_SIZE (keeps the response from being silently capped) — both are
+ * needed; chunking the input alone does not bound the output. Throws on the
+ * first page that errors — a partial result set here silently drops products
+ * from the fan-out, which is strictly worse than failing the whole enqueue
+ * loudly.
+ *
+ * `fetchPage`'s query MUST include a fully deterministic `.order(...)` (a
+ * unique column, or a non-unique column plus a unique tiebreaker) — `.range()`
+ * pagination re-runs the query per page, and without a stable sort Postgres
+ * is free to return rows in a different order each time, which can duplicate
+ * or silently drop rows across page boundaries.
  */
 async function fetchAllChunked<T>(
   ids: string[],
@@ -47,13 +71,17 @@ async function fetchAllChunked<T>(
   // Supabase query builders are PromiseLike (implement .then()) but not
   // strict Promise instances (no .catch()/.finally()) — same mismatch hit in
   // /api/generate/cancel/route.ts's `ops` array.
-  fetchChunk: (idChunk: string[]) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+  fetchPage: (idChunk: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
 ): Promise<T[]> {
   const results: T[] = []
   for (const idChunk of chunk(ids, IN_QUERY_CHUNK_SIZE)) {
-    const { data, error } = await fetchChunk(idChunk)
-    if (error) throw new Error(`[${label}] chunked query failed: ${error.message}`)
-    results.push(...(data ?? []))
+    for (let from = 0; ; from += RESULT_PAGE_SIZE) {
+      const { data, error } = await fetchPage(idChunk, from, from + RESULT_PAGE_SIZE - 1)
+      if (error) throw new Error(`[${label}] chunked query failed: ${error.message}`)
+      const page = data ?? []
+      results.push(...page)
+      if (page.length < RESULT_PAGE_SIZE) break
+    }
   }
   return results
 }
@@ -93,7 +121,9 @@ export async function collectFilteredProductIds(
     else if (filter?.type === 'vendor'       && filter.value) q = q.eq('vendor', filter.value)
     else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
 
-    const { data: products, error } = await q
+    // .range() pagination needs a deterministic order — without one, Postgres
+    // is free to return rows in a different order on each page's request.
+    const { data: products, error } = await q.order('id', { ascending: true })
     if (error) throw new Error(error.message)
     if (!products || products.length === 0) break
     productIds.push(...products.map((p: any) => p.id))
@@ -131,6 +161,7 @@ export async function findUncoveredInStockVariants(
       .eq('store_id', storeId)
       .eq('is_sold_out', false)
       .eq('products.status', 'active')
+      .order('id', { ascending: true })
       .range(from, from + PAGE - 1)
     if (error) throw new Error(`[findUncoveredInStockVariants] in-stock lookup failed: ${error.message}`)
     if (!data || data.length === 0) break
@@ -146,6 +177,7 @@ export async function findUncoveredInStockVariants(
       .select('variant_id')
       .eq('store_id', storeId)
       .not('variant_id', 'is', null)
+      .order('id', { ascending: true })
       .range(from, from + PAGE - 1)
     if (error) throw new Error(`[findUncoveredInStockVariants] coverage lookup failed: ${error.message}`)
     if (!data || data.length === 0) break
@@ -285,11 +317,16 @@ export async function computeGenerationRows(
   const allVariants = await fetchAllChunked<VariantRow>(
     productIds,
     'variant lookup',
-    idChunk => supabase
+    (idChunk, from, to) => supabase
       .from('product_variants')
       .select('id, product_id, shopify_variant_id, option1, option2, option3, is_sold_out')
       .in('product_id', idChunk)
+      // id as a tiebreaker: position repeats across different products, and
+      // .range() pagination needs a fully deterministic order to not
+      // duplicate or drop rows between pages.
       .order('position', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
   )
 
   // Products with at least one synced variant row, in or out of stock — needed
@@ -503,10 +540,12 @@ async function filterVariantsByOption<
   const products = await fetchAllChunked<ProductOptionNames>(
     productIds,
     'option-name lookup',
-    idChunk => supabase
+    (idChunk, from, to) => supabase
       .from('products')
       .select('id, option1_name, option2_name, option3_name')
       .in('id', idChunk)
+      .order('id', { ascending: true })
+      .range(from, to)
   )
 
   const wantName = option.name.trim().toLowerCase()
@@ -537,11 +576,13 @@ async function loadImagesByProduct(
   const rows = await fetchAllChunked<ImageRow>(
     productIds,
     'image lookup',
-    idChunk => supabase
+    (idChunk, from, to) => supabase
       .from('product_images')
       .select('id, product_id, position, is_primary, variant_ids')
       .in('product_id', idChunk)
       .order('position', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
   )
 
   const byProduct = new Map<string, ImageRow[]>()

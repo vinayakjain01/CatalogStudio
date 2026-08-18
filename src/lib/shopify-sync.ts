@@ -482,21 +482,33 @@ async function replaceProductVariants(
   const staleIds: string[] = []
 
   for (const chunk of chunkArray(productIds, 200)) {
-    const { data: existing, error } = await measureAsync(
-      'supabase.product_variants.reconcile_lookup',
-      () => supabase
-        .from('product_variants')
-        .select('id, product_id, shopify_variant_id')
-        .in('product_id', chunk),
-      { rows: chunk.length, storeId }
-    )
-    if (error) throw new Error(error.message)
+    // Paginated within the chunk, not just one call: Supabase caps rows
+    // returned per request (project default 1,000) regardless of how the
+    // `.in()` list was chunked, and a 200-product chunk can easily carry more
+    // variant rows than that on a catalog with 10+ variants/product. An
+    // unpaginated read here would silently see only part of "existing" and
+    // under-reconcile — some genuinely stale variants just never get deleted.
+    for (let from = 0; ; from += 1000) {
+      const { data: existing, error } = await measureAsync(
+        'supabase.product_variants.reconcile_lookup',
+        () => supabase
+          .from('product_variants')
+          .select('id, product_id, shopify_variant_id')
+          .in('product_id', chunk)
+          .order('id', { ascending: true })
+          .range(from, from + 1000 - 1),
+        { rows: chunk.length, storeId }
+      )
+      if (error) throw new Error(error.message)
 
-    for (const row of existing ?? []) {
-      const keep = seenByProductId.get((row as any).product_id)
-      if (keep && !keep.includes(String((row as any).shopify_variant_id))) {
-        staleIds.push((row as any).id)
+      for (const row of existing ?? []) {
+        const keep = seenByProductId.get((row as any).product_id)
+        if (keep && !keep.includes(String((row as any).shopify_variant_id))) {
+          staleIds.push((row as any).id)
+        }
       }
+
+      if (!existing || existing.length < 1000) break
     }
   }
 
@@ -542,24 +554,36 @@ async function loadExistingVariantPrints(
   const byProduct = new Map<string, any[]>()
 
   for (const ids of chunkArray(productIds, 500)) {
-    const { data, error } = await measureAsync(
-      'supabase.product_variants.existing_lookup',
-      () => supabase
-        .from('product_variants')
-        .select('product_id, shopify_variant_id, price, compare_at_price, inventory_quantity, inventory_policy')
-        .in('product_id', ids),
-      { rows: ids.length }
-    )
-    // A missing table (migration 002 not applied yet) must not break syncing —
-    // change detection just falls back to the product-level comparison.
-    if (error) {
-      console.warn('[sync] variant fingerprint lookup skipped:', error.message)
-      return new Map()
-    }
-    for (const row of data || []) {
-      const list = byProduct.get((row as any).product_id) ?? []
-      list.push(row)
-      byProduct.set((row as any).product_id, list)
+    // Paginated within the chunk: product_variants returns many rows per
+    // product_id, so 500 products can carry well over Supabase's per-request
+    // row cap (default 1,000). An unpaginated read here silently drops some
+    // products from the map entirely, and a missing entry compares as
+    // "changed" below — not incorrect, but it re-enqueues generation for
+    // products that may not have actually changed.
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await measureAsync(
+        'supabase.product_variants.existing_lookup',
+        () => supabase
+          .from('product_variants')
+          .select('id, product_id, shopify_variant_id, price, compare_at_price, inventory_quantity, inventory_policy')
+          .in('product_id', ids)
+          .order('product_id', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, from + 1000 - 1),
+        { rows: ids.length }
+      )
+      // A missing table (migration 002 not applied yet) must not break syncing —
+      // change detection just falls back to the product-level comparison.
+      if (error) {
+        console.warn('[sync] variant fingerprint lookup skipped:', error.message)
+        return new Map()
+      }
+      for (const row of data || []) {
+        const list = byProduct.get((row as any).product_id) ?? []
+        list.push(row)
+        byProduct.set((row as any).product_id, list)
+      }
+      if (!data || data.length < 1000) break
     }
   }
 
