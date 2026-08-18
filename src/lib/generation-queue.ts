@@ -17,6 +17,93 @@ import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
 import type { CompositorBundle } from '@/types/product-layer'
 
+/**
+ * PostgREST puts every `.in()` value into the request URL, not the body.
+ * Empirically verified against this project's own Supabase instance: 300 UUIDs
+ * (~11.8k char URL) succeeds, ~400+ returns a clean HTTP 400. A store with
+ * more products/variants than this chunk size used to silently fall back to
+ * `variants = []` (see the `console.warn`-and-continue this replaced), which
+ * is the root cause of "all variants + all poses" only ever rendering one
+ * fallback image per product — every product silently took the no-variant
+ * legacy path once the ID list crossed this limit.
+ */
+const IN_QUERY_CHUNK_SIZE = 200
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+/**
+ * Run a `.in()`-based query across `ids` in chunks of IN_QUERY_CHUNK_SIZE,
+ * concatenating the results. Throws on the first chunk that errors — a
+ * partial result set here silently drops products from the fan-out, which is
+ * strictly worse than failing the whole enqueue loudly.
+ */
+async function fetchAllChunked<T>(
+  ids: string[],
+  label: string,
+  // Supabase query builders are PromiseLike (implement .then()) but not
+  // strict Promise instances (no .catch()/.finally()) — same mismatch hit in
+  // /api/generate/cancel/route.ts's `ops` array.
+  fetchChunk: (idChunk: string[]) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>
+): Promise<T[]> {
+  const results: T[] = []
+  for (const idChunk of chunk(ids, IN_QUERY_CHUNK_SIZE)) {
+    const { data, error } = await fetchChunk(idChunk)
+    if (error) throw new Error(`[${label}] chunked query failed: ${error.message}`)
+    results.push(...(data ?? []))
+  }
+  return results
+}
+
+export interface ProductFilter {
+  type?: 'tag' | 'vendor' | 'product_type'
+  value?: string
+}
+
+/**
+ * Every active product ID for a store matching an optional single-field
+ * filter. Paginated at 1000/page (Supabase's default row cap per request).
+ *
+ * Shared by /api/generate/enqueue (the real submit) and /api/generate/estimate
+ * (the pre-submit preview) — both need the identical product set a given
+ * filter resolves to, or the preview count could disagree with what actually
+ * gets enqueued.
+ */
+export async function collectFilteredProductIds(
+  storeId: string,
+  filter: ProductFilter | null | undefined,
+  supabase: SupabaseClient
+): Promise<string[]> {
+  const productIds: string[] = []
+  const PAGE = 1000
+  let from = 0
+
+  while (true) {
+    let q = supabase
+      .from('products')
+      .select('id')
+      .eq('store_id', storeId)
+      .eq('status', 'active')
+      .range(from, from + PAGE - 1)
+
+    if (filter?.type === 'tag'          && filter.value) q = q.contains('tags', [filter.value])
+    else if (filter?.type === 'vendor'       && filter.value) q = q.eq('vendor', filter.value)
+    else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
+
+    const { data: products, error } = await q
+    if (error) throw new Error(error.message)
+    if (!products || products.length === 0) break
+    productIds.push(...products.map((p: any) => p.id))
+    if (products.length < PAGE) break
+    from += PAGE
+  }
+
+  return productIds
+}
+
 export function getAdminClient(): SupabaseClient {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -68,34 +155,66 @@ export interface EnqueueArgs {
  * Above this, a single enqueue call is rejected rather than silently accepted.
  *
  * Fanning out per image multiplies job count by however many photos a variant
- * has: a catalog with ~9.5k variants and ~5 images/product can reach tens of
- * thousands of rows from one click of "All variants + All poses + All
- * products". That is real, measured behaviour on this codebase's own test
- * store, not a hypothetical — hence a hard ceiling rather than just a comment.
+ * has: measured directly against this store's own catalog, "All variants +
+ * All poses + All products" computes to ~47,570 jobs — comfortably under this
+ * ceiling but well above the 5,000 this was previously set to (which existed
+ * specifically to block that exact click). Raised because that combination is
+ * a real, intentional merchant action, not a mistake to guard against; the
+ * ceiling now exists only to catch genuinely pathological input.
  */
-export const MAX_JOBS_PER_ENQUEUE = 5000
+export const MAX_JOBS_PER_ENQUEUE = 50000
 
 /**
- * Enqueue one generation job per (variant, image) — or per product, for a
- * product with no synced variants. Idempotent-ish: callers that re-enqueue the
- * same variant+image create a new job row; the worker upserts the resulting
- * creative by (variant, image, template) [or (product, template,
- * creative_type) for the legacy product-level path], so duplicates collapse
- * at write time rather than accumulating.
+ * Above this (but under MAX_JOBS_PER_ENQUEUE), the enqueue still proceeds —
+ * this only changes what gets logged/surfaced, so a merchant clicking "All +
+ * All" on a large catalog gets a heads-up rather than a silent multi-hour
+ * queue.
  */
-export async function enqueueGeneration(
-  {
-    storeId, productIds, creativeType = 'default', batchId, basePriority = 100,
-    variantOption = null, imageScope = 'first',
-  }: EnqueueArgs,
-  supabase: SupabaseClient = getAdminClient()
-): Promise<number> {
-  if (productIds.length === 0) return 0
+export const SOFT_WARN_JOBS = 10000
 
-  console.log(
-    `[enqueueGeneration] START storeId=${storeId} products=${productIds.length} ` +
-    `batchId=${batchId ?? 'none'} variantOption=${variantOption ? `${variantOption.name}:${variantOption.value}` : 'none'} imageScope=${imageScope}`
-  )
+interface VariantRow {
+  id: string
+  product_id: string
+  shopify_variant_id: string
+  option1: string | null
+  option2: string | null
+  option3: string | null
+}
+
+export interface GenerationRow {
+  store_id: string
+  product_id: string
+  variant_id?: string
+  image_id?: string
+  creative_type: string
+  status: string
+  batch_id: string | null
+}
+
+export interface ComputeRowsArgs {
+  storeId: string
+  productIds: string[]
+  creativeType?: string
+  batchId?: string | null
+  variantOption?: { name: string; value: string } | null
+  imageScope?: 'all' | 'first'
+}
+
+/**
+ * The exact (variant, image) fan-out a given scope produces. Shared between
+ * the real enqueue below and the /api/generate/estimate endpoint, so the
+ * "Will generate: N jobs" preview a merchant sees before clicking Generate is
+ * the same number enqueueGeneration will actually insert — not a rough guess
+ * computed a second, different way.
+ */
+export async function computeGenerationRows(
+  {
+    storeId, productIds, creativeType = 'default', batchId = null,
+    variantOption = null, imageScope = 'first',
+  }: ComputeRowsArgs,
+  supabase: SupabaseClient
+): Promise<GenerationRow[]> {
+  if (productIds.length === 0) return []
 
   // v2 fans out per VARIANT: each variant carries its own price, stock and
   // sold-out state, all of which appear in the creative's dynamic fields and
@@ -104,17 +223,21 @@ export async function enqueueGeneration(
   //
   // Products with no variant rows still get a single product-level job, so a
   // catalog that has not been re-synced since the variant migration keeps working.
-  const { data: variantRows, error: variantError } = await supabase
-    .from('product_variants')
-    .select('id, product_id, shopify_variant_id, option1, option2, option3')
-    .in('product_id', productIds)
-    .order('position', { ascending: true })
-
-  if (variantError) {
-    console.warn('[enqueueGeneration] variant lookup failed, falling back to product-level jobs:', variantError.message)
-  }
-
-  let variants = variantRows ?? []
+  //
+  // Chunked: an un-chunked .in() over a large productIds list failed outright
+  // above ~300-400 UUIDs, and the previous console.warn-and-continue swallowed
+  // that into `variants = []` — every product then silently took the
+  // no-variant legacy branch below, which is why "all variants + all poses"
+  // only ever rendered one fallback image per product on a large catalog.
+  let variants = await fetchAllChunked<VariantRow>(
+    productIds,
+    'variant lookup',
+    idChunk => supabase
+      .from('product_variants')
+      .select('id, product_id, shopify_variant_id, option1, option2, option3')
+      .in('product_id', idChunk)
+      .order('position', { ascending: true })
+  )
 
   // ── Scope: specific option ────────────────────────────────────────────────
   if (variantOption && variantOption.name && variantOption.value) {
@@ -136,15 +259,7 @@ export async function enqueueGeneration(
     ? await loadImagesByProduct(Array.from(variantsByProduct.keys()), supabase)
     : new Map<string, ImageRow[]>()
 
-  const rows: Array<{
-    store_id: string
-    product_id: string
-    variant_id?: string
-    image_id?: string
-    creative_type: string
-    status: string
-    batch_id: string | null
-  }> = []
+  const rows: GenerationRow[] = []
 
   for (const pid of productIds) {
     const productVariants = variantsByProduct.get(pid)
@@ -189,6 +304,36 @@ export async function enqueueGeneration(
     }
   }
 
+  return rows
+}
+
+/**
+ * Enqueue one generation job per (variant, image) — or per product, for a
+ * product with no synced variants. Idempotent-ish: callers that re-enqueue the
+ * same variant+image create a new job row; the worker upserts the resulting
+ * creative by (variant, image, template) [or (product, template,
+ * creative_type) for the legacy product-level path], so duplicates collapse
+ * at write time rather than accumulating.
+ */
+export async function enqueueGeneration(
+  {
+    storeId, productIds, creativeType = 'default', batchId, basePriority = 100,
+    variantOption = null, imageScope = 'first',
+  }: EnqueueArgs,
+  supabase: SupabaseClient = getAdminClient()
+): Promise<number> {
+  if (productIds.length === 0) return 0
+
+  console.log(
+    `[enqueueGeneration] START storeId=${storeId} products=${productIds.length} ` +
+    `batchId=${batchId ?? 'none'} variantOption=${variantOption ? `${variantOption.name}:${variantOption.value}` : 'none'} imageScope=${imageScope}`
+  )
+
+  const rows = await computeGenerationRows(
+    { storeId, productIds, creativeType, batchId: batchId ?? null, variantOption, imageScope },
+    supabase
+  )
+
   if (rows.length === 0) {
     console.log('[enqueueGeneration] scope matched 0 jobs — nothing to enqueue')
     return 0
@@ -198,6 +343,13 @@ export async function enqueueGeneration(
     throw new Error(
       `This would enqueue ${rows.length.toLocaleString()} jobs, over the ${MAX_JOBS_PER_ENQUEUE.toLocaleString()} limit. ` +
       `Narrow the scope — a specific option value, "First pose only", or a product filter — and try again.`
+    )
+  }
+
+  if (rows.length > SOFT_WARN_JOBS) {
+    console.warn(
+      `[enqueueGeneration] large enqueue: ${rows.length.toLocaleString()} jobs ` +
+      `(soft-warn threshold ${SOFT_WARN_JOBS.toLocaleString()}) storeId=${storeId}`
     )
   }
 
@@ -245,6 +397,13 @@ interface ImageRow {
   variant_ids: string[] | null
 }
 
+interface ProductOptionNames {
+  id: string
+  option1_name: string | null
+  option2_name: string | null
+  option3_name: string | null
+}
+
 /**
  * Narrow a variant list down to the ones matching a named option's value.
  *
@@ -265,20 +424,20 @@ async function filterVariantsByOption<
   option: { name: string; value: string },
   supabase: SupabaseClient
 ): Promise<T[]> {
-  const { data: products, error } = await supabase
-    .from('products')
-    .select('id, option1_name, option2_name, option3_name')
-    .in('id', productIds)
-
-  if (error) {
-    console.warn('[enqueueGeneration] option-name lookup failed, matching value against every position:', error.message)
-  }
+  const products = await fetchAllChunked<ProductOptionNames>(
+    productIds,
+    'option-name lookup',
+    idChunk => supabase
+      .from('products')
+      .select('id, option1_name, option2_name, option3_name')
+      .in('id', idChunk)
+  )
 
   const wantName = option.name.trim().toLowerCase()
   const wantValue = option.value.trim().toLowerCase()
 
   const columnByProduct = new Map<string, 'option1' | 'option2' | 'option3' | null>()
-  for (const p of products ?? []) {
+  for (const p of products) {
     const names = [(p as any).option1_name, (p as any).option2_name, (p as any).option3_name]
     const idx = names.findIndex(n => typeof n === 'string' && n.trim().toLowerCase() === wantName)
     columnByProduct.set((p as any).id, idx === 0 ? 'option1' : idx === 1 ? 'option2' : idx === 2 ? 'option3' : null)
@@ -299,19 +458,18 @@ async function loadImagesByProduct(
   productIds: string[],
   supabase: SupabaseClient
 ): Promise<Map<string, ImageRow[]>> {
-  const { data, error } = await supabase
-    .from('product_images')
-    .select('id, product_id, position, is_primary, variant_ids')
-    .in('product_id', productIds)
-    .order('position', { ascending: true })
-
-  if (error) {
-    console.warn('[enqueueGeneration] image lookup failed, jobs will carry no image_id:', error.message)
-    return new Map()
-  }
+  const rows = await fetchAllChunked<ImageRow>(
+    productIds,
+    'image lookup',
+    idChunk => supabase
+      .from('product_images')
+      .select('id, product_id, position, is_primary, variant_ids')
+      .in('product_id', idChunk)
+      .order('position', { ascending: true })
+  )
 
   const byProduct = new Map<string, ImageRow[]>()
-  for (const row of (data ?? []) as ImageRow[]) {
+  for (const row of rows) {
     const list = byProduct.get(row.product_id) ?? []
     list.push(row)
     byProduct.set(row.product_id, list)

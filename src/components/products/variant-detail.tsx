@@ -110,20 +110,25 @@ export function VariantDetail({
   const activeImage =
     shownImages.find(img => img.id === activeImageId) ?? shownImages[0] ?? null
 
-  // Creative for this exact variant beats a product-level one; when the
-  // merchant is looking at a specific image, one made from that image wins.
-  const creative = useMemo(() => {
-    if (!selected) return null
-    return creatives
-      .filter(c => c.variant_id === selected.id || c.variant_id == null)
-      .sort((a, b) => {
-        const img = Number(b.image_id === activeImage?.id) - Number(a.image_id === activeImage?.id)
-        if (img !== 0) return img
-        const exact = Number(b.variant_id === selected.id) - Number(a.variant_id === selected.id)
-        if (exact !== 0) return exact
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      })[0] ?? null
-  }, [creatives, selected, activeImage])
+  // Every creative generated for this exact variant — "All poses" fans out
+  // one job (and so one creative) per image, and a merchant needs to see
+  // every one of them, not just whichever happened to sort first. Falls back
+  // to product-level creatives (variant_id null — the pre-v2/no-variant path)
+  // only when this variant has none of its own.
+  const variantCreatives = useMemo(() => {
+    if (!selected) return []
+    const own = creatives.filter(c => c.variant_id === selected.id)
+    const pool = own.length > 0 ? own : creatives.filter(c => c.variant_id == null)
+    return pool.sort((a, b) => {
+      // Order to match the "Original" pose strip so the two line up visually.
+      const posA = shownImages.findIndex(img => img.id === a.image_id)
+      const posB = shownImages.findIndex(img => img.id === b.image_id)
+      if (posA !== -1 && posB !== -1) return posA - posB
+      if (posA !== -1) return -1
+      if (posB !== -1) return 1
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
+  }, [creatives, selected, shownImages])
 
   if (!selected) {
     return (
@@ -268,37 +273,51 @@ export function VariantDetail({
         <div>
           <div className="mb-2 flex min-h-8 items-center justify-between gap-2">
             <h2 className="truncate text-sm font-medium uppercase tracking-wide text-muted-foreground">
-              Generated creative
+              Generated creatives
             </h2>
-            <ProductGenerateButton
-              productId={productId}
-              storeId={storeId}
-              variantId={selected.id}
-              imageId={activeImage?.id ?? null}
-            />
+            <div className="flex items-center gap-2">
+              {variantCreatives.length > 1 && (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {variantCreatives.length}
+                </span>
+              )}
+              <ProductGenerateButton
+                productId={productId}
+                storeId={storeId}
+                variantId={selected.id}
+                imageId={activeImage?.id ?? null}
+              />
+            </div>
           </div>
 
-          {creative ? (
-            <>
-              <Card className="overflow-hidden">
-                <div className="group relative aspect-square bg-muted">
-                  <img src={creative.url} alt="Generated" className="h-full w-full object-cover" />
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
-                    <a href={creative.url} download target="_blank" rel="noopener noreferrer">
-                      <Button size="sm" variant="secondary">
-                        <Download className="h-3.5 w-3.5" />
-                        Download
-                      </Button>
-                    </a>
-                  </div>
-                </div>
-              </Card>
-              {creative.templates?.name && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Template: {creative.templates.name}
-                </p>
-              )}
-            </>
+          {variantCreatives.length > 0 ? (
+            /* Horizontal strip, not a single image: "All poses" fans out one
+               creative per image, so a variant can have several — showing
+               only the first silently hid the rest of what was generated. */
+            <div className="flex gap-3 overflow-x-auto pb-1">
+              {variantCreatives.map(c => {
+                const poseIndex = shownImages.findIndex(img => img.id === c.image_id)
+                return (
+                  <Card key={c.id} className="w-40 flex-shrink-0 overflow-hidden">
+                    <div className="group relative aspect-square bg-muted">
+                      <img src={c.url} alt="Generated" className="h-full w-full object-cover" />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
+                        <a href={c.url} download target="_blank" rel="noopener noreferrer">
+                          <Button size="icon" variant="secondary" className="h-8 w-8">
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                        </a>
+                      </div>
+                    </div>
+                    <div className="px-2 py-1.5">
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {poseIndex >= 0 ? `Pose ${poseIndex + 1}` : c.templates?.name || 'Creative'}
+                      </p>
+                    </div>
+                  </Card>
+                )
+              })}
+            </div>
           ) : (
             <Card className="border-dashed">
               <CardContent className="flex aspect-square flex-col items-center justify-center text-muted-foreground">

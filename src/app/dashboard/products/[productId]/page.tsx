@@ -25,7 +25,7 @@ export default async function ProductDetailPage({
         inventory_quantity, is_sold_out, option1, option2, option3, position
       ),
       product_images(id, src, cloudinary_url, alt, position, is_primary, variant_ids),
-      generated_creatives(id, url, variant_id, created_at, templates(name))
+      generated_creatives(id, url, variant_id, image_id, created_at, templates(name))
     `)
     .eq('id', productId)
     .single()

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'
-import { getAdminClient, enqueueGeneration } from '@/lib/generation-queue'
+import { getAdminClient, enqueueGeneration, collectFilteredProductIds } from '@/lib/generation-queue'
 import { isRedisEnabled } from '@/lib/redis'
 import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
 import { randomUUID } from 'crypto'
@@ -113,28 +113,11 @@ export async function POST(request: NextRequest) {
   }
 
   // ── 4. Collect product IDs ─────────────────────────────────────────────────
-  const productIds: string[] = []
-  const PAGE = 1000
-  let from = 0
-
-  while (true) {
-    let q = admin
-      .from('products')
-      .select('id')
-      .eq('store_id', storeId)
-      .eq('status', 'active')
-      .range(from, from + PAGE - 1)
-
-    if (filter?.type === 'tag'          && filter.value) q = q.contains('tags', [filter.value])
-    else if (filter?.type === 'vendor'       && filter.value) q = q.eq('vendor', filter.value)
-    else if (filter?.type === 'product_type' && filter.value) q = q.eq('product_type', filter.value)
-
-    const { data: products, error } = await q
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    if (!products || products.length === 0) break
-    productIds.push(...products.map((p: any) => p.id))
-    if (products.length < PAGE) break
-    from += PAGE
+  let productIds: string[]
+  try {
+    productIds = await collectFilteredProductIds(storeId, filter, admin)
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || 'Failed to load products' }, { status: 500 })
   }
 
   if (productIds.length === 0) {

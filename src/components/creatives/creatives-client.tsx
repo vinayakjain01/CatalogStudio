@@ -34,6 +34,15 @@ interface BatchCounts {
   total: number
 }
 
+interface GenerationEstimate {
+  count: number
+  products: number
+  overLimit: boolean
+  softWarn: boolean
+  limit: number
+  softWarnThreshold: number
+}
+
 const FILTER_TYPES = [
   { value: 'all', label: 'All products' },
   { value: 'tag', label: 'By tag' },
@@ -72,6 +81,8 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [variantOptionValue, setVariantOptionValue] = useState('')
   const [imageScope, setImageScope] = useState<'all' | 'first'>('all')
   const [optionNameSuggestions, setOptionNameSuggestions] = useState<string[]>([])
+  const [estimate, setEstimate] = useState<GenerationEstimate | null>(null)
+  const [estimateLoading, setEstimateLoading] = useState(false)
 
   const currentBatchId = useRef<string | null>(null)
   const pollingActive = useRef(false)
@@ -156,6 +167,55 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       .catch(() => {})
     return () => { cancelled = true }
   }, [selectedStore])
+
+  // Live "will generate: N jobs" preview — debounced so switching options
+  // rapidly doesn't fire one request per keystroke. All setState calls happen
+  // inside the timer/promise callbacks (never synchronously in the effect
+  // body itself), matching the pattern already established for the load
+  // effects above — a synchronous set-state directly in an effect body is
+  // rejected by the React Compiler lint rule.
+  useEffect(() => {
+    if (!selectedStore) return
+    let cancelled = false
+
+    const timer = setTimeout(() => {
+      if (cancelled) return
+
+      const scopeIncomplete =
+        (variantScope === 'specific' && (!variantOptionName.trim() || !variantOptionValue.trim())) ||
+        (filterType !== 'all' && !filterValue.trim())
+
+      if (scopeIncomplete) {
+        setEstimate(null)
+        setEstimateLoading(false)
+        return
+      }
+
+      setEstimateLoading(true)
+      const params = new URLSearchParams({ storeId: selectedStore, variantScope, imageScope })
+      if (variantScope === 'specific') {
+        params.set('optionName', variantOptionName.trim())
+        params.set('optionValue', variantOptionValue.trim())
+      }
+      if (filterType !== 'all') {
+        params.set('filterType', filterType)
+        params.set('filterValue', filterValue.trim())
+      }
+
+      shopifyFetch(`/api/generate/estimate?${params.toString()}`)
+        .then(async res => {
+          const data = await res.json()
+          if (cancelled) return
+          setEstimate(res.ok ? data : null)
+          setEstimateLoading(false)
+        })
+        .catch(() => {
+          if (!cancelled) { setEstimate(null); setEstimateLoading(false) }
+        })
+    }, 450)
+
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [selectedStore, variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue])
 
   function handleVariantScopeChange(v: string) {
     setVariantScope(v as 'all' | 'specific')
@@ -285,7 +345,8 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const generateDisabled =
     generating ||
     (variantScope === 'specific' && (!variantOptionName.trim() || !variantOptionValue.trim())) ||
-    (filterType !== 'all' && !filterValue.trim())
+    (filterType !== 'all' && !filterValue.trim()) ||
+    Boolean(estimate?.overLimit)
 
   const scopeSummary = buildScopeSummary({
     variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue,
@@ -391,9 +452,32 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
         </CardContent>
       </Card>
 
-      <p className="-mt-3 text-sm text-muted-foreground">
-        Will generate: {scopeSummary}
-      </p>
+      {/* Both lines live inside one -mt-3 wrapper, not each carrying their own:
+          space-y-6 on the outer container gives every child a fresh mt-6, so
+          a second sibling with its own -mt-3 would overlap the first instead
+          of sitting a small gap below it. */}
+      <div className="-mt-3 space-y-1">
+        <p className="text-sm text-muted-foreground">
+          Will generate: {scopeSummary}
+          {estimateLoading && <span className="ml-1 animate-pulse">— counting…</span>}
+          {!estimateLoading && estimate && (
+            <span className={
+              estimate.overLimit ? 'ml-1 font-medium text-destructive'
+                : estimate.softWarn ? 'ml-1 font-medium text-amber-600'
+                : 'ml-1 font-medium text-foreground'
+            }>
+              — {estimate.count.toLocaleString()} job{estimate.count === 1 ? '' : 's'}
+              {estimate.softWarn && !estimate.overLimit ? ' (large batch)' : ''}
+            </span>
+          )}
+        </p>
+        {estimate?.overLimit && (
+          <p className="text-xs text-destructive">
+            This would enqueue {estimate.count.toLocaleString()} jobs, over the {estimate.limit.toLocaleString()} limit.
+            Narrow the scope — a specific option value, &quot;First pose only&quot;, or a product filter — to continue.
+          </p>
+        )}
+      </div>
 
       {/* ── Controls + progress ───────────────────────────────────────────── */}
       <Card>
