@@ -1,3 +1,22 @@
+/**
+ * POST /api/generate/single
+ *
+ * Generate one creative for a single product (optionally a specific variant
+ * and/or source image), used by the Products list and product detail page.
+ * Resolves the matching template rule and does not touch any other product.
+ *
+ * Auth:    Supabase session (getUser())
+ * Rate:    rateLimit(`single:${user.id}`) — max 60 requests per user per hour
+ *          (SINGLE_GEN_LIMIT / SINGLE_GEN_WINDOW_SECS)
+ * Body:    { productId: string, storeId: string, variantId?: string, imageId?: string }
+ * Returns: { generated: 1, url } on success; { generated: 0, message } when no
+ *          rule matches; { error } on failure
+ *
+ * Flow: verify user -> rate limit -> verify store ownership -> load product ->
+ * resolve template rule -> pick source image -> (ai_product mode) fetch
+ * product layer bundle -> load variant overrides -> composite image ->
+ * upload to Cloudinary -> upsert generated_images -> mirror into creatives.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'

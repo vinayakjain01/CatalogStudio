@@ -1,3 +1,21 @@
+/**
+ * @module shopify-sync
+ *
+ * Full product/variant/image sync from Shopify into Supabase. Fetches every
+ * product via the GraphQL Admin client (src/lib/shopify.ts), upserts
+ * products/variants/images, reconciles deletions for rows Shopify no longer
+ * has, and — when auto-enqueue is on — kicks off creative generation for
+ * products that changed and for variants that just came back in stock.
+ *
+ * RESPONSIBILITIES:
+ *   - syncStoreProducts — top-level entry point: loads the store, runs the sync, records a sync_logs row, flags needs_reauth on 401/403
+ *
+ * DEPENDENCIES: shopify.ts (GraphQL Admin client), generation-queue.ts
+ * (enqueueGeneration, findUncoveredInStockVariants — this module auto-enqueues
+ * generation for changed/restocked variants), shopify-token.ts (offline token
+ * refresh, lazily imported to avoid a require cycle).
+ */
+
 import { SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
 import { chunkArray } from '@/lib/concurrency'
@@ -93,6 +111,18 @@ type ExistingProduct = {
 const PRODUCT_BATCH_SIZE = 100
 const IMAGE_BATCH_SIZE = 100
 
+/**
+ * Sync one store's full product/variant/image catalog from Shopify.
+ * Records a sync_logs row for the run, updates stores.last_synced_at on
+ * success, and flags stores.needs_reauth when the failure looks like an
+ * invalid/expired access token (401/403).
+ *
+ * @param autoEnqueueChanged - when true, auto-enqueues generation for products
+ *   that changed this sync and for variants newly back in stock
+ * @param incremental - when true, only fetches products updated since the
+ *   store's last sync instead of the whole catalog
+ * @returns number of products synced
+ */
 export async function syncStoreProducts({
   storeId,
   syncType,

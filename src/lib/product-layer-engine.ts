@@ -1,7 +1,5 @@
 /**
- * Product Layer Engine
- *
- * FILE: src/lib/product-layer-engine.ts  (NEW FILE)
+ * @module product-layer-engine
  *
  * Central coordinator for the non-destructive image pipeline.
  * Replaces the split between:
@@ -21,6 +19,16 @@
  *
  * SERVER-ONLY: imports @napi-rs/canvas indirectly via image-bounds.ts.
  * Do NOT import this file from any client component.
+ *
+ * RESPONSIBILITIES:
+ *   - getProductLayerBundle — cache-first orchestration of background
+ *     removal, bounds/metadata computation, and background-plate generation
+ *     for one source image.
+ *
+ * DEPENDENCIES: image-bounds.ts (bounds detection/verification),
+ * product-positioning-shared.ts (shot classification), background-removal.ts
+ * (transparent cutout generation), Cloudinary Generative Remove (background
+ * plate inpainting).
  */
 
 import crypto from 'crypto'

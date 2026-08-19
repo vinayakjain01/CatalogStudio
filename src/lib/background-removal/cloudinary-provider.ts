@@ -1,4 +1,6 @@
 /**
+ * @module cloudinary-provider
+ *
  * Cloudinary AI Background Removal Adapter
  *
  * Uses Cloudinary's background_removal add-on (powered by Cloudinary AI).
@@ -11,6 +13,10 @@
  *
  * Requires: Cloudinary account with AI Background Removal add-on enabled.
  * Enable at: cloudinary.com → Add-ons → AI Background Removal (free tier available)
+ *
+ * RESPONSIBILITIES:
+ *   - CloudinaryBackgroundRemovalProvider — BackgroundRemovalProvider implementation using Cloudinary's background_removal eager transform, with upload+poll+download and temp-asset cleanup
+ *   - getCloudinaryBgRemovalUrl — URL-based (no upload) transformation for a publicly-accessible source image
  */
 
 import { v2 as cloudinary } from 'cloudinary'

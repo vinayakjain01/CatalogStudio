@@ -1,7 +1,14 @@
 /**
- * /api/shopify/install
+ * GET /api/shopify/install
  *
  * Initiates the Shopify OAuth flow.
+ *
+ * Auth:    None required — a Supabase session cookie is read opportunistically
+ *          (to remember which user to attach the store to) but is optional;
+ *          CSRF is protected via a nonce cookie checked in the callback.
+ * Query:   shop (required), host (optional, passed through for App Bridge)
+ * Returns: 302 redirect to Shopify's OAuth authorize URL, or to
+ *          /dashboard/settings with an error param on a bad shop.
  *
  * Can be called two ways:
  * 1. By the merchant manually from Settings → "Add a store" form

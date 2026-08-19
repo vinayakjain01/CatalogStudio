@@ -1,8 +1,12 @@
 /**
- * GET /api/products/:id/variants — every variant for a product.
+ * GET /api/products/:id/variants
  *
- * Separate from the detail endpoint so a variant picker can refresh stock and
+ * Every variant for a product, so a variant picker can refresh stock and
  * prices without refetching images and creatives alongside them.
+ *
+ * Auth:    Supabase session cookie; the product's store must belong to the
+ *          signed-in user (checked before any variant row is returned).
+ * Returns: { variants: [...], count }
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'

@@ -1,10 +1,17 @@
 /**
  * POST /api/image-extend
- * Trigger AI extend for a product image (used by builder live preview).
- * Body: { imageUrl: string, targetWidth: number, targetHeight: number, storeId: string }
+ * GET  /api/image-extend
  *
- * GET /api/image-extend?imageUrl=...&targetWidth=...&targetHeight=...&storeId=...
- * Check if a cached result exists without triggering AI processing.
+ * Trigger AI extend for a product image (used by builder live preview), or
+ * check whether a cached result already exists without triggering AI
+ * processing.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()) + store
+ *          ownership check (stores.user_id === user.id)
+ * Body:    POST { imageUrl: string, targetWidth: number, targetHeight: number, storeId: string }
+ * Query:   GET ?imageUrl=&targetWidth=&targetHeight=&storeId=
+ * Returns: POST the result of getExtendedImage() (extended image data)
+ *          GET  { cached: boolean, extendedUrl, provider, cachedAt }
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'

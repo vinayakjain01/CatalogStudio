@@ -1,3 +1,17 @@
+/**
+ * POST /api/upload
+ *
+ * Accepts a multipart/form-data image upload (overlay, logo, or generic asset),
+ * transparently compressing it if it's too large for a clean upload, then
+ * stores it and returns the delivery URL for use in a canvas layer.
+ *
+ * Auth:     Supabase session cookie (supabase.auth.getUser())
+ * Body:     multipart/form-data — `file` (PNG/JPG/WEBP, required), `kind`
+ *           (optional, defaults to "asset"; only affects the public_id prefix)
+ * Returns:  { url, compressed, originalMb, finalMb } on success; { error } (400/500) on failure
+ *
+ * Flow: verify session -> read file from form data -> validate type -> smartCompress() if over ~10MB -> uploadBuffer() -> respond
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { uploadBuffer } from '@/lib/cloudinary'

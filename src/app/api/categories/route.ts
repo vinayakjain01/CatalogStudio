@@ -1,3 +1,20 @@
+/**
+ * GET /api/categories
+ * POST /api/categories
+ *
+ * Template categories (for organizing creative templates) scoped to the
+ * caller's active store, which is resolved from the ACTIVE_STORE_COOKIE via
+ * getActiveStore() rather than a storeId query/body param.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser())
+ * Body:    POST — { name: string }
+ * Returns: GET  — { categories: TemplateCategory[] } (empty array if no active store)
+ *          POST — { category: TemplateCategory }
+ *
+ * Flow: GET  -> authenticate -> resolve active store from cookie -> list template_categories for it, ordered by name
+ *       POST -> authenticate -> require an active store -> insert a template_categories row
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 

@@ -1,10 +1,16 @@
 /**
- * GET /api/shopify/sync/status?storeId=… — sync progress.
+ * GET /api/shopify/sync/status
  *
  * Reports the newest sync_logs row plus current catalog counts, so a caller can
  * tell "running" from "finished" and see what actually landed. Counts come from
  * the tables themselves rather than the log, because a run that dies partway
  * still writes rows and the log alone would understate them.
+ *
+ * Auth:     Supabase session cookie (supabase.auth.getUser()); the store must belong to the user
+ * Query:    storeId (required)
+ * Returns:  { storeId, status, lastSyncedAt, needsReauth, lastRun, counts: { products, variants, images } }
+ *
+ * Flow: verify session -> load store scoped to user -> fetch latest sync_logs row and live table counts in parallel -> merge into response
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'

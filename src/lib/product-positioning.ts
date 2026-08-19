@@ -1,4 +1,6 @@
 /**
+ * @module product-positioning
+ *
  * Product Positioning ("Head Space") — v2
  *
  * A near-identical feature was built and fully reverted on 2026-07-07 after
@@ -19,6 +21,23 @@
  * Server-only (uses @napi-rs/canvas). Every entry point in this module is a
  * pure function of its inputs — no DB reads, no network calls beyond loading
  * the image itself.
+ *
+ * RESPONSIBILITIES:
+ *   - classifyProductImage — Standard/ai_product mode's classification entry
+ *     point (alpha-channel bounds detection + shot-type classification).
+ *   - classifyProductZoomImage — Product Zoom Mode's equivalent, backed by
+ *     backdrop-contrast bounds detection for opaque photos.
+ *   - resolveProductPositioning — ai_product mode's single orchestration
+ *     entry point: classify, then compute placement, bypassing on any crop.
+ *   - Re-exports placementToProductLayerSettings, calculatePlacement,
+ *     calculatePlacementNoLetterbox, computeClassificationSignals,
+ *     classifyShotType, CLASSIFICATION_THRESHOLDS, detectProductBounds,
+ *     detectZoomSubjectBounds, and related types from
+ *     product-positioning-shared.ts / image-bounds.ts so callers have one
+ *     import site for the whole feature.
+ *
+ * DEPENDENCIES: product-positioning-shared.ts (pure placement/classification
+ * math), image-bounds.ts (@napi-rs/canvas-backed bounds detection).
  */
 
 import type { ProductPositioningSettings, ShotType } from '@/types/template'
@@ -81,6 +100,13 @@ export interface ClassifyResult {
   isDegenerate: boolean
 }
 
+/**
+ * Standard/ai_product mode's classification entry point: detects the
+ * subject's alpha-channel bounding box and classifies its shot type.
+ *
+ * @param manualShotTypeOverride A user-supplied shot type that, if valid,
+ * wins over the heuristic classification.
+ */
 export async function classifyProductImage(
   imageUrl: string,
   settings: Pick<ProductPositioningSettings, 'applyToShotTypes'>,
@@ -146,6 +172,13 @@ export interface ResolvePositioningResult {
   signals?: ClassificationSignals
 }
 
+/**
+ * ai_product mode's single Head Space entry point: classifies the product
+ * image, and — if its shot type is allow-listed and the resulting placement
+ * wouldn't crop — computes and returns that placement. No-ops (apply: false)
+ * when settings are absent/disabled, the image is missing, classification
+ * fails, the shot type isn't allow-listed, or placement would crop.
+ */
 export async function resolveProductPositioning(
   imageUrl: string | null | undefined,
   canvasW: number,

@@ -1,9 +1,17 @@
 /**
- * POST /api/shopify/sync — manual re-sync trigger.  Body: { storeId }
+ * POST /api/shopify/sync
  *
  * The spec's store-agnostic name for the existing per-store sync route. It
  * forwards so the token refresh, ownership check and needs_reauth handling stay
  * in one implementation.
+ *
+ * Auth:     none directly — delegates to POST /api/stores/[storeId]/sync, which
+ *           checks the Supabase session (or an internal x-internal-secret header)
+ * Body:     { storeId: string }
+ * Returns:  whatever the forwarded route returns — { success: true, productsSync }
+ *           on success, or { error, needs_reauth } on failure
+ *
+ * Flow: read storeId from body -> re-issue as a NextRequest to the per-store sync route handler
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { POST as syncStore } from '@/app/api/stores/[storeId]/sync/route'

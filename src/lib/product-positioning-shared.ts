@@ -1,7 +1,7 @@
 /**
- * Client-safe pieces of Product Positioning ("Head Space" v2).
+ * @module product-positioning-shared
  *
- * FILE: src/lib/product-positioning-shared.ts  (EXTENDED — append calculateSmartFitPlacement)
+ * Client-safe pieces of Product Positioning ("Head Space" v2).
  *
  * src/lib/product-positioning.ts imports @napi-rs/canvas (a native Node
  * addon) for bounds detection, so it can never be imported from client
@@ -9,9 +9,20 @@
  * pure-math pieces that both the server module and client components need,
  * with zero server-only dependencies.
  *
- * CHANGE vs. original: ONE new function added at the bottom —
- *   calculateSmartFitPlacement()
- * Everything else is byte-identical to the original.
+ * RESPONSIBILITIES:
+ *   - placementToProductLayerSettings — pixel placement → percentage-based
+ *     ProductLayerSettings override (ai_product mode).
+ *   - isDegenerateBounds — detects the "no confident detection" fallback
+ *     bounds shape (full image rect).
+ *   - computeClassificationSignals — derives aspect/coverage/edge signals
+ *     from a ProductBounds.
+ *   - classifyShotType — heuristic shot-type classification from signals.
+ *   - calculatePlacement — no-crop scale/position math to satisfy Head
+ *     Space + Bottom Space guides.
+ *   - calculatePlacementNoLetterbox — calculatePlacement variant for
+ *     low-confidence bounds, forced to 'fill' so nothing letterboxes.
+ *   - calculateSmartFitPlacement — calculatePlacement driven by pre-stored
+ *     ProductLayerMetadata instead of a live bounds detection call.
  */
 
 import type { ProductLayerSettings, ProductPositioningSettings, ShotType } from '@/types/template'
@@ -162,6 +173,10 @@ export interface ClassificationSignals {
   hasTransparency: boolean
 }
 
+/**
+ * Derive the aspect ratio, coverage ratio, and edge-touching flags that
+ * classifyShotType() uses to pick a shot type from a ProductBounds.
+ */
 export function computeClassificationSignals(bounds: ProductBounds): ClassificationSignals {
   const contentW = Math.max(1, bounds.right - bounds.left)
   const contentH = Math.max(1, bounds.bottom - bounds.top)
@@ -184,6 +199,13 @@ export function computeClassificationSignals(bounds: ProductBounds): Classificat
   }
 }
 
+/**
+ * Heuristic-only shot-type classification (full_body / half_body / close_up /
+ * detail / accessory / flat_lay) from ClassificationSignals — no AI/ML call.
+ * See the CLASSIFICATION_THRESHOLDS comments above for the reasoning behind
+ * each band. Only full_body/half_body land in the default applyToShotTypes
+ * allow-list.
+ */
 export function classifyShotType(signals: ClassificationSignals): ShotType {
   const t = CLASSIFICATION_THRESHOLDS
 

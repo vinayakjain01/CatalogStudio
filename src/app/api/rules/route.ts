@@ -1,3 +1,27 @@
+/**
+ * GET  /api/rules
+ * POST /api/rules
+ *
+ * List or create automation rules (template_rules) that map product
+ * conditions to a creative template.
+ *
+ * Auth:    Supabase session cookie; rows are scoped to the signed-in user
+ *          (GET filters by user_id + store_id; POST inserts with user_id).
+ * Query:   GET — storeId (required)
+ * Body:    POST — { store_id, template_id, priority?, name?,
+ *          conditions?: [{ field, operator, value }], condition_mode?: 'all'|'any',
+ *          rule_type?, rule_operator?, rule_value? } — either conditions[] (v2)
+ *          or the legacy rule_type/rule_operator/rule_value triple is required.
+ * Returns: GET — { rules: [...] }, ordered by priority then created_at, each
+ *          joined with templates(id, name).
+ *          POST — { rule } (inserted row, joined with templates(id, name))
+ *
+ * GET's ordering matches the resolver's own evaluation order so the rule list
+ * shown to the merchant reflects which rule actually wins. POST accepts either
+ * a v2 conditions[] shape or a legacy single-condition triple for backward
+ * compatibility, and also populates the still-NOT-NULL legacy columns with a
+ * 'conditions' marker when a v2 rule is created.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 

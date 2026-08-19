@@ -1,10 +1,23 @@
 /**
+ * @module image-bounds
+ *
  * Pixel bounding-box detection — server-only (uses @napi-rs/canvas).
  *
  * Originally lived inside product-positioning.ts (Head Space), but Background
  * Reconstruction needs the exact same "where is the product in this image"
  * detection to know which region to hand to Cloudinary's Generative Remove.
  * Extracted here as a neutral, feature-agnostic utility both import.
+ *
+ * RESPONSIBILITIES:
+ *   - stripResizeParams — normalizes an image URL so bounds detection loads
+ *     the same pixels the compositor will later draw.
+ *   - detectProductBounds — alpha-channel bounding box for transparent PNGs
+ *     (post background-removal); degrades to the full image rect for opaque
+ *     images.
+ *   - detectZoomSubjectBounds — backdrop-contrast subject detection for
+ *     opaque photos (Product Zoom Mode), where there is no alpha to scan.
+ *   - verifyRegionChanged — confirms a Cloudinary Generative Remove call
+ *     actually altered the target region before trusting it as clean.
  */
 
 import { createCanvas, loadImage } from '@napi-rs/canvas'
@@ -169,6 +182,16 @@ function bilerpColor(tl: RgbTriple, tr: RgbTriple, bl: RgbTriple, br: RgbTriple,
   }
 }
 
+/**
+ * Locate the subject in an opaque catalog photo by contrast against the
+ * modeled studio backdrop (a bilinear blend of the 4 corner colors), since
+ * there is no alpha channel to scan.
+ *
+ * Falls back to the full-image rect (see isDegenerateBounds) whenever the
+ * backdrop can't be modeled confidently or the detected shape fails one of
+ * the head/feet visibility guards — callers must treat that fallback as
+ * "don't trust these bounds," not apply Head Space against it.
+ */
 export async function detectZoomSubjectBounds(imageUrl: string): Promise<ProductBounds> {
   const normalizedUrl = stripResizeParams(imageUrl)
   const img = await loadImage(normalizedUrl).catch(() => loadImage(imageUrl))
@@ -467,15 +490,6 @@ const VERIFY_SAMPLE_SIZE = 48
 const MIN_MEAN_DIFF = 10 // out of 255 per channel
 
 /**
- * Cloudinary Generative Remove can return an HTTP-200 "success" whose eager
- * transform barely touched the requested region — there's no status field
- * for "the call succeeded but the object is still visible". Sample the
- * removal region from both the original and the result at low resolution and
- * compare; if they're nearly identical, the product almost certainly wasn't
- * actually removed, and the caller should treat this as a failure rather
- * than trust it as a clean background plate.
- */
-/**
  * Both callers pass Cloudinary-hosted URLs (the uploaded base image and its
  * eager-transform result) — insert a crop+scale transformation so we fetch
  * and decode a ~48x48 sample directly instead of the full-resolution image.
@@ -514,6 +528,17 @@ function sampleRegionFullRes(
   return ctx.getImageData(0, 0, size, size).data
 }
 
+/**
+ * Verify a Cloudinary Generative Remove result actually changed the target
+ * region, by comparing low-resolution samples of that region before/after.
+ *
+ * Guards against Cloudinary returning an HTTP-200 "success" whose eager
+ * transform barely touched the requested region — there is no status field
+ * for "the call succeeded but the object is still visible."
+ *
+ * @returns true if the region differs enough to trust the removal; false if
+ * it looks unchanged (product likely still visible).
+ */
 export async function verifyRegionChanged(
   originalUrl: string,
   resultUrl: string,

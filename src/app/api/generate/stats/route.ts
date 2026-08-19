@@ -1,3 +1,19 @@
+/**
+ * GET /api/generate/stats?storeId=
+ *
+ * Coverage counters for the active store: how many active products match at
+ * least one template rule, how many of those already have a completed
+ * creative, and how many are still pending.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()) + store
+ *          ownership check (stores.user_id === user.id)
+ * Query:   storeId (required)
+ * Returns: { matched, generated, pending }
+ *
+ * Flow: verify user & store -> load active template rules -> page through
+ * active products (1000 at a time) resolving each against the rules ->
+ * count matched IDs that already have a completed generated_images row.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/generation-queue'

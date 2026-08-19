@@ -1,5 +1,15 @@
 /**
+ * @module template-resolver
+ *
  * Rules engine: product (+ variant) → template.
+ *
+ * RESPONSIBILITIES:
+ *   - getActiveTemplateRules — load a store's active rules, priority-ordered (ascending; lower number wins)
+ *   - resolveTemplateForProduct — load rules and resolve the first matching template for one product/variant
+ *   - evaluateCondition — evaluate a single v2 condition against a product/variant
+ *   - ruleMatches — evaluate a full rule (v2 multi-condition, or legacy single-condition fallback)
+ *   - resolveTemplateFromRules — first-match-wins template id for a product/variant against an already-loaded rule list
+ *   - matchingRules — every rule that would match, in priority order (rule-editor preview)
  *
  * v2 — MULTI-CONDITION RULES. A rule used to be a single
  * (rule_type, rule_operator, rule_value) triple, so "vendor is Saundh AND
@@ -76,6 +86,11 @@ export interface RuleVariant {
   sku?: string | null
 }
 
+/**
+ * Load a store's active rules ordered by priority ascending (v2 semantics:
+ * lower priority number wins), with created_at as a deterministic tie-break
+ * for rules sharing a priority.
+ */
 export async function getActiveTemplateRules(storeId: string): Promise<TemplateRule[]> {
   const supabase = getAdminClient()
 
@@ -93,6 +108,11 @@ export async function getActiveTemplateRules(storeId: string): Promise<TemplateR
   return rules || []
 }
 
+/**
+ * Load a store's active rules and resolve the first matching template id for
+ * one product (+ optional variant). Convenience wrapper combining
+ * getActiveTemplateRules + resolveTemplateFromRules for a single lookup.
+ */
 export async function resolveTemplateForProduct(
   product: RuleProduct,
   storeId: string,
@@ -219,6 +239,10 @@ export function ruleMatches(
     : conditions.every(c => evaluateCondition(c, product, variant))
 }
 
+/**
+ * First-match-wins template id for a product (+ optional variant) against an
+ * already-loaded, priority-ordered rule list. Returns null if no rule matches.
+ */
 export function resolveTemplateFromRules(
   product: RuleProduct,
   rules: TemplateRule[],

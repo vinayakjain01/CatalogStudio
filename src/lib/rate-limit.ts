@@ -1,3 +1,16 @@
+/**
+ * @module rate-limit
+ *
+ * Redis-backed sliding-window rate limiter for API routes, with fail-open
+ * behavior when Redis is unavailable.
+ *
+ * RESPONSIBILITIES:
+ *   - rateLimit — checks/increments a windowed counter for a given key.
+ *   - rateLimitHeaders — builds standard X-RateLimit-* response headers.
+ *
+ * DEPENDENCIES: getRedisConnection (@/lib/redis) — returns null when
+ * REDIS_URL is unset, which this module treats as "allow everything".
+ */
     import { getRedisConnection } from './redis'
 
 export interface RateLimitResult {

@@ -1,3 +1,19 @@
+/**
+ * @module concurrency
+ *
+ * Small, dependency-free concurrency helpers shared across the generation
+ * pipeline.
+ *
+ * RESPONSIBILITIES:
+ *   - mapWithConcurrency — runs an async mapper over a list with a bounded
+ *     number of in-flight calls.
+ *   - chunkArray — splits an array into fixed-size sub-arrays.
+ */
+
+/**
+ * Map `items` through `mapper`, running at most `concurrency` calls at once.
+ * Results preserve the original order regardless of completion order.
+ */
 export async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -20,6 +36,7 @@ export async function mapWithConcurrency<T, R>(
   return results
 }
 
+/** Split `items` into consecutive sub-arrays of at most `size` elements each. */
 export function chunkArray<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = []
   for (let i = 0; i < items.length; i += size) {

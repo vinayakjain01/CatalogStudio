@@ -1,5 +1,10 @@
 /**
+ * @module fal-birefnet-provider
+ *
  * fal.ai BiRefNet v2 Adapter
+ *
+ * RESPONSIBILITIES:
+ *   - FalBirefnetProvider — BackgroundRemovalProvider implementation using fal.ai's async queue API (submit -> poll -> fetch result); requires a public sourceUrl, throws immediately if none is given so a configured fallback chain can take over
  *
  * Bilateral Reference Framework — state-of-the-art high-resolution dichotomous
  * image segmentation. Excellent on fine detail: hair, sheer/embroidered fabric,

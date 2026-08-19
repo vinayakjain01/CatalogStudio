@@ -1,7 +1,16 @@
 /**
- * /api/shopify/auth
+ * GET /api/shopify/auth
  *
  * Embedded app launch handler.
+ *
+ * Auth:    HMAC signature over the query string (verified against
+ *          SHOPIFY_CLIENT_SECRET) — this IS the auth check; no separate
+ *          session cookie is required to reach this route.
+ * Query:   shop, hmac (required), id_token (embedded launch token, optional),
+ *          host, embedded (passed through to the redirect)
+ * Returns: 302 redirect — to /api/shopify/install if the store isn't
+ *          installed yet, otherwise to /dashboard (with auth_error set if the
+ *          token exchange failed) or /login on an unrecoverable failure.
  *
  * Flow:
  * 1. Validate HMAC.

@@ -1,4 +1,6 @@
 /**
+ * @module shopify-token
+ *
  * Shopify token exchange + session-token helpers.
  *
  * Shopify no longer accepts non-expiring offline access tokens for the Admin API
@@ -8,6 +10,12 @@
  * launch gives us for a fresh offline access token.
  *
  * Docs: https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/token-exchange
+ *
+ * RESPONSIBILITIES:
+ *   - exchangeSessionTokenForOfflineToken — trade a session id_token for an expiring offline access token (server-side, OAuth token exchange)
+ *   - refreshOfflineToken — trade a refresh token for a fresh access token, for long-running callers with no live browser session
+ *   - getShopifySessionToken — read the current App Bridge session token client-side, or null outside the embedded admin iframe
+ *   - shopifyFetch — fetch() wrapper that attaches the session token as a Bearer Authorization header
  */
 
 // ── Constants ────────────────────────────────────────────────────────────────

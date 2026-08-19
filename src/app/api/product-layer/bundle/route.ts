@@ -1,14 +1,18 @@
 /**
- * Product Layer Bundle API
- *
- * FILE: src/app/api/product-layer/bundle/route.ts  (NEW FILE)
- *
  * POST /api/product-layer/bundle
- *   Triggers (or returns cached) full asset bundle for a product image.
- *   Used by the live editor hook use-product-layer-bundle.ts.
+ * GET  /api/product-layer/bundle
  *
- * GET /api/product-layer/bundle?imageUrl=...&storeId=...
- *   Cheap cache-check only — no AI calls. Used to preflight before POST.
+ * Triggers (or returns the cached) full product-layer asset bundle (cutout,
+ * background plate, mask, pose/shot metadata) for a product image. Used by
+ * the live editor hook use-product-layer-bundle.ts; GET is a cheap
+ * cache-status preflight with no AI calls.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()) + store
+ *          ownership check (stores.user_id === user.id)
+ * Body:    POST { imageUrl: string, storeId: string }
+ * Query:   GET ?imageUrl=&storeId=
+ * Returns: POST { transparentUrl, backgroundUrl, maskUrl, metadata, bundleStatus, fromCache, provider }
+ *          GET  { isCached, bundleStatus, transparentUrl, backgroundUrl, metadata, cachedAt }
  */
 
 import { NextRequest, NextResponse } from 'next/server'

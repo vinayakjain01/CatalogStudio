@@ -1,3 +1,22 @@
+/**
+ * GET  /api/generate/cancel
+ * POST /api/generate/cancel
+ *
+ * Cancel (or count) pending/processing generation jobs for a batch, or for
+ * the whole store when no batchId is given.
+ *
+ * Auth:    Supabase session cookie (createClient().auth.getUser()) + store
+ *          ownership check (stores.user_id === user.id)
+ * Body:    POST { storeId: string, batchId?: string }
+ * Query:   GET ?storeId=&batchId=
+ * Returns: POST { deleted, cancelled, removedFromRedis, message } (or an
+ *          early { deleted: 0, cancelled: 0, message } when nothing matched)
+ *          GET  { cancellable: number }
+ *
+ * Flow (POST): verify user & store -> find pending/processing jobs -> delete
+ * pending rows outright, mark processing rows 'cancelled' -> best-effort
+ * remove still-waiting jobs from the BullMQ queue -> return counts.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/generation-queue'

@@ -1,3 +1,38 @@
+/**
+ * @module generation-queue
+ *
+ * The creative-generation job pipeline: computes which (variant, image) pairs
+ * need a creative, enqueues one job per pair, and processes those jobs end to
+ * end (template resolution -> AI product-layer bundle -> composite -> Cloudinary
+ * upload -> generated_creatives record). Used by /api/generate/enqueue (bulk
+ * submit), /api/generate/estimate (dry-run count — reuses computeGenerationRows
+ * so the preview never drifts from the real enqueue), /api/cron/generate
+ * (DB-poll drain), and src/workers/catalog-worker.ts (BullMQ path).
+ *
+ * Fan-out is per in-stock VARIANT (sold-out variants are filtered out before
+ * fan-out — see the In-Stock Only comments below) times per IMAGE depending on
+ * imageScope ('first' or 'all'). Every `.in()` query against Supabase goes
+ * through fetchAllChunked, which both chunks the input id list (PostgREST's
+ * URL-length limit) and paginates each chunk's result (PostgREST's per-request
+ * row cap) — chunking the input alone does not bound the output size; both are
+ * required, see the constants just below for the production incidents that
+ * made that necessary.
+ *
+ * RESPONSIBILITIES:
+ *   - collectFilteredProductIds — every active product id for a store matching an optional tag/vendor/product_type filter
+ *   - findUncoveredInStockVariants — in-stock variants with no generated_creatives row yet (restock detection)
+ *   - getAdminClient — service-role Supabase client for worker/cron contexts with no browser session
+ *   - computeGenerationRows — the exact (variant, image) fan-out a scope produces; shared by enqueue and estimate
+ *   - enqueueGeneration — inserts generation_jobs rows and pushes them to BullMQ when Redis is configured
+ *   - processBatch — DB-poll drain of pending jobs, claimed via select+update (no Postgres RPC required)
+ *   - processGenerationJob — claim and run exactly one job (the BullMQ worker's entry point)
+ *   - createJobContext — per-batch cache of template rules/canvases so a batch doesn't re-fetch them per job
+ *
+ * DEPENDENCIES: template-resolver (rule -> template matching), compositor (renders the creative),
+ * product-layer-engine (cutout + background-plate bundle, replaces the old two-call AI pipeline),
+ * cloudinary (final upload), queues (BullMQ enqueue), concurrency (mapWithConcurrency for processBatch).
+ */
+
 import { createClient as createSupabaseAdmin, SupabaseClient } from '@supabase/supabase-js'
 // ws is required for Supabase Realtime on Node.js < 22 (no native WebSocket global)
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -16,6 +51,10 @@ import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
 import type { CompositorBundle } from '@/types/product-layer'
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Chunked `.in()` Query Helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * PostgREST puts every `.in()` value into the request URL, not the body.
@@ -85,6 +124,10 @@ async function fetchAllChunked<T>(
   }
   return results
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Product / Variant Collection Helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
 export interface ProductFilter {
   type?: 'tag' | 'vendor' | 'product_type'
@@ -188,6 +231,16 @@ export async function findUncoveredInStockVariants(
   return inStock.filter(v => !covered.has(v.id))
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Supabase Admin Client
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Service-role Supabase client for contexts with no browser session — the
+ * cron sync, the BullMQ worker — where RLS-scoped, cookie-based auth doesn't
+ * apply. Passes `ws` as the realtime transport since Node.js < 22 has no
+ * native WebSocket global.
+ */
 export function getAdminClient(): SupabaseClient {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -203,6 +256,10 @@ export function getAdminClient(): SupabaseClient {
     }
   )
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Enqueue & Fan-Out
+// ═══════════════════════════════════════════════════════════════════════════
 
 export interface EnqueueArgs {
   storeId: string
@@ -502,6 +559,10 @@ export async function enqueueGeneration(
   return insertedIds.length > 0 ? insertedIds.length : rows.length
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Variant / Image Scope-Filtering Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
 interface ImageRow {
   id: string
   product_id: string
@@ -619,6 +680,10 @@ function imagesForVariant(
   return [pool.find(img => img.is_primary) ?? pool[0]]
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Job Processing (DB-poll batch drain + BullMQ single-job path)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
  * Claim and process up to `batchSize` pending jobs directly from the DB.
  * Does NOT require any Postgres RPC function — uses a select+update pattern.
@@ -688,6 +753,12 @@ export async function processBatch(
   return { claimed: claimed.length, completed, failed }
 }
 
+/**
+ * Claim and run exactly one job by id — the BullMQ worker's entry point (one
+ * call per dequeued job, as opposed to processBatch's own DB-polling loop).
+ * A no-op (returns `processed: false`) if the job isn't claimable, e.g. it was
+ * already picked up by another worker or is no longer 'pending'.
+ */
 export async function processGenerationJob(
   jobId: string,
   supabase: SupabaseClient = getAdminClient(),
@@ -750,6 +821,7 @@ export type JobContext = {
   templatesById: Map<string, Promise<any>>
 }
 
+/** A fresh, empty JobContext — one shared instance should live per batch of jobs. */
 export function createJobContext(): JobContext {
   return {
     rulesByStore: new Map(),
@@ -789,6 +861,10 @@ function getTemplateCanvas(templateId: string, supabase: SupabaseClient, context
   context.templatesById.set(templateId, promise)
   return promise
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Render Pipeline
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   const started = Date.now()
@@ -1058,6 +1134,10 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     templateId,
   })
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION — Failure Handling
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function failJob(job: any, message: string, supabase: SupabaseClient) {
   // Re-read current attempts from DB (may have been incremented at claim time)

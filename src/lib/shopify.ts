@@ -1,8 +1,14 @@
-import axios, { AxiosInstance } from 'axios'
-import { measureAsync } from '@/lib/perf'
-
 /**
- * Shopify Admin client.
+ * @module shopify
+ *
+ * Shopify Admin GraphQL client used by the sync pipeline (shopify-sync.ts) to
+ * pull the full product/variant/image catalog for a store.
+ *
+ * RESPONSIBILITIES:
+ *   - createShopifyClient — builds an axios-backed GraphQL client bound to one shop + access token, exposing getShop/getProducts/getProductCount
+ *   - calculateDiscount — percentage discount from a price vs. compare-at price
+ *
+ * DEPENDENCIES: axios (HTTP), measureAsync (perf instrumentation on the paginated product fetch).
  *
  * IMPORTANT — why GraphQL and not REST:
  * Shopify has turned off the REST Admin *product* endpoints
@@ -21,6 +27,9 @@ import { measureAsync } from '@/lib/perf'
  * ids are still returned numeric (GIDs stripped to their trailing number) and
  * tags as a comma-separated string, matching what shopify-sync.ts expects.
  */
+
+import axios, { AxiosInstance } from 'axios'
+import { measureAsync } from '@/lib/perf'
 
 const API_VERSION = '2026-04'
 
@@ -93,6 +102,12 @@ function gidToId(gid: string | number | null | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
+/**
+ * Build a GraphQL Admin API client bound to one shop and access token.
+ * Returns { getShop, getProducts, getProductCount } — all product/shop reads
+ * go through GraphQL since Shopify has turned off the REST product endpoints
+ * for apps created after the REST deprecation cutoff.
+ */
 export function createShopifyClient(shopDomain: string, accessToken: string) {
   const client: AxiosInstance = axios.create({
     baseURL: `https://${shopDomain}/admin/api/${API_VERSION}`,
@@ -357,6 +372,11 @@ export function createShopifyClient(shopDomain: string, accessToken: string) {
   return { getShop, getProducts, getProductCount }
 }
 
+/**
+ * Percentage discount of price vs. compareAtPrice, rounded to the nearest
+ * whole percent. Returns 0 when there's no compare-at price or it isn't
+ * actually higher than price (no discount to show).
+ */
 export function calculateDiscount(
   price: string,
   compareAtPrice: string | null

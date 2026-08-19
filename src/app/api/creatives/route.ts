@@ -5,8 +5,11 @@
  * tenant filter needs no join and one creative per variant is representable.
  * The legacy generated_images table has neither.
  *
- * Query: storeId (required), templateId, productId, variantId, search,
- *        page (1-based), pageSize (max 100)
+ * Auth:    Supabase session cookie (supabase.auth.getUser()); storeId ownership
+ *          re-checked explicitly (404s rather than returning an empty page)
+ * Query:   storeId (required), templateId, productId, variantId, search,
+ *          page (1-based), pageSize (max 100)
+ * Returns: { creatives, page, pageSize, total, totalPages }
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'

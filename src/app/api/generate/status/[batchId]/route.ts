@@ -1,9 +1,14 @@
 /**
- * GET /api/generate/status/:batchId — progress of one batch.
+ * GET /api/generate/status/:batchId
  *
- * The existing enqueue route already exposes this as ?batchId=…; this is the
- * path-param form from the spec, forwarded to the same handler so there is one
- * implementation of the counting logic.
+ * Path-param form of GET /api/generate/enqueue?batchId=…, forwarded to the
+ * same handler so there is one implementation of the counting logic.
+ *
+ * Auth:    delegated to GET /api/generate/enqueue (Supabase session, getUser())
+ * Returns: same JSON as GET /api/generate/enqueue — { pending, processing,
+ *          completed, failed, cancelled, total }
+ *
+ * Flow: read batchId from params -> set it as the ?batchId query param -> forward to the enqueue route's GET handler.
  */
 import { NextRequest } from 'next/server'
 import { GET as batchStatus } from '../../enqueue/route'

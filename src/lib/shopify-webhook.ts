@@ -1,3 +1,14 @@
+/**
+ * @module shopify-webhook
+ *
+ * Verifies the authenticity of incoming Shopify webhook requests via HMAC
+ * signature check, so webhook routes can reject forged/tampered payloads
+ * before acting on them.
+ *
+ * RESPONSIBILITIES:
+ *   - verifyShopifyWebhook — HMAC-SHA256 verify a raw webhook body against the `X-Shopify-Hmac-Sha256` header
+ */
+
 import crypto from 'crypto'
 
 // Verify a Shopify webhook's authenticity.

@@ -1,3 +1,21 @@
+/**
+ * @module queues
+ *
+ * BullMQ queue management for the generation pipeline. All queues degrade to
+ * a no-op (null queue / skipped enqueue) when Redis isn't configured, rather
+ * than throwing.
+ *
+ * RESPONSIBILITIES:
+ *   - QUEUE_NAMES — the two live BullMQ queue names (generation, productSync).
+ *   - redisQueuesEnabled — whether Redis-backed queues are usable.
+ *   - getCatalogQueue — lazily creates/returns a named BullMQ Queue instance.
+ *   - enqueueCatalogJob — adds a single job to a named queue.
+ *   - enqueueGenerationJobs — bulk-enqueues generation jobs with fair,
+ *     per-batch priority.
+ *   - closeCatalogQueues — closes and clears all cached Queue instances.
+ *
+ * DEPENDENCIES: getRedisConnection/isRedisEnabled (@/lib/redis).
+ */
 import { Queue, JobsOptions, ConnectionOptions } from 'bullmq'
 import { getRedisConnection, isRedisEnabled } from '@/lib/redis'
 
@@ -14,10 +32,15 @@ export type CatalogQueueName = keyof typeof QUEUE_NAMES
 
 const queues = new Map<CatalogQueueName, Queue>()
 
+/** Whether Redis-backed queues are usable (mirrors isRedisEnabled). */
 export function redisQueuesEnabled() {
   return isRedisEnabled()
 }
 
+/**
+ * Get (creating and caching on first call) the BullMQ Queue for `name`.
+ * @returns The Queue instance, or null when Redis is not configured.
+ */
 export function getCatalogQueue(name: CatalogQueueName) {
   const connection = getRedisConnection()
   if (!connection) return null
@@ -38,6 +61,7 @@ export function getCatalogQueue(name: CatalogQueueName) {
   return queue
 }
 
+/** Add a single named job to a catalog queue. No-op (returns null) if Redis is disabled. */
 export async function enqueueCatalogJob(
   queueName: CatalogQueueName,
   jobName: string,
@@ -84,6 +108,7 @@ export async function enqueueGenerationJobs(
   return jobIds.length
 }
 
+/** Close every cached Queue instance and clear the internal cache. */
 export async function closeCatalogQueues() {
   await Promise.all([...queues.values()].map(queue => queue.close()))
   queues.clear()

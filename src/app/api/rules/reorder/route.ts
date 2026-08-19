@@ -1,8 +1,14 @@
 /**
- * PUT /api/rules/reorder — set rule priorities in one call.
+ * PUT /api/rules/reorder
  *
- * Body: { storeId, ruleIds: string[] }  — array order IS the new priority,
- * index 0 evaluated first, matching the v2 "lower number wins" semantics.
+ * Set rule priorities in one call — reorders a store's automation rules.
+ *
+ * Auth:    Supabase session cookie; storeId must belong to the signed-in user;
+ *          only ruleIds already belonging to that store are applied.
+ * Body:    { storeId, ruleIds: string[] } — array order IS the new priority,
+ *          index 0 evaluated first, matching the v2 "lower number wins" semantics.
+ * Returns: { reordered: number, ruleIds: string[] } (ids actually applied), or
+ *          on a mid-way failure { error, appliedUpTo, applied }.
  *
  * Takes the whole ordering rather than a single moved rule so a drag-reorder
  * cannot leave two rules sharing a priority, where which one wins would depend

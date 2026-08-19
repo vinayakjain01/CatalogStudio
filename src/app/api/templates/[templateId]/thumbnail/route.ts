@@ -1,3 +1,19 @@
+/**
+ * POST /api/templates/[templateId]/thumbnail
+ *
+ * Regenerates a template's thumbnail by compositing its canvas against a
+ * sample product (a real product image from one of the user's stores when one
+ * exists, otherwise placeholder sample data), then uploads the result and
+ * saves the URL on the template.
+ *
+ * Auth:     Supabase session cookie (supabase.auth.getUser()); template lookup
+ *           is scoped to user_id
+ * Returns:  { thumbnail_url } on success; { error } (status 404 or 500) on failure
+ *
+ * Flow: verify session -> load template canvas_data -> pick a sample product image
+ *       from the user's stores (admin client) -> compositeImage() -> uploadBuffer() ->
+ *       persist thumbnail_url -> respond
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'

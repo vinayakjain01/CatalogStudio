@@ -1,3 +1,23 @@
+/**
+ * GET  /api/generate/enqueue?batchId=
+ * POST /api/generate/enqueue
+ *
+ * Bulk-enqueues generation jobs for a filtered set of products/variants/images,
+ * and reports live per-batch job counts for the Creatives page progress bar.
+ *
+ * Auth:    Supabase session (getUser())
+ * Rate:    POST only — rateLimit(`bulk:${storeId}`), 5 requests per store per
+ *          hour (BULK_RATE_LIMIT_PER_STORE / BULK_RATE_WINDOW_SECS)
+ * Body:    POST { storeId, filter?, creativeType?, variantScope?, variantOption?, imageScope? }
+ * Query:   GET ?batchId=
+ * Returns: GET  { pending, processing, completed, failed, cancelled, total }
+ *          POST { batchId, enqueued, redisEnabled, priority } on success, or
+ *          { message, enqueued: 0 } when nothing matched
+ *
+ * Flow (POST): verify user -> validate scope -> verify store ownership ->
+ * rate limit -> enforce MAX_PENDING_JOBS_PER_STORE queue cap -> collect
+ * matching product IDs -> compute fair priority -> enqueueGeneration().
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'

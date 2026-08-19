@@ -1,14 +1,20 @@
 /**
  * POST /api/background-reconstruction
+ * GET  /api/background-reconstruction
+ *
  * Reconstructs a product photo's original background (product region
  * AI-inpainted) on demand — used by the template builder's live preview when
  * a template opts into backgroundSettings.mode === 'original'.
  *
- * Body: { imageUrl: string, transparentUrl: string, storeId: string }
- * Returns: { backgroundUrl, fromCache } | { backgroundUrl: null, fromCache: false }
+ * Auth: Supabase session cookie (supabase.auth.getUser()) on both methods
  *
- * GET /api/background-reconstruction?imageUrl=...&storeId=...
- * Check if a reconstructed background is already cached (cheap, no AI call).
+ * POST — run/fetch the reconstruction (may call the AI provider); verifies storeId ownership
+ *   Body:    { imageUrl: string, transparentUrl: string, storeId: string }
+ *   Returns: { backgroundUrl, fromCache, error } | { backgroundUrl: null, fromCache: false }
+ *
+ * GET — check if a reconstructed background is already cached (cheap, no AI call, no ownership check)
+ *   Query:   imageUrl, storeId
+ *   Returns: { cached, backgroundUrl, cachedAt }
  */
 
 import { NextRequest, NextResponse } from 'next/server'

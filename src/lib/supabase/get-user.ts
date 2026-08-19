@@ -1,3 +1,12 @@
+/**
+ * @module get-user
+ *
+ * Request-deduplicated current-user lookup for server-side code.
+ *
+ * RESPONSIBILITIES:
+ *   - getUser — the current Supabase user, memoised per server render so repeated calls cost one auth round-trip
+ */
+
 import { cache } from 'react'
 import { createClient } from './server'
 import type { User } from '@supabase/supabase-js'

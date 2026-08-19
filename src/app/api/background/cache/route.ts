@@ -1,11 +1,17 @@
 /**
  * DELETE /api/background/cache
- * Invalidate a cached background removal result (forces re-processing).
+ * GET    /api/background/cache
  *
- * Body: { imageUrl: string, storeId: string }
+ * Auth: Supabase session cookie (supabase.auth.getUser()); storeId ownership
+ *       verified on both methods
  *
- * GET /api/background/cache?storeId=...
- * List all cached entries for a store (with counts and storage info).
+ * DELETE — invalidate a cached background removal result (forces re-processing)
+ *   Body:    { imageUrl: string, storeId: string }
+ *   Returns: { success: true, message: 'Cache invalidated' }
+ *
+ * GET — list cached bg-removal entries for a store (most recent 50)
+ *   Query:   storeId
+ *   Returns: { entries: [...], total }
  */
 
 import { NextRequest, NextResponse } from 'next/server'

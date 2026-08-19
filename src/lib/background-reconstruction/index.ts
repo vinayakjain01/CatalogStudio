@@ -1,5 +1,12 @@
 /**
+ * @module background-reconstruction
+ *
  * Background Reconstruction Service (Cloudinary Generative Remove)
+ *
+ * RESPONSIBILITIES:
+ *   - getReconstructionCacheKey — cache key for a source image's reconstructed background
+ *   - getReconstructedBackground — detect the product's bounding box, run Cloudinary region-based Generative Remove, cache and return the plate URL (never throws — failures return { backgroundUrl: null, error })
+ *   - invalidateReconstructionCache — delete a cached entry to force re-processing
  *
  * Opt-in companion to background-removal: instead of discarding the original
  * photo's background entirely, this reconstructs it — removing ONLY the
@@ -46,6 +53,7 @@ cloudinary.config({
 
 // ─── Cache key ────────────────────────────────────────────────────────────────
 
+/** Cache key for a source image's reconstructed background (sha256, salted so it can't collide with the plain bg-removal cache key). */
 export function getReconstructionCacheKey(sourceUrl: string): string {
   return crypto.createHash('sha256').update(`${sourceUrl}|gen_remove|v1`).digest('hex')
 }

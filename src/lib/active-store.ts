@@ -1,3 +1,18 @@
+/**
+ * @module active-store
+ *
+ * Resolves which connected Shopify store is "active" for the current user's
+ * session, server-side — backed by a cookie plus a Supabase lookup.
+ *
+ * RESPONSIBILITIES:
+ *   - ACTIVE_STORE_COOKIE — cookie name that pins the chosen store id.
+ *   - StoreLite — minimal store shape returned to callers.
+ *   - getActiveStore — resolves the active store id (validated cookie, else
+ *     first store) plus the user's full list of stores.
+ *
+ * DEPENDENCIES: getUser() (React-cached Supabase auth lookup), so this file
+ * never triggers a second auth call when layout.tsx/page.tsx already did.
+ */
 import { cookies } from 'next/headers'
 import { getUser } from './supabase/get-user'
 import { createClient } from './supabase/server'

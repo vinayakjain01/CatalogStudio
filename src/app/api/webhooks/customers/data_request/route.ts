@@ -1,3 +1,17 @@
+/**
+ * POST /api/webhooks/customers/data_request
+ *
+ * Shopify's mandatory GDPR webhook: fired when a customer asks a shop for a
+ * copy of their data. Craftify stores no individual customer PII (only
+ * store-level product catalog data), so there is nothing to compile — this
+ * endpoint exists to satisfy Shopify's app-review requirement to acknowledge it.
+ *
+ * Auth:     HMAC signature verification via verifyShopifyWebhook() against the
+ *           raw request body and the X-Shopify-Hmac-Sha256 header (no session/bearer auth)
+ * Returns:  200 "OK" when the HMAC is valid; 401 "Unauthorized" when it isn't
+ *
+ * Flow: read raw body -> verify HMAC -> no-op (no PII stored) -> respond 200
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyShopifyWebhook } from '@/lib/shopify-webhook'
 

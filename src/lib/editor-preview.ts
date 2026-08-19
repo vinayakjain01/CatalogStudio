@@ -1,3 +1,13 @@
+/**
+ * @module editor-preview
+ *
+ * Seed data for the template editor's live preview.
+ *
+ * RESPONSIBILITIES:
+ *   - EditorPreviewProduct — the trimmed product shape used by the preview.
+ *   - getEditorPreviewSeed — loads the active store id plus a page of that
+ *     store's products for the editor's preview dropdown.
+ */
 import { createClient } from '@/lib/supabase/server'
 
 export interface EditorPreviewProduct {

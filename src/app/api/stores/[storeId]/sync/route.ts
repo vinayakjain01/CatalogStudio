@@ -1,3 +1,20 @@
+/**
+ * POST /api/stores/[storeId]/sync
+ *
+ * Runs a full Shopify catalog sync for one store: paginates Shopify, upserts
+ * products and variants, then replaces images. Callable both by an
+ * authenticated user (manual re-sync from the UI) and internally (e.g. an
+ * OAuth callback or cron job) via a shared secret header.
+ *
+ * Auth:     either (a) x-internal-secret header matching process.env.CRON_SECRET,
+ *           or (b) a Supabase session cookie (supabase.auth.getUser()) plus a
+ *           check that the store's user_id matches the session user
+ * Returns:  { success: true, productsSync } on success;
+ *           { error, needs_reauth } on failure (status 502 for Shopify HTTP errors, else 500)
+ *
+ * Flow: internal-secret path -> runSync() directly and return
+ *       user path -> verify session -> verify store ownership -> runSync() -> on success clear needs_reauth, on stale-token error set needs_reauth
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'

@@ -1,12 +1,17 @@
 /**
  * POST /api/background/remove
- * Removes background from a product image on demand (e.g. from product detail page).
+ * GET  /api/background/remove
  *
- * Body: { imageUrl: string, storeId: string }
- * Returns: { transparentUrl, fromCache, provider }
+ * Auth: Supabase session cookie (supabase.auth.getUser()) on both methods
  *
- * GET /api/background/remove?imageUrl=...&storeId=...
- * Check if a transparent version is already cached.
+ * POST — removes the background from a product image on demand (e.g. from the
+ * product detail page); verifies storeId ownership
+ *   Body:    { imageUrl: string, storeId: string }
+ *   Returns: { transparentUrl, fromCache, provider }
+ *
+ * GET — check if a transparent version is already cached (no ownership check)
+ *   Query:   imageUrl, storeId
+ *   Returns: { cached, transparentUrl, provider, cachedAt }
  */
 
 import { NextRequest, NextResponse } from 'next/server'

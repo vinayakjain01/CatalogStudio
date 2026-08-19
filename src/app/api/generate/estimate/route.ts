@@ -1,3 +1,19 @@
+/**
+ * GET /api/generate/estimate?storeId=&variantScope=&optionName=&optionValue=&imageScope=&filterType=&filterValue=
+ *
+ * Read-only preview of exactly how many jobs a given generation scope would
+ * enqueue, using the same computeGenerationRows() fan-out that POST
+ * /api/generate/enqueue itself inserts from, so the estimate can never drift
+ * from what a real submission produces.
+ *
+ * Auth:    Supabase session (getUser())
+ * Query:   storeId (required), variantScope, optionName, optionValue,
+ *          imageScope, filterType, filterValue
+ * Returns: { count, variants, products, overLimit, softWarn, limit,
+ *          softWarnThreshold } — or { count: 0, products: 0 } when nothing matches
+ *
+ * Flow: verify user & store -> collect filtered product IDs -> computeGenerationRows() -> count + limit flags.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'

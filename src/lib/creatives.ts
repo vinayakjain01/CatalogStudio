@@ -1,4 +1,6 @@
 /**
+ * @module creatives
+ *
  * Recording a finished creative.
  *
  * v2 reads creatives from `generated_creatives` — it carries store_id (so a
@@ -9,6 +11,9 @@
  * already read the new table, while the dashboard stat cards and the creatives
  * page still read the old one. Migration 004 drops `generated_images` once
  * those last readers move, and this dual write becomes a single one.
+ *
+ * RESPONSIBILITIES:
+ *   - recordCreative — delete-then-insert one row into generated_creatives.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 

@@ -1,10 +1,15 @@
 /**
+ * @module clipdrop-provider
+ *
  * Clipdrop Background Removal Adapter (Stability AI)
  *
  * Fast, accurate, and affordable. ~$0.001 per image.
  * API docs: https://clipdrop.co/apis/docs/remove-background
  *
  * Set env var: CLIPDROP_API_KEY
+ *
+ * RESPONSIBILITIES:
+ *   - ClipdropBackgroundRemovalProvider — BackgroundRemovalProvider implementation backed by the Clipdrop remove-background API
  */
 
 import type { BackgroundRemovalProvider } from './provider'

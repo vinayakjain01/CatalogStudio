@@ -1,5 +1,12 @@
 /**
+ * @module background-removal
+ *
  * Background Removal Service
+ *
+ * RESPONSIBILITIES:
+ *   - getCacheKey — cache key for a source image's transparent-cutout result
+ *   - getTransparentProductImage — check cache, else run the configured provider (with fallback chain), upload the transparent PNG to Cloudinary, cache and return its URL
+ *   - invalidateBgRemovalCache — delete a cached entry to force re-processing
  *
  * Central orchestration layer. Responsibilities:
  *  1. Check DB cache — return cached transparent PNG if exists
@@ -73,6 +80,7 @@ function getFallbackProviders(): BackgroundRemovalProvider[] {
 
 // ─── Cache key ────────────────────────────────────────────────────────────────
 
+/** Cache key for a source image's transparent-cutout result (sha256 of the URL). */
 export function getCacheKey(imageUrl: string): string {
   return crypto.createHash('sha256').update(imageUrl).digest('hex')
 }

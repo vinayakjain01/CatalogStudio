@@ -1,3 +1,17 @@
+/**
+ * @module cloudinary
+ *
+ * Thin wrapper around the Cloudinary SDK for uploading rendered creatives and
+ * building their optimized delivery URLs.
+ *
+ * RESPONSIBILITIES:
+ *   - uploadBuffer — streams a compositor-rendered image buffer to Cloudinary.
+ *   - toDeliveryUrl — inserts f_auto/q_auto:best delivery transforms into a
+ *     Cloudinary URL.
+ *   - deleteImage — removes an uploaded image by its Cloudinary public id.
+ *
+ * DEPENDENCIES: logPerf (@/lib/perf) to record upload timings.
+ */
 import { v2 as cloudinary } from 'cloudinary'
 import { logPerf } from '@/lib/perf'
 
@@ -68,6 +82,7 @@ export function toDeliveryUrl(secureUrl: string, extra?: string): string {
   return secureUrl.replace('/upload/', `/upload/${transform}/`)
 }
 
+/** Delete an uploaded image from Cloudinary by its public id. */
 export async function deleteImage(publicId: string): Promise<void> {
   await cloudinary.uploader.destroy(publicId)
 }

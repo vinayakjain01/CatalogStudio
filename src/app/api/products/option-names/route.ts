@@ -5,6 +5,10 @@
  * store's catalog — feeds the "Option name" suggestion list on the Generate
  * Creatives scope selector.
  *
+ * Auth:    Supabase session cookie; storeId must belong to the signed-in user.
+ * Query:   storeId (required)
+ * Returns: { names: string[] } — sorted, deduplicated.
+ *
  * Reads products.option{1,2,3}_name (migration 008). A store synced before
  * that migration has null names for every product, so this returns an empty
  * list rather than failing — the UI's Option name field is a free-text input

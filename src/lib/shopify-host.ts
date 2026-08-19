@@ -1,4 +1,6 @@
 /**
+ * @module shopify-host
+ *
  * The Shopify `host` parameter, remembered across page loads.
  *
  * App Bridge configures itself from `host` on the document URL. Any full load
@@ -7,5 +9,8 @@
  * window.shopify undefined, which silently disables session tokens.
  *
  * Storing it lets the proxy re-attach it instead of the app half-working.
+ *
+ * RESPONSIBILITIES:
+ *   - SHOPIFY_HOST_COOKIE — the cookie name used to persist the host param.
  */
 export const SHOPIFY_HOST_COOKIE = 'shopify_host'

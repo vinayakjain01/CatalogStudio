@@ -1,5 +1,15 @@
 /**
+ * @module image-extend
+ *
  * AI Image Extend Service (Cloudinary Generative Fill)
+ *
+ * RESPONSIBILITIES:
+ *   - getExtendCacheKey — cache key for a centered extend result (source + target size)
+ *   - needsExtend — whether a source image's aspect ratio differs enough from the canvas to be worth extending
+ *   - getExtendedImage — centered AI extend: check cache, else run Cloudinary Generative Fill, cache and return the result URL
+ *   - invalidateExtendCache — delete a cached centered-extend entry to force re-generation
+ *   - getPositionedExtendCacheKey — cache key for a positioned extend result (source + target size + render offset)
+ *   - getExtendedImagePositioned — like getExtendedImage but places the product at a specific offset instead of centering it (Product Zoom head-space positioning)
  *
  * Takes a product image URL and a target canvas size, and returns a new
  * image URL where the original product is centered with AI-generated
@@ -35,6 +45,7 @@ cloudinary.config({
 
 // ─── Cache key ────────────────────────────────────────────────────────────────
 
+/** Cache key for a centered extend result — source URL + target dimensions. */
 export function getExtendCacheKey(
   sourceUrl: string,
   targetWidth: number,
@@ -265,6 +276,7 @@ export async function invalidateExtendCache(
 //
 // The cache key includes the offset so each position combo is cached separately.
 
+/** Cache key for a positioned extend result — includes the render offset so each position combo caches separately. */
 export function getPositionedExtendCacheKey(
   sourceUrl: string,
   targetWidth: number,

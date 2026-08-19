@@ -1,5 +1,10 @@
 /**
+ * @module removebg-provider
+ *
  * remove.bg Adapter
+ *
+ * RESPONSIBILITIES:
+ *   - RemoveBgProvider — BackgroundRemovalProvider implementation backed by the remove.bg API, always requesting full resolution output
  *
  * Generally the highest quality background removal available for fashion,
  * apparel, jewelry, and hair edges — consistently outperforms Clipdrop and

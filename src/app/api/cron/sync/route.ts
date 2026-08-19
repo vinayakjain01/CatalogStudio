@@ -1,3 +1,19 @@
+/**
+ * GET /api/cron/sync
+ *
+ * Scheduled full Shopify sync for every active store. Runs a full
+ * (non-incremental) sync per store because inventory can change (e.g. a POS
+ * sale) without touching product.updated_at, which an incremental sync would
+ * miss. Also auto-enqueues generation for restocked in-stock variants after
+ * each store's sync (autoEnqueueChanged: true -> autoGenerateRestockedVariants()).
+ *
+ * Auth:    CRON_SECRET bearer token (Authorization: Bearer <CRON_SECRET>), set by Vercel Cron
+ * Returns: { results: Array<{ store, synced } | { store, error }> }, or
+ *          { message: 'No active stores' }
+ *
+ * Flow: verify bearer token -> load active stores -> per store, syncStoreProducts({ incremental: false, autoEnqueueChanged: true }) -> collect results
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
 import { syncStoreProducts } from '@/lib/shopify-sync'

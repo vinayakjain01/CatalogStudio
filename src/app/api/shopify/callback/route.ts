@@ -1,7 +1,15 @@
 /**
- * /api/shopify/callback
+ * GET /api/shopify/callback
  *
  * Handles the OAuth callback from Shopify after the merchant approves access.
+ *
+ * Auth:    Shopify HMAC signature over the query string, plus a CSRF nonce
+ *          cookie (shopify_oauth_nonce) matched against the `state` param —
+ *          this IS the auth check for this route.
+ * Query:   code, shop, state, hmac (all required)
+ * Returns: 302 redirect — to /dashboard/settings (existing user) or, via a
+ *          generated magic link, to /dashboard (new merchant); to an error
+ *          query param on failure.
  *
  * Two scenarios:
  * A) Existing CatalogStudio user connecting a new store:

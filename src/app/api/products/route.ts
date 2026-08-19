@@ -1,9 +1,18 @@
+/**
+ * GET /api/products
+ *
+ * Lightweight product list for the editor's live-preview dropdown — returns
+ * only the fields the canvas needs to render a real preview.
+ *
+ * Auth:    Supabase session cookie; storeId must belong to the signed-in user.
+ * Query:   storeId (required), q (optional title search), limit (optional,
+ *          default 50, capped at 100)
+ * Returns: { products: [{ id, title, price, compare_at_price, vendor,
+ *          product_type, imageUrl }] } — active products only, imageUrl
+ *          resolved from the primary image (or first image) if any.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-
-// Lightweight product list for the editor's live-preview dropdown.
-//   GET /api/products?storeId=...&limit=50&q=search
-// Returns the fields the canvas needs to render a real preview.
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()

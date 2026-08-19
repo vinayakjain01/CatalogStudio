@@ -5,11 +5,19 @@ import { deleteImage } from '@/lib/cloudinary'
 /**
  * DELETE /api/creatives/:id
  *
- * Reads from `generated_creatives` (v2), not the legacy `generated_images` —
- * that table has no variant/image dimension, so once a product's variants and
- * images each get their own creative, it can only ever represent the last one
- * written. generated_creatives carries store_id directly, so ownership is a
- * plain join instead of going through products.
+ * Deletes one generated creative: its row plus its Cloudinary asset
+ * (best-effort). Reads from `generated_creatives` (v2), not the legacy
+ * `generated_images` — that table has no variant/image dimension, so once a
+ * product's variants and images each get their own creative, it can only
+ * ever represent the last one written. generated_creatives carries store_id
+ * directly, so ownership is a plain join instead of going through products.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()); ownership
+ *          verified via a join to stores(user_id) on the creative's store
+ * Returns: { success: true }
+ *
+ * Flow: authenticate -> load creative joined to stores(user_id) -> 404 if missing/not owned
+ *       -> best-effort delete Cloudinary asset -> delete the row
  */
 export async function DELETE(
   _req: NextRequest,

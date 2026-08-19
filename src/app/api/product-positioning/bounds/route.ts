@@ -15,6 +15,11 @@
  *
  * No server-side cache table: this is a ~1-3ms pixel scan plus one image
  * fetch (served from the compositor-style HTTP cache), not a metered AI call.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()) + store
+ *          ownership check (stores.user_id === user.id)
+ * Query:   imageUrl (required), storeId (required), mode ('zoom' | omitted)
+ * Returns: { bounds: ProductBounds }
  */
 
 import { NextRequest, NextResponse } from 'next/server'

@@ -1,3 +1,17 @@
+/**
+ * GET /api/cron/generate
+ *
+ * Drains the generation_jobs queue. Scheduled by Vercel Cron (vercel.json) to
+ * run every minute; each invocation loops processBatch() until its time
+ * budget is used up or the queue goes empty, so a large backlog clears over
+ * a few invocations without any extra worker infra.
+ *
+ * Auth:    CRON_SECRET bearer token (Authorization: Bearer <CRON_SECRET>), set by Vercel Cron
+ * Returns: { ticks, claimed, completed, failed, ms }
+ *
+ * Flow: verify bearer token -> loop processBatch(10, 4) under a 50s budget -> stop early once a batch claims 0 jobs
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import { processBatch } from '@/lib/generation-queue'
 

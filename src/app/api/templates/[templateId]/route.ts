@@ -1,3 +1,18 @@
+/**
+ * GET /api/templates/[templateId]
+ * PUT /api/templates/[templateId]
+ * DELETE /api/templates/[templateId]
+ *
+ * Fetch, update, or delete a single template owned by the current user.
+ *
+ * Auth:     Supabase session cookie (supabase.auth.getUser()); every query is
+ *           scoped by both id and user_id so a user cannot touch another user's template
+ * Body:     PUT — arbitrary partial template fields from request.json(), saved
+ *           along with a refreshed updated_at timestamp
+ * Returns:  GET/PUT -> { template }; DELETE -> { success: true }; errors -> { error }
+ *
+ * Flow: verify session -> query/mutate scoped to templateId + user_id -> return result
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 

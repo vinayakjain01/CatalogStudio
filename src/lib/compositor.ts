@@ -1,3 +1,27 @@
+/**
+ * @module compositor
+ *
+ * Server-side image compositor: renders a template's canvas data onto a
+ * product's photo to produce one final catalog creative (JPEG buffer).
+ *
+ * Handles background rendering (solid/blur-extend/smart/gradient/original,
+ * plus the Product Layer Engine's pre-computed Background Plate), the three
+ * template modes (standard, ai_product, product_zoom) including Head Space
+ * product positioning, per-layer drawing (text/badge/rectangle/image/logo/
+ * overlay/sticker), AI extend for undersized images, and a multi-step
+ * supersample-then-downscale pipeline for output quality.
+ *
+ * RESPONSIBILITIES:
+ *   - CompositeOptions — render options, including the optional
+ *     productLayerBundle (Product Layer Engine pre-resolved assets).
+ *   - compositeImage — the single entry point: renders CanvasData + product
+ *     data into a JPEG buffer.
+ *
+ * DEPENDENCIES: @napi-rs/canvas (native canvas rendering), image-extend.ts
+ * (AI extend for undersized images), product-positioning(.ts/-shared.ts)
+ * (Head Space placement math), concurrency.ts (bounded image preloading),
+ * perf.ts (render timing).
+ */
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
 import {
@@ -533,6 +557,17 @@ function drawFittedImage(
 
 // ─── Main Composite Function ──────────────────────────────────────────────────
 
+/**
+ * Render one catalog creative: composites `canvasData`'s layers and
+ * background over `product`'s photo, applying Head Space positioning and any
+ * Product Layer Engine bundle, and encodes the result as a JPEG buffer.
+ *
+ * Renders at a supersampled internal resolution (chosen from target size)
+ * then downscales in multiple steps for quality, per the QUALITY CONFIG
+ * constants at the top of this file.
+ *
+ * @returns A JPEG-encoded image buffer.
+ */
 export async function compositeImage(
   canvasData: CanvasData,
   product: ProductData,

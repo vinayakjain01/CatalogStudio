@@ -1,9 +1,17 @@
 /**
- * GET /api/products/:id — product detail with variants and images.
+ * GET /api/products/:id
+ *
+ * Product detail with variants and images, for the product detail page/panel.
+ *
+ * Auth:    Supabase session cookie (supabase.auth.getUser()); the product's
+ *          store must belong to the signed-in user.
+ * Returns: { product } — product row with product_variants[], product_images[],
+ *          and generated_creatives[] embedded, sorted by position.
  *
  * Session-scoped: the ownership check joins through stores, and RLS enforces the
  * same thing at the database, so a product from another tenant is unreachable
- * even if this check were bypassed.
+ * even if this check were bypassed — a wrong-tenant id returns 404 (not 403)
+ * so it can't be distinguished from a nonexistent one.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'

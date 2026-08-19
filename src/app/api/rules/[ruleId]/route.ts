@@ -1,15 +1,29 @@
+/**
+ * PUT    /api/rules/:id
+ * DELETE /api/rules/:id
+ *
+ * Update or delete a single automation rule (template_rules row).
+ *
+ * Auth:    Supabase session cookie; the row must belong to the signed-in user
+ *          (enforced via .eq('user_id', user.id) on both the update and the
+ *          delete).
+ * Body:    PUT — partial patch, only recognized fields are applied:
+ *          { name?, template_id?, priority?, is_active?, condition_mode?,
+ *          conditions?: [{ field, operator, value }] }
+ * Returns: PUT — { rule } (updated row, joined with templates(id, name))
+ *          DELETE — { success: true }
+ *
+ * PUT uses a field allow-list rather than spreading the body: template_rules
+ * holds store_id and user_id, and a spread would let a caller reassign a rule
+ * to another store or user. Setting `conditions` also rewrites the deprecated,
+ * still-NOT-NULL legacy rule_type/rule_operator/rule_value columns to a
+ * 'conditions' marker so the resolver takes the v2 path.
+ */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
-/**
- * PUT /api/rules/:id — update a rule.
- *
- * Field allow-list rather than spreading the body: template_rules holds
- * store_id and user_id, and a spread would let a caller reassign a rule to
- * another store or user.
- */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ ruleId: string }> }
