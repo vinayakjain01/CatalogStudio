@@ -80,7 +80,11 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [variantScope, setVariantScope] = useState<'all' | 'specific'>('all')
   const [variantOptionName, setVariantOptionName] = useState('')
   const [variantOptionValue, setVariantOptionValue] = useState('')
-  const [imageScope, setImageScope] = useState<'all' | 'first'>('all')
+  // Defaults to 'first': generating every pose for every variant is the
+  // expensive, deliberate choice (up to several jobs per variant), so the
+  // page shouldn't pre-select it — a merchant who wants "All poses" now has
+  // to opt into it explicitly.
+  const [imageScope, setImageScope] = useState<'all' | 'first'>('first')
   const [optionNameSuggestions, setOptionNameSuggestions] = useState<string[]>([])
   const [estimate, setEstimate] = useState<GenerationEstimate | null>(null)
   const [estimateLoading, setEstimateLoading] = useState(false)
