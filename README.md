@@ -4,7 +4,7 @@ Shopify catalog creative automation — sync products & variants, design
 templates, map them to products with rules, bulk-generate creatives, and
 publish a variant-level Meta Shopping feed.
 
-**New to this repo? Read [`docs/PROJECT_ARCHITECTURE.md`](docs/PROJECT_ARCHITECTURE.md) first.**
+**New to this repo? Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first.**
 It's a full handoff doc — deployment topology, schema, the generation
 pipeline, migration history, and a list of mistakes already made once so
 they aren't repeated. This README is just a quick start.
@@ -25,7 +25,7 @@ project's environment variables.
 
 This app has **three independently-deployed pieces** — pushing to `main`
 only updates one of them. See
-[§2 of the architecture doc](docs/PROJECT_ARCHITECTURE.md#2-deployment-topology--read-this-first)
+[§2 of the architecture doc](ARCHITECTURE.md#2-deployment-topology--read-this-first)
 before assuming a code push is "live":
 
 1. **Vercel** (the Next.js app) — auto-deploys on push to `main`.
@@ -43,5 +43,5 @@ shadcn/ui + Tailwind v4.
 
 ## Repo layout
 
-See [§11 of the architecture doc](docs/PROJECT_ARCHITECTURE.md#11-folder-guide)
+See [§5 of the architecture doc](ARCHITECTURE.md#5-folder-structure)
 for the annotated folder-by-folder guide.
