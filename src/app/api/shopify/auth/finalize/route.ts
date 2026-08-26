@@ -32,10 +32,20 @@ export async function GET(request: NextRequest) {
   const response = NextResponse.redirect(dashboardUrl)
 
   if (storeId) {
+    // sameSite MUST be 'none' (+ Secure, + Partitioned): this route is the
+    // landing point for a brand-new merchant's FIRST install, loaded inside
+    // Shopify admin's iframe. A 'lax' cookie here is silently never sent on
+    // the embedded app's subsequent same-origin-but-cross-site requests —
+    // the dashboard loads with no active store and looks exactly like the
+    // app failed to let the merchant in, because the cookie carrying
+    // ACTIVE_STORE_COOKIE never arrives. /api/shopify/auth (the reconnect
+    // path) already sets this identical cookie correctly; this route was
+    // the one place it was missed.
     response.cookies.set(ACTIVE_STORE_COOKIE, storeId, {
       httpOnly: false, // readable by client for store-switcher
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true,
+      sameSite: 'none',
+      partitioned: true,
       maxAge: 60 * 60 * 24 * 30, // 30 days
       path: '/',
     })

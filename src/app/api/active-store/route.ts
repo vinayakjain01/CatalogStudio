@@ -31,7 +31,16 @@ export async function POST(request: NextRequest) {
   const res = NextResponse.json({ success: true })
   res.cookies.set(ACTIVE_STORE_COOKIE, storeId, {
     httpOnly: true,
-    sameSite: 'lax',
+    // 'none' + Secure + Partitioned: this app runs embedded in Shopify
+    // admin's iframe, and a merchant switching stores calls this route from
+    // inside that iframe. A 'lax' cookie here is silently dropped by the
+    // browser on the embedded app's subsequent (cross-site) requests, so the
+    // switch never actually takes effect on reload — see the identical fix
+    // in /api/shopify/auth/finalize/route.ts, which sets this same cookie
+    // for the first-install path.
+    secure: true,
+    sameSite: 'none',
+    partitioned: true,
     path: '/',
     maxAge: 60 * 60 * 24 * 365, // 1 year
   })
