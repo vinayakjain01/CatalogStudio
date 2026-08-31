@@ -274,6 +274,45 @@ export const ASSET_TYPE_CONFIG: Record<AssetType, {
 
 export const ALL_ASSET_TYPES: AssetType[] = ['catalog', 'feed', 'story', 'reel']
 
+/**
+ * Build the CanvasData actually rendered for one placement request.
+ *
+ * Placement dimensions always come from ASSET_TYPE_CONFIG, not the template's
+ * own stored canvas_data.width/height — one template's layout (layers, their
+ * 0–100% positions) is reused across every placement a merchant asks for, so
+ * a single design backs a 1:1 catalog render and a 9:16 story render without
+ * needing to be duplicated per placement. A template's own asset_type/aspect
+ * ratio is only what the builder seeds a NEW template's canvas to — it plays
+ * no part in choosing what gets rendered here.
+ *
+ * Reusing one layout across aspect ratios only stays safe for the product
+ * photo if it can never be cropped: a layer authored with objectFit 'cover'
+ * for a 1:1 canvas would crop a model's head/feet once forced into a 9:16
+ * box. So whenever the render's aspect ratio differs from the template's own,
+ * the literal `{{product_image}}` layer is forced to 'contain' — every other
+ * layer (logos, badges, decorative images) keeps its authored fit, since
+ * those were placed deliberately and don't need to track the product photo's
+ * real content.
+ */
+export function buildRenderCanvas(canvasData: CanvasData, assetType: AssetType): CanvasData {
+  const assetConfig = ASSET_TYPE_CONFIG[assetType]
+  const crossAspect = canvasData.aspectRatio !== assetConfig.aspectRatio
+
+  return {
+    ...canvasData,
+    width: assetConfig.width,
+    height: assetConfig.height,
+    aspectRatio: assetConfig.aspectRatio,
+    layers: crossAspect
+      ? canvasData.layers.map(layer =>
+          (layer as { src?: string }).src === '{{product_image}}' && 'objectFit' in layer
+            ? { ...layer, objectFit: 'contain' }
+            : layer
+        )
+      : canvasData.layers,
+  }
+}
+
 export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1' | '2:3' | 'custom'
 
 export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; height: number }[] = [

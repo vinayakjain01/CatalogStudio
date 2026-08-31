@@ -12,7 +12,7 @@
  *          assetTypes? } — assetTypes defaults to ['catalog']; invalid values are dropped,
  *          and an empty result after that is a 400
  * Query:   GET ?batchId=
- * Returns: GET  { pending, processing, completed, failed, cancelled, total }
+ * Returns: GET  { pending, processing, completed, failed, cancelled, skipped, total }
  *          POST { batchId, enqueued, redisEnabled, priority } on success, or
  *          { message, enqueued: 0 } when nothing matched
  *
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, total: 0 }
+  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, skipped: 0, total: 0 }
   for (const job of jobs || []) {
     counts.total++
     const s = job.status as keyof typeof counts

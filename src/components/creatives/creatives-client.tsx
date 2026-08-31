@@ -34,6 +34,8 @@ interface BatchCounts {
   completed: number
   failed: number
   cancelled: number
+  /** No rule matched this job's product — not an error, just nothing to render. */
+  skipped: number
   total: number
 }
 
@@ -306,7 +308,11 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
         const c: BatchCounts = await pr.json()
         setBatchProgress(c)
 
-        const done = (c.completed || 0) + (c.failed || 0) + (c.cancelled || 0)
+        // 'skipped' (no matching rule for the job's product) is a terminal
+        // status, same as completed/failed/cancelled — leaving it out here
+        // made the loop poll forever once any job hit it, since done never
+        // reached total.
+        const done = (c.completed || 0) + (c.failed || 0) + (c.cancelled || 0) + (c.skipped || 0)
 
         if (c.completed > lastCompletedAt.current.count) {
           lastCompletedAt.current = { count: c.completed, time: Date.now() }
@@ -321,7 +327,12 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
         }
 
         if (c.total > 0 && done >= c.total) {
-          setGenResult(`Done. ${c.completed} created${c.failed ? `, ${c.failed} failed` : ''}.`)
+          setGenResult(
+            `Done. ${c.completed} created` +
+            (c.failed ? `, ${c.failed} failed` : '') +
+            (c.skipped ? `, ${c.skipped} skipped (no matching rule)` : '') +
+            '.'
+          )
           fetchCreatives()
           setGenerating(false)
           pollingActive.current = false
@@ -373,7 +384,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   }
 
   const progressPercent = batchProgress && batchProgress.total > 0
-    ? Math.round(((batchProgress.completed + batchProgress.failed + batchProgress.cancelled) / batchProgress.total) * 100)
+    ? Math.round(((batchProgress.completed + batchProgress.failed + batchProgress.cancelled + batchProgress.skipped) / batchProgress.total) * 100)
     : 0
 
   const generateDisabled =
@@ -618,7 +629,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                 />
                 <span className="text-sm font-mono tabular-nums shrink-0 text-muted-foreground">
                   {batchProgress
-                    ? `${batchProgress.completed + batchProgress.failed}/${batchProgress.total}`
+                    ? `${batchProgress.completed + batchProgress.failed + batchProgress.skipped}/${batchProgress.total}`
                     : '0/…'}
                 </span>
               </div>
@@ -641,6 +652,12 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                     <span className="flex items-center gap-1">
                       <span className="inline-block w-2 h-2 rounded-full bg-red-500" />
                       <b className="text-destructive">{batchProgress.failed}</b> failed
+                    </span>
+                  )}
+                  {batchProgress.skipped > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-2 h-2 rounded-full bg-muted-foreground" />
+                      <b>{batchProgress.skipped}</b> skipped (no matching rule)
                     </span>
                   )}
                 </div>

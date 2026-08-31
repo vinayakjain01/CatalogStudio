@@ -44,7 +44,6 @@ const ws = require('ws') as any
 import {
   getActiveTemplateRules,
   resolveTemplateFromRules,
-  resolveTemplateFromRulesForAssetType,
   TemplateRule,
 } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
@@ -56,7 +55,7 @@ import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
 import type { CompositorBundle } from '@/types/product-layer'
-import { ASSET_TYPE_CONFIG, type AspectRatio, type AssetType, type CanvasData } from '@/types/template'
+import { buildRenderCanvas, type AssetType, type CanvasData } from '@/types/template'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SECTION — Chunked `.in()` Query Helpers
@@ -916,14 +915,17 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   if (productError) throw new Error(productError.message)
   if (!product) throw new Error('Product not found')
 
-  // Placement this job targets — defaults to 'catalog' so every job enqueued
+  // Placement this job renders — defaults to 'catalog' so every job enqueued
   // before migration 009 (asset_type NOT NULL DEFAULT 'catalog') behaves
-  // identically to before. An explicit job.template_id (the single-generate
-  // routes) bypasses rule resolution entirely, same as always — asset_type
-  // only gates the RULE-based lookup below, not an explicit override.
+  // identically to before. This does NOT gate rule/template resolution below:
+  // a template's own asset_type is only a builder convenience (it seeds the
+  // canvas to that placement's aspect ratio at creation time), not a filter
+  // on which rules apply. One rule-matched template renders every placement
+  // the merchant asked for on the Creatives page — see the canvas-dimension
+  // override further down.
   const jobAssetType: AssetType = (job as any).asset_type ?? 'catalog'
 
-  const templateId = job.template_id || resolveTemplateFromRulesForAssetType(
+  const templateId = job.template_id || resolveTemplateFromRules(
     {
       id: product.id,
       tags: product.tags || [],
@@ -932,8 +934,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
       price: product.price,
       compare_at_price: product.compare_at_price,
     },
-    rules,
-    jobAssetType
+    rules
   )
   if (!templateId) {
     // 'skipped', not 'completed'. Nothing was generated, and calling that
@@ -942,15 +943,10 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     // deployed worker predated the multi-condition resolver and could not match
     // a rule defined by `conditions`. Nothing filters generation_jobs on
     // 'completed', so this is safe and makes the outcome countable.
-    //
-    // A store with no template configured for jobAssetType (e.g. no 'reel'
-    // template yet) hits this path for every reel job — that's expected, not
-    // a failure: it lets catalog generation succeed independently of whether
-    // every ad placement has been designed yet.
     await supabase.from('generation_jobs')
       .update({
         status: 'skipped',
-        error: `no matching rule for asset_type=${jobAssetType}`,
+        error: 'no matching rule',
         updated_at: new Date().toISOString(),
       })
       .eq('id', job.id)
@@ -1052,21 +1048,11 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   }
 
   // Placement dimensions come from the job's asset_type, not the template's
-  // own stored canvas_data.width/height. The template's LAYOUT (layers, their
-  // 0–100% positions) is reused as-is across every placement — only the
-  // output canvas size changes — so the same template can back a 1:1 catalog
-  // render and a 9:16 story render, and a merchant picking "generate catalog
-  // + story" for one template gets both without maintaining two templates.
-  // This does mean a layout designed for one aspect ratio can look
-  // meaningfully different once stretched to another — that's the deliberate
-  // trade this feature makes, not an oversight.
-  const assetConfig = ASSET_TYPE_CONFIG[jobAssetType]
-  const renderCanvas: CanvasData = {
-    ...(canvasData as CanvasData),
-    width: assetConfig.width,
-    height: assetConfig.height,
-    aspectRatio: assetConfig.aspectRatio as AspectRatio,
-  }
+  // own stored canvas_data.width/height — see buildRenderCanvas's doc comment
+  // for why, and why it forces the product-image layer to 'contain' whenever
+  // the placement's aspect ratio differs from the template's own (never crop
+  // the product just because a merchant asked for a different placement).
+  const renderCanvas = buildRenderCanvas(canvasData as CanvasData, jobAssetType)
 
   const buffer = await compositeImage(renderCanvas as any, {
     title:           product.title,

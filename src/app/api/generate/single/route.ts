@@ -10,6 +10,8 @@
  *          (SINGLE_GEN_LIMIT / SINGLE_GEN_WINDOW_SECS)
  * Body:    { productId: string, storeId: string, variantId?: string, imageId?: string, assetType?: 'catalog'|'feed'|'story'|'reel' }
  *          assetType defaults to 'catalog'; an invalid value silently falls back to it rather than erroring.
+ *          It only changes the RENDER dimensions — rule/template matching is
+ *          asset-type-agnostic (see resolveTemplateForProduct).
  * Returns: { generated: 1, url } on success; { generated: 0, message } when no
  *          rule matches; { error } on failure
  *
@@ -21,14 +23,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
-import { resolveTemplateForProductAndAssetType } from '@/lib/template-resolver'
+import { resolveTemplateForProduct } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 import { recordCreative } from '@/lib/creatives'
 import { getProductLayerBundle } from '@/lib/product-layer-engine'
 import { getUser } from '@/lib/supabase/get-user'
 import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
-import { ALL_ASSET_TYPES, ASSET_TYPE_CONFIG, type AspectRatio, type AssetType } from '@/types/template'
+import { ALL_ASSET_TYPES, buildRenderCanvas, type AssetType } from '@/types/template'
 
 const SINGLE_GEN_LIMIT = 60
 const SINGLE_GEN_WINDOW_SECS = 3600
@@ -98,9 +100,11 @@ export async function POST(request: NextRequest) {
 
   if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
 
-  // Resolve rule → template for THIS product, restricted to templates
-  // targeting the requested placement.
-  const templateId = await resolveTemplateForProductAndAssetType(
+  // Resolve rule → template for THIS product. Asset-type-agnostic: a
+  // template's own asset_type is only a builder convenience, not a filter on
+  // which rules apply — the requested placement only changes the render
+  // dimensions below (see buildRenderCanvas).
+  const templateId = await resolveTemplateForProduct(
     {
       id: product.id,
       tags: product.tags || [],
@@ -109,8 +113,7 @@ export async function POST(request: NextRequest) {
       price: product.price,
       compare_at_price: product.compare_at_price,
     },
-    storeId,
-    assetType
+    storeId
   )
 
   if (!templateId) {
@@ -118,9 +121,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         generated: 0,
-        message: assetType === 'catalog'
-          ? 'No rule matches this product. Add or adjust a rule in Rules Engine.'
-          : `No ${assetType} template rule matches this product. Add or adjust a rule in Rules Engine.`,
+        message: 'No rule matches this product. Add or adjust a rule in Rules Engine.',
       },
       { status: 200 }
     )
@@ -191,16 +192,12 @@ export async function POST(request: NextRequest) {
     const productLayerSettings = canvasData.productLayerSettings || undefined
 
     // Placement dimensions come from the requested assetType, not the
-    // template's own stored canvas_data.width/height — same override the
-    // bulk pipeline applies in generation-queue.ts's runJob, so a preview
-    // generated here matches what a bulk run for the same asset type produces.
-    const assetConfig = ASSET_TYPE_CONFIG[assetType]
-    const renderCanvas = {
-      ...canvasData,
-      width: assetConfig.width,
-      height: assetConfig.height,
-      aspectRatio: assetConfig.aspectRatio as AspectRatio,
-    }
+    // template's own stored canvas_data.width/height — same buildRenderCanvas
+    // override the bulk pipeline applies in generation-queue.ts's runJob, so a
+    // preview generated here matches what a bulk run for the same asset type
+    // produces (including forcing the product photo to 'contain' whenever the
+    // placement's aspect ratio differs from the template's own).
+    const renderCanvas = buildRenderCanvas(canvasData, assetType)
 
     const buffer = await compositeImage(renderCanvas, {
       title: product.title,
