@@ -485,58 +485,54 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
           {/* Row 3: which placement(s) to generate — independent of imageScope/
               variantScope, this multiplies the fan-out again: one job per
-              variant × image × selected asset type. Generate/Stop live here
-              too, at the end of the scope-defining rows rather than in a
-              separate card below, so the action sits right next to the last
-              choice that shapes it. */}
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <span className="w-16 shrink-0 pt-1.5 text-sm font-medium">Generate for</span>
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap gap-2">
-                  {ALL_ASSET_TYPES.map(type => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => toggleGenerateType(type)}
-                      className={cn(
-                        'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
-                        selectedGenerateTypes.includes(type)
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border text-muted-foreground hover:border-primary/50'
-                      )}
-                    >
-                      {ASSET_TYPE_CONFIG[type].label}
-                      <span className="ml-1 text-xs opacity-70">{ASSET_TYPE_CONFIG[type].aspectRatio}</span>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Catalog → Meta Commerce feed · Feed/Story/Reel → ad placements, never shown in the feed
-                </p>
-              </div>
-            </div>
+              variant × image × selected asset type. Generate/Stop sit right
+              after the pills, in the same wrapping row, rather than pinned to
+              the card's far edge — the action stays visually attached to the
+              choice that shapes it instead of floating off on its own. */}
+          <div className="flex items-start gap-3">
+            <span className="w-16 shrink-0 pt-1.5 text-sm font-medium">Generate for</span>
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {ALL_ASSET_TYPES.map(type => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => toggleGenerateType(type)}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                      selectedGenerateTypes.includes(type)
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border text-muted-foreground hover:border-primary/50'
+                    )}
+                  >
+                    {ASSET_TYPE_CONFIG[type].label}
+                    <span className="ml-1 text-xs opacity-70">{ASSET_TYPE_CONFIG[type].aspectRatio}</span>
+                  </button>
+                ))}
 
-            <div className="flex items-center gap-2 shrink-0">
-              <Button onClick={handleGenerate} disabled={generateDisabled}>
-                {generating
-                  ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating…</>
-                  : <><Wand2 className="h-4 w-4 mr-2" />Generate creatives</>
-                }
-              </Button>
-              {generating && (
-                <Button
-                  variant="outline"
-                  onClick={handleStop}
-                  disabled={stopping}
-                  className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                >
-                  {stopping
-                    ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Stopping…</>
-                    : <><StopCircle className="h-4 w-4 mr-2" />Stop</>
+                <Button className="ml-2" onClick={handleGenerate} disabled={generateDisabled}>
+                  {generating
+                    ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating…</>
+                    : <><Wand2 className="h-4 w-4 mr-2" />Generate creatives</>
                   }
                 </Button>
-              )}
+                {generating && (
+                  <Button
+                    variant="outline"
+                    onClick={handleStop}
+                    disabled={stopping}
+                    className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                  >
+                    {stopping
+                      ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Stopping…</>
+                      : <><StopCircle className="h-4 w-4 mr-2" />Stop</>
+                    }
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Catalog → Meta Commerce feed · Feed/Story/Reel → ad placements, never shown in the feed
+              </p>
             </div>
           </div>
         </CardContent>
