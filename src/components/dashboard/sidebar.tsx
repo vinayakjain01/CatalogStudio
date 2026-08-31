@@ -6,7 +6,6 @@ import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { LayoutDashboard, ShoppingBag, Layers, Zap, ImageIcon, Settings, LogOut, Check, Copy } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { StoreSwitcher } from '@/components/dashboard/store-switcher'
 import { CraftifyLogo } from '@/components/brand/craftify-logo'
@@ -95,38 +94,64 @@ export function Sidebar({
   }
 
   return (
-    // 240px (w-60) on the tinted sidebar surface.
-    <aside className="w-60 border-r flex flex-col bg-sidebar">
-      <div className="border-b p-5">
+    <aside style={{
+      width: 216, flexShrink: 0,
+      background: '#FBF9FF', borderRight: '1px solid #E7E2F0',
+      display: 'flex', flexDirection: 'column', height: '100vh',
+      fontFamily: 'var(--font-sans-family)',
+    }}>
+
+      {/* Logo — kept as the existing CraftifyLogo component, just restyled wrapper */}
+      <div style={{ padding: '18px 18px 16px', borderBottom: '1px solid #E7E2F0' }}>
         <CraftifyLogo markClassName="h-7 w-7" />
       </div>
-      <div className="border-b">
+
+      {/* Store switcher — existing component, just wrapped */}
+      <div style={{ borderBottom: '1px solid #E7E2F0' }}>
         <StoreSwitcher stores={stores} activeStoreId={activeStoreId} />
       </div>
-      <nav className="flex-1 p-3 space-y-1">
-        {navItems.map(({ href, label, icon: Icon }) => (
-          <Link key={href} href={href}>
-            {/* Tinted active state rather than a solid fill, so the nav reads
-                as navigation and solid purple stays reserved for actions. */}
-            <div className={cn(
-              'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-              pathname === href
-                ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground'
-            )}>
-              <Icon className="h-4 w-4" />
-              {label}
-            </div>
-          </Link>
-        ))}
+
+      {/* Navigation */}
+      <nav style={{ flex: 1, padding: 10, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {navItems.map(({ href, label, icon: Icon }) => {
+          const active = pathname === href
+          return (
+            <Link key={href} href={href} style={{ textDecoration: 'none' }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                borderRadius: 10, padding: '9px 10px',
+                background: active ? '#EFEAF9' : 'transparent',
+                color: active ? '#4B2E83' : '#6B6280',
+                fontWeight: active ? 600 : 400,
+                fontSize: 13.5,
+                cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}>
+                <Icon size={16} />
+                {label}
+              </div>
+            </Link>
+          )
+        })}
       </nav>
+
+      {/* Feed URL footer — existing component, unchanged */}
       <FeedUrlFooter store={stores.find(s => s.id === activeStoreId) ?? null} />
 
-      <div className="p-3 border-t">
-        <Button variant="ghost" className="w-full justify-start gap-3 text-muted-foreground" onClick={handleLogout}>
-          <LogOut className="h-4 w-4" />
+      {/* Sign out */}
+      <div style={{ padding: '10px 14px', borderTop: '1px solid #E7E2F0' }}>
+        <button
+          onClick={handleLogout}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            width: '100%', padding: '8px 10px', borderRadius: 10,
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: '#6B6280', fontSize: 13.5, fontFamily: 'inherit',
+          }}
+        >
+          <LogOut size={16} />
           Sign out
-        </Button>
+        </button>
       </div>
     </aside>
   )

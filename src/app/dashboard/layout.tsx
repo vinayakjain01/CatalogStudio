@@ -15,9 +15,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!user) redirect('/login')
 
   return (
-    <div className="flex h-screen bg-background">
+    <div style={{ display: 'flex', height: '100vh', background: '#F5F3FB', overflow: 'hidden' }}>
       <Sidebar stores={stores} activeStoreId={activeStoreId} />
-      <main className="flex-1 overflow-auto p-6">
+      <main style={{ flex: 1, overflowY: 'auto', padding: '22px 26px' }}>
         {children}
       </main>
     </div>

@@ -1,10 +1,21 @@
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'
 import { getActiveStore } from '@/lib/active-store'
 import { findUncoveredInStockVariants } from '@/lib/generation-queue'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { ShoppingBag, Layers, ImageIcon, Store } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import {
+  ShoppingBag, Layers, ImageIcon, Zap, AlertTriangle,
+  Clock, Loader2, X, ArrowUpRight, RefreshCw, Wand2, Plus, Settings,
+} from 'lucide-react'
+
+interface RecentCreative {
+  id: string
+  url: string
+  created_at: string
+  products: { title: string } | null
+  templates: { name: string } | null
+}
 
 /**
  * Surfaces why a Shopify token refresh failed.
@@ -81,11 +92,58 @@ export default async function DashboardPage({
     ? findUncoveredInStockVariants(activeStoreId, supabase).catch(() => [])
     : Promise.resolve([] as Array<{ id: string; product_id: string }>)
 
-  const [[pc, tc, cc], { data: activeStore }, totalInStockResult, uncoveredInStock] = await Promise.all([
+  // Rules count (total + active)
+  const rulesQuery = activeStoreId
+    ? Promise.all([
+        supabase.from('template_rules').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId),
+        supabase.from('template_rules').select('*', { count: 'exact', head: true }).eq('store_id', activeStoreId).eq('is_active', true),
+      ])
+    : Promise.resolve([{ count: 0 }, { count: 0 }] as Array<{ count: number | null }>)
+
+  // Generation queue stats (pending / processing / failed only)
+  const queueQuery = activeStoreId
+    ? supabase
+        .from('generation_jobs')
+        .select('status')
+        .eq('store_id', activeStoreId)
+        .in('status', ['pending', 'processing', 'failed'])
+    : Promise.resolve({ data: [] as Array<{ status: string }> })
+
+  // Recent creatives — last 3 with product title
+  const recentCreativesQuery = activeStoreId
+    ? supabase
+        .from('generated_creatives')
+        .select('id, url, created_at, products(title), templates(name)')
+        .eq('store_id', activeStoreId)
+        .order('created_at', { ascending: false })
+        .limit(3)
+    : Promise.resolve({ data: [] as RecentCreative[] })
+
+  // needs_reauth isn't on StoreLite (getActiveStore() deliberately keeps that
+  // type minimal), so it's fetched here rather than widening a shared type
+  // for one banner.
+  const reauthQuery = user
+    ? supabase.from('stores').select('id, needs_reauth').eq('user_id', user.id)
+    : Promise.resolve({ data: [] as Array<{ id: string; needs_reauth: boolean | null }> })
+
+  const [
+    [pc, tc, cc],
+    { data: activeStore },
+    totalInStockResult,
+    uncoveredInStock,
+    [rulesTotal, rulesActive],
+    { data: queueJobs },
+    { data: recentCreatives },
+    { data: reauthStores },
+  ] = await Promise.all([
     countQueries,
     activeStoreQuery,
     totalInStockQuery,
     uncoveredQuery,
+    rulesQuery,
+    queueQuery,
+    recentCreativesQuery,
+    reauthQuery,
   ])
 
   const productCount  = pc.count  || 0
@@ -96,78 +154,294 @@ export default async function DashboardPage({
   const uncoveredCount  = uncoveredInStock.length
   const coveredInStock  = Math.max(0, totalInStock - uncoveredCount)
 
-  const stats = [
-    { label: 'Connected stores',    value: storeList.length, icon: Store },
-    { label: 'Products synced',     value: productCount,     icon: ShoppingBag },
-    { label: 'Templates',           value: templateCount,    icon: Layers },
-    { label: 'Creatives generated', value: creativeCount,    icon: ImageIcon },
-  ]
+  const rulesCount       = rulesTotal?.count  ?? 0
+  const activeRulesCount = rulesActive?.count ?? 0
+
+  const queuePending    = queueJobs?.filter(j => j.status === 'pending').length    ?? 0
+  const queueProcessing = queueJobs?.filter(j => j.status === 'processing').length ?? 0
+  const queueFailed     = queueJobs?.filter(j => j.status === 'failed').length     ?? 0
+
+  const reauthStoreCount = (reauthStores ?? []).filter(s => s.needs_reauth).length
+  const needsReauth      = reauthStoreCount > 0
+  const coveragePct      = totalInStock > 0 ? Math.round((coveredInStock / totalInStock) * 100) : 0
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-muted-foreground mt-1">Your catalog creative automation overview</p>
+    <div style={{ fontFamily: 'var(--font-sans-family)', color: '#241A3D' }}>
+
+      {/* Page heading */}
+      <div style={{ marginBottom: 18 }}>
+        <h1 style={{ fontFamily: 'var(--font-heading-family)', fontSize: 22, fontWeight: 600, color: '#241A3D', margin: 0 }}>
+          Dashboard
+        </h1>
+        <p style={{ fontSize: 13, color: '#6B6280', margin: '4px 0 0' }}>
+          Your catalog creative automation overview
+        </p>
       </div>
 
       {authError && <AuthErrorNotice reason={authError} />}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map(({ label, value, icon: Icon }) => (
-          <Card key={label}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-              <Icon className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold">{value.toLocaleString('en-IN')}</p>
-            </CardContent>
-          </Card>
+      {/* Reconnect banner — shown when any connected store needs reauth */}
+      {needsReauth && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          background: '#FBE6E4', border: '1px solid #f0c3bf', borderRadius: 12,
+          padding: '12px 14px', marginBottom: 18,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <AlertTriangle size={16} color="#D6483F" style={{ marginTop: 2, flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#D6483F' }}>
+                {reauthStoreCount} store{reauthStoreCount > 1 ? 's need' : ' needs'} reconnecting
+              </div>
+              <div style={{ fontSize: 12, color: '#a8483f', marginTop: 1 }}>
+                Sync and generation are paused until it is reconnected.
+              </div>
+            </div>
+          </div>
+          <Link
+            href="/dashboard/settings"
+            style={{
+              fontSize: 12.5, fontWeight: 600, color: '#D6483F',
+              border: '1px solid #D6483F88', borderRadius: 8,
+              padding: '6px 12px', whiteSpace: 'nowrap', textDecoration: 'none',
+            }}
+          >
+            Reconnect
+          </Link>
+        </div>
+      )}
+
+      {/* KPI cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
+        {[
+          { label: 'Products synced',     value: productCount,  sub: `${storeList.length} connected store${storeList.length !== 1 ? 's' : ''}`, Icon: ShoppingBag },
+          { label: 'Templates',           value: templateCount, sub: `${templateCount} active`,    Icon: Layers },
+          { label: 'Rules',               value: rulesCount,    sub: `${activeRulesCount} active`, Icon: Zap },
+          { label: 'Creatives generated', value: creativeCount, sub: creativeCount === 0 ? 'None yet' : 'Total generated', Icon: ImageIcon },
+        ].map(({ label, value, sub, Icon }) => (
+          <div key={label} style={{
+            background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '14px 16px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 12.5, color: '#6B6280', fontWeight: 600 }}>{label}</span>
+              <Icon size={15} color="#6B6280" />
+            </div>
+            <div style={{ fontSize: 25, fontWeight: 600, color: '#241A3D', marginTop: 6 }}>
+              {value.toLocaleString('en-IN')}
+            </div>
+            <div style={{ fontSize: 11.5, color: '#6B6280', marginTop: 3 }}>{sub}</div>
+          </div>
         ))}
       </div>
 
-      {activeStore && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Feed Coverage
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold">
-              {coveredInStock.toLocaleString('en-IN')}
-              <span className="text-sm font-normal text-muted-foreground">
-                /{totalInStock.toLocaleString('en-IN')}
-              </span>
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              In-stock variants with a creative
-            </p>
-            {uncoveredCount > 0 && (
-              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-                {uncoveredCount.toLocaleString('en-IN')} still need generation
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {/* Main 2-col grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
 
-      {activeStore && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium">Active Store</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            <p className="font-medium">{activeStore.shop_name || activeStore.shop_domain}</p>
-            <p className="text-xs text-muted-foreground">{activeStore.shop_domain}</p>
-            {activeStore.last_sync_at && (
-              <p className="text-xs text-muted-foreground">
-                Last synced {formatDistanceToNow(new Date(activeStore.last_sync_at), { addSuffix: true })}
+        {/* Left column */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+
+          {/* Feed coverage */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#6B6280' }}>Feed coverage</span>
+              {uncoveredCount > 0 && (
+                <Link
+                  href="/dashboard/creatives"
+                  style={{
+                    background: '#4B2E83', color: '#fff', fontSize: 12, fontWeight: 600,
+                    borderRadius: 8, padding: '7px 12px', display: 'flex', alignItems: 'center',
+                    gap: 6, textDecoration: 'none',
+                  }}
+                >
+                  <Wand2 size={14} />
+                  Generate {uncoveredCount} missing
+                </Link>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 24, fontWeight: 600, color: '#241A3D' }}>
+                {coveredInStock}
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#6B6280' }}>/{totalInStock}</span>
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#6B6280' }}>{coveragePct}%</span>
+            </div>
+            <div style={{ height: 8, borderRadius: 8, background: '#EFEAF9', overflow: 'hidden' }}>
+              <div style={{ width: `${coveragePct}%`, height: '100%', background: '#4B2E83', transition: 'width 0.3s' }} />
+            </div>
+            <div style={{ fontSize: 12, color: '#6B6280', marginTop: 8 }}>
+              In-stock variants with a creative ready for the Meta feed
+            </div>
+          </div>
+
+          {/* Generation queue */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#6B6280', marginBottom: 12 }}>
+              Generation queue
+            </div>
+            <div style={{ display: 'flex', gap: 24 }}>
+              {[
+                { label: 'Pending',    value: queuePending,    Icon: Clock,    iconBg: '#FBF9FF', iconColor: '#6B6280' },
+                { label: 'Processing', value: queueProcessing, Icon: Loader2,  iconBg: '#EFEAF9', iconColor: '#4B2E83' },
+                { label: 'Failed',     value: queueFailed,     Icon: X,        iconBg: '#FBE6E4', iconColor: '#D6483F' },
+              ].map(({ label, value, Icon, iconBg, iconColor }) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{
+                    width: 32, height: 32, borderRadius: '50%', background: iconBg,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  }}>
+                    <Icon size={15} color={iconColor} />
+                  </span>
+                  <div>
+                    <div style={{ fontSize: 17, fontWeight: 600, color: '#241A3D', lineHeight: 1 }}>{value}</div>
+                    <div style={{ fontSize: 11.5, color: '#6B6280', marginTop: 3 }}>{label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {queueFailed > 0 && (
+              <Link
+                href="/dashboard/creatives"
+                style={{
+                  fontSize: 12, fontWeight: 600, color: '#D6483F', marginTop: 10,
+                  display: 'flex', alignItems: 'center', gap: 5, textDecoration: 'none',
+                }}
+              >
+                <RefreshCw size={13} />
+                Review and retry {queueFailed} failed job{queueFailed !== 1 ? 's' : ''}
+              </Link>
+            )}
+          </div>
+
+          {/* Recent activity */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#6B6280' }}>Recent activity</span>
+              <Link href="/dashboard/creatives" style={{ fontSize: 12, fontWeight: 600, color: '#4B2E83', textDecoration: 'none' }}>
+                View all →
+              </Link>
+            </div>
+            {(!recentCreatives || recentCreatives.length === 0) ? (
+              <p style={{ fontSize: 13, color: '#6B6280' }}>No creatives generated yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {(recentCreatives as RecentCreative[]).map((c, i) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '9px 0',
+                      borderBottom: i < recentCreatives.length - 1 ? '1px solid #F0EDF7' : 'none',
+                    }}
+                  >
+                    {c.url ? (
+                      <img
+                        src={c.url}
+                        alt=""
+                        style={{ width: 36, height: 36, borderRadius: 8, objectFit: 'cover', flexShrink: 0, background: '#EFEAF9' }}
+                      />
+                    ) : (
+                      <div style={{ width: 36, height: 36, borderRadius: 8, background: '#EFEAF9', flexShrink: 0 }} />
+                    )}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#241A3D', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {c.products?.title ?? 'Unknown product'}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: '#6B6280' }}>
+                        {c.templates?.name ?? 'Creative'} ·{' '}
+                        {formatDistanceToNow(new Date(c.created_at), { addSuffix: true })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Right column */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+
+          {/* Quick actions */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#6B6280', marginBottom: 10 }}>Quick actions</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {[
+                { label: 'Generate creatives', sub: 'Fill coverage gaps',      Icon: Wand2,    href: '/dashboard/creatives' },
+                { label: 'New template',       sub: 'Design a layout',         Icon: Plus,     href: '/dashboard/templates' },
+                { label: 'New rule',           sub: 'Automate template picks', Icon: Zap,      href: '/dashboard/rules' },
+                { label: 'Store settings',     sub: 'Feed, sync, connection',  Icon: Settings, href: '/dashboard/settings' },
+              ].map(({ label, sub, Icon, href }) => (
+                <Link key={href} href={href} style={{ textDecoration: 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
+                    <span style={{
+                      width: 30, height: 30, borderRadius: 8, background: '#EFEAF9',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <Icon size={15} color="#4B2E83" />
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#241A3D' }}>{label}</div>
+                      <div style={{ fontSize: 11, color: '#6B6280' }}>{sub}</div>
+                    </div>
+                    <ArrowUpRight size={14} color="#6B6280" />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Active store */}
+          {activeStore && (
+            <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#241A3D' }}>Active store</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, color: '#1E9E7C', background: '#E3F5EE',
+                  borderRadius: 20, padding: '3px 10px',
+                }}>
+                  {activeStore.needs_reauth ? 'Needs reconnect' : 'Connected'}
+                </span>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#241A3D' }}>
+                {activeStore.shop_name || activeStore.shop_domain}
+              </div>
+              <div style={{ fontSize: 12, color: '#6B6280', marginTop: 2 }}>{activeStore.shop_domain}</div>
+              {activeStore.last_synced_at && (
+                <div style={{ fontSize: 12, color: '#6B6280', marginTop: 4 }}>
+                  Last synced {formatDistanceToNow(new Date(activeStore.last_synced_at), { addSuffix: true })}
+                </div>
+              )}
+              {storeList.length > 1 && (
+                <div style={{
+                  fontSize: 11.5, color: '#6B6280', marginTop: 10, paddingTop: 10,
+                  borderTop: '1px solid #F0EDF7',
+                }}>
+                  {storeList.length} stores connected — switch from the sidebar.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Top templates */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#6B6280' }}>Top templates</span>
+              <Link href="/dashboard/templates" style={{ fontSize: 12, fontWeight: 600, color: '#4B2E83', textDecoration: 'none' }}>
+                View all →
+              </Link>
+            </div>
+            {templateCount === 0 ? (
+              <p style={{ fontSize: 13, color: '#6B6280' }}>No templates yet.</p>
+            ) : (
+              <p style={{ fontSize: 13, color: '#6B6280' }}>
+                {templateCount} template{templateCount !== 1 ? 's' : ''} configured.
               </p>
             )}
-          </CardContent>
-        </Card>
-      )}
+          </div>
+
+        </div>
+      </div>
     </div>
   )
 }
