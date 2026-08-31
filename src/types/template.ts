@@ -249,6 +249,31 @@ export function badgeConditionMet(
   return true
 }
 
+// ─── Placement asset types ────────────────────────────────────────────────────
+// A template targets exactly one placement. SEPARATION RULE: only 'catalog'
+// creatives are ever read by the public Meta feed (/api/feed/[storeId]) or the
+// dashboard's Feed Coverage / restock-detection logic (see
+// findUncoveredInStockVariants in generation-queue.ts) — 'feed'/'story'/'reel'
+// are ad placements Meta never sees via the catalog feed at all.
+
+export type AssetType = 'catalog' | 'feed' | 'story' | 'reel'
+
+export const ASSET_TYPE_CONFIG: Record<AssetType, {
+  label: string
+  width: number
+  height: number
+  aspectRatio: AspectRatio
+  description: string
+  metaUsage: 'catalog_feed' | 'ad_placement'
+}> = {
+  catalog: { label: 'Catalog', width: 1080, height: 1080, aspectRatio: '1:1',  description: '1:1 — Meta Commerce Manager catalog feed', metaUsage: 'catalog_feed' },
+  feed:    { label: 'Feed',    width: 1080, height: 1350, aspectRatio: '4:5',  description: '4:5 — Feed ad placement',                  metaUsage: 'ad_placement' },
+  story:   { label: 'Story',   width: 1080, height: 1920, aspectRatio: '9:16', description: '9:16 — Stories ad placement',              metaUsage: 'ad_placement' },
+  reel:    { label: 'Reel',    width: 1080, height: 1920, aspectRatio: '9:16', description: '9:16 — Reels ad placement',                metaUsage: 'ad_placement' },
+}
+
+export const ALL_ASSET_TYPES: AssetType[] = ['catalog', 'feed', 'story', 'reel']
+
 export type AspectRatio = '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1' | '2:3' | 'custom'
 
 export const ASPECT_RATIOS: { label: string; value: AspectRatio; width: number; height: number }[] = [

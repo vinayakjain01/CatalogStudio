@@ -12,6 +12,8 @@ import { Wand2, Download, Trash2, RefreshCw, ImageIcon, Loader2, StopCircle } fr
 import { formatDistanceToNow } from 'date-fns'
 import { DownloadZipButton } from './download-zip-button'
 import { shopifyFetch } from '@/lib/shopify-token'
+import { cn } from '@/lib/utils'
+import { ALL_ASSET_TYPES, ASSET_TYPE_CONFIG, type AssetType } from '@/types/template'
 
 interface Creative {
   id: string
@@ -20,6 +22,7 @@ interface Creative {
   template_id: string
   cloudinary_id: string | null
   variant_id: string | null
+  asset_type: AssetType | null
   products: { title: string } | null
   product_variants: { title: string | null; option1: string | null; option2: string | null; option3: string | null } | null
   templates: { name: string } | null
@@ -89,6 +92,20 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const [estimate, setEstimate] = useState<GenerationEstimate | null>(null)
   const [estimateLoading, setEstimateLoading] = useState(false)
 
+  // Which placement to generate for — a merchant can select several at once
+  // (one job per variant/image PER selected type). Catalog only by default,
+  // matching every other default in this scope.
+  const [selectedGenerateTypes, setSelectedGenerateTypes] = useState<AssetType[]>(['catalog'])
+  function toggleGenerateType(type: AssetType) {
+    setSelectedGenerateTypes(prev =>
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+    )
+  }
+
+  // Which placement's creatives the grid below is showing — independent of
+  // what's selected to generate.
+  const [selectedAssetType, setSelectedAssetType] = useState<AssetType>('catalog')
+
   const currentBatchId = useRef<string | null>(null)
   const pollingActive = useRef(false)
   const lastCompletedAt = useRef<{ count: number; time: number }>({ count: 0, time: Date.now() })
@@ -108,16 +125,20 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     const fromRow = page * PER_PAGE
     // generated_creatives (v2) carries store_id directly — a plain filter, no
     // join through products — and one row survives per (variant, image,
-    // template) instead of the legacy table's one row per (product, template).
+    // template, asset_type) instead of the legacy table's one row per
+    // (product, template). Scoped to the placement tab currently selected —
+    // 'catalog' by default so what merchants see first here is the same set
+    // the Meta feed actually reads from.
     const { data, count } = await supabase
       .from('generated_creatives')
       .select(`
-        id, url, created_at, template_id, cloudinary_id, variant_id,
+        id, url, created_at, template_id, cloudinary_id, variant_id, asset_type,
         products(title),
         product_variants(title, option1, option2, option3),
         templates(name)
       `, { count: 'exact' })
       .eq('store_id', selectedStore)
+      .eq('asset_type', selectedAssetType)
       .order('created_at', { ascending: false })
       .range(fromRow, fromRow + PER_PAGE - 1)
     setCreatives((data as any) || [])
@@ -125,13 +146,15 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     setLoading(false)
   }
 
+  // Switching stores or placement tabs both re-page: "page 3 of Story" isn't a
+  // meaningful position once Catalog's own page count may differ entirely.
   useEffect(() => {
     if (selectedStore) setPage(0)
-  }, [selectedStore])
+  }, [selectedStore, selectedAssetType])
 
-  // Reactive load on store/page change. Inlined + cancellation-guarded rather
-  // than calling fetchCreatives(), so a slow response for a store the user has
-  // since switched away from cannot overwrite the newer selection's data.
+  // Reactive load on store/page/asset-type change. Inlined + cancellation-guarded
+  // rather than calling fetchCreatives(), so a slow response for a selection the
+  // user has since switched away from cannot overwrite the newer one's data.
   useEffect(() => {
     if (!selectedStore) return
     let cancelled = false
@@ -143,12 +166,13 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       const { data, count } = await supabase
         .from('generated_creatives')
         .select(`
-          id, url, created_at, template_id, cloudinary_id, variant_id,
+          id, url, created_at, template_id, cloudinary_id, variant_id, asset_type,
           products(title),
           product_variants(title, option1, option2, option3),
           templates(name)
         `, { count: 'exact' })
         .eq('store_id', selectedStore)
+        .eq('asset_type', selectedAssetType)
         .order('created_at', { ascending: false })
         .range(fromRow, fromRow + PER_PAGE - 1)
 
@@ -159,7 +183,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     })()
 
     return () => { cancelled = true }
-  }, [selectedStore, page])
+  }, [selectedStore, page, selectedAssetType])
 
   // Suggestions for the Option name field — best-effort; an empty/failed
   // response just leaves the four common defaults, never blocks the form.
@@ -188,7 +212,8 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
 
       const scopeIncomplete =
         (variantScope === 'specific' && (!variantOptionName.trim() || !variantOptionValue.trim())) ||
-        (filterType !== 'all' && !filterValue.trim())
+        (filterType !== 'all' && !filterValue.trim()) ||
+        selectedGenerateTypes.length === 0
 
       if (scopeIncomplete) {
         setEstimate(null)
@@ -197,7 +222,10 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
       }
 
       setEstimateLoading(true)
-      const params = new URLSearchParams({ storeId: selectedStore, variantScope, imageScope })
+      const params = new URLSearchParams({
+        storeId: selectedStore, variantScope, imageScope,
+        assetTypes: selectedGenerateTypes.join(','),
+      })
       if (variantScope === 'specific') {
         params.set('optionName', variantOptionName.trim())
         params.set('optionValue', variantOptionValue.trim())
@@ -220,7 +248,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     }, 450)
 
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [selectedStore, variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue])
+  }, [selectedStore, variantScope, variantOptionName, variantOptionValue, imageScope, filterType, filterValue, selectedGenerateTypes])
 
   function handleVariantScopeChange(v: string) {
     setVariantScope(v as 'all' | 'specific')
@@ -247,6 +275,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
           ? { name: variantOptionName.trim(), value: variantOptionValue.trim() }
           : null,
         imageScope,
+        assetTypes: selectedGenerateTypes,
       }),
     })
 
@@ -351,6 +380,7 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
     generating ||
     (variantScope === 'specific' && (!variantOptionName.trim() || !variantOptionValue.trim())) ||
     (filterType !== 'all' && !filterValue.trim()) ||
+    selectedGenerateTypes.length === 0 ||
     Boolean(estimate?.overLimit)
 
   const scopeSummary = buildScopeSummary({
@@ -453,6 +483,36 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Row 3: which placement(s) to generate — independent of imageScope/
+              variantScope, this multiplies the fan-out again: one job per
+              variant × image × selected asset type. */}
+          <div className="flex items-start gap-3">
+            <span className="w-16 shrink-0 pt-1.5 text-sm font-medium">Generate for</span>
+            <div className="flex-1 space-y-1.5">
+              <div className="flex flex-wrap gap-2">
+                {ALL_ASSET_TYPES.map(type => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => toggleGenerateType(type)}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                      selectedGenerateTypes.includes(type)
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border text-muted-foreground hover:border-primary/50'
+                    )}
+                  >
+                    {ASSET_TYPE_CONFIG[type].label}
+                    <span className="ml-1 text-xs opacity-70">{ASSET_TYPE_CONFIG[type].aspectRatio}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Catalog → Meta Commerce feed · Feed/Story/Reel → ad placements, never shown in the feed
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -598,12 +658,33 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
         </CardContent>
       </Card>
 
+      {/* Asset-type view tabs — filters which placement's creatives the grid
+          below shows; independent of "Generate for" above (that's what gets
+          created next, this is what's already been generated). */}
+      <div className="flex items-center gap-1 border-b">
+        {ALL_ASSET_TYPES.map(type => (
+          <button
+            key={type}
+            type="button"
+            onClick={() => setSelectedAssetType(type)}
+            className={cn(
+              'px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+              selectedAssetType === type
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {ASSET_TYPE_CONFIG[type].label}
+          </button>
+        ))}
+      </div>
+
       {/* Creatives grid header */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{totalCreatives} creatives</p>
         <div className="flex items-center gap-2">
           {selectedStore && totalCreatives > 0 && (
-            <DownloadZipButton storeId={selectedStore} />
+            <DownloadZipButton storeId={selectedStore} assetType={selectedAssetType} />
           )}
           <Button variant="ghost" size="sm" onClick={fetchCreatives}>
             <RefreshCw className="h-3.5 w-3.5 mr-2" />Refresh
@@ -660,8 +741,13 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
                     <p className="text-[11px] text-muted-foreground truncate">{vLabel}</p>
                   )}
                   <div className="flex items-center justify-between mt-1">
-                    <Badge variant="outline" className="text-xs py-0">{template?.name}</Badge>
-                    <span className="text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <Badge variant="outline" className="text-xs py-0 shrink-0">
+                        {ASSET_TYPE_CONFIG[creative.asset_type ?? 'catalog'].label}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs py-0 truncate">{template?.name}</Badge>
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">
                       {formatDistanceToNow(new Date(creative.created_at), { addSuffix: true })}
                     </span>
                   </div>

@@ -5,8 +5,9 @@
  * List the current user's templates, or create a new one under their active store.
  *
  * Auth:     Supabase session via getUser() (src/lib/supabase/get-user.ts)
- * Body:     POST — { name, description?, category_id?, canvas_data } (name and
- *           canvas_data are required)
+ * Body:     POST — { name, description?, category_id?, canvas_data, asset_type? }
+ *           (name and canvas_data are required; asset_type defaults to
+ *           'catalog', an invalid value silently falls back to it)
  * Returns:  GET -> { templates }; POST -> { template }; errors -> { error }
  *
  * Flow: GET: verify user -> select templates for user_id, newest first
@@ -16,7 +17,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getUser } from '@/lib/supabase/get-user'
 import { getActiveStore } from '@/lib/active-store'
-import { CanvasData } from '@/types/template'
+import { ALL_ASSET_TYPES, AssetType, CanvasData } from '@/types/template'
 
 export async function GET() {
   const [user, supabase] = await Promise.all([
@@ -48,10 +49,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'No active store. Connect a store first.' }, { status: 400 })
   }
 
-  const { name, description, category_id, canvas_data } = body
+  const { name, description, category_id, canvas_data, asset_type } = body
   if (!name || !canvas_data) {
     return NextResponse.json({ error: 'name and canvas_data required' }, { status: 400 })
   }
+  const resolvedAssetType: AssetType = ALL_ASSET_TYPES.includes(asset_type) ? asset_type : 'catalog'
 
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -63,6 +65,7 @@ export async function POST(request: NextRequest) {
       description: description || null,
       category_id: category_id || null,
       canvas_data,
+      asset_type: resolvedAssetType,
     })
     .select()
     .single()

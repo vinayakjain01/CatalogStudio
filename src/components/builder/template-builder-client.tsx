@@ -20,7 +20,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Save, ArrowLeft, Loader2, Layers, Sparkles } from 'lucide-react'
-import { CanvasData, AspectRatio, ASPECT_RATIOS, PRODUCT_LAYER_ID } from '@/types/template'
+import {
+  CanvasData, AspectRatio, ASPECT_RATIOS, PRODUCT_LAYER_ID,
+  AssetType, ALL_ASSET_TYPES, ASSET_TYPE_CONFIG,
+} from '@/types/template'
 import Link from 'next/link'
 
 interface Props {
@@ -30,6 +33,7 @@ interface Props {
     description: string | null
     category_id: string | null
     canvas_data: CanvasData
+    asset_type?: AssetType | null
   }
   categories: { id: string; name: string }[]
   previewProducts?: any[]
@@ -43,9 +47,25 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
   const { canvasData, loadTemplate, isDirty, resetDirty, setAspectRatio, selectedLayerId } = useBuilderStore()
   const [name, setName] = useState(template?.name || 'Untitled template')
   const [categoryId, setCategoryId] = useState(template?.category_id || 'none')
+  const [assetType, setAssetType] = useState<AssetType>(template?.asset_type ?? 'catalog')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [rightTab, setRightTab] = useState<RightPanelTab>('layers')
+
+  /**
+   * Picking a placement sets the canvas to its exact dimensions via the same
+   * setAspectRatio() the raw aspect-ratio picker uses (every ASSET_TYPE_CONFIG
+   * aspect ratio is already one of the ASPECT_RATIOS presets) — a good
+   * default, not a lock: the aspect-ratio picker below can still be changed
+   * afterwards. If it is, the LIVE PREVIEW here reflects that custom size, but
+   * generation always renders at the placement's own fixed dimensions (see
+   * runJob in generation-queue.ts) — the stored canvas_data size is a preview
+   * convenience, not what asset_type-aware generation actually outputs.
+   */
+  function handleAssetTypeChange(value: AssetType) {
+    setAssetType(value)
+    setAspectRatio(ASSET_TYPE_CONFIG[value].aspectRatio)
+  }
 
   // Auto-switch panels on selection: the implicit product layer's controls
   // live in the AI panel; regular layers use the properties panel.
@@ -87,6 +107,7 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
       name,
       category_id: categoryId === 'none' ? null : categoryId,
       canvas_data: canvasData,
+      asset_type: assetType,
     }
 
     const url = template ? `/api/templates/${template.id}` : '/api/templates'
@@ -132,6 +153,32 @@ export function TemplateBuilderClient({ template, categories, previewProducts = 
             onChange={e => setName(e.target.value)}
             className="h-8 w-44 font-medium text-sm"
           />
+
+          <Select
+            value={assetType}
+            onValueChange={v => handleAssetTypeChange(v as AssetType)}
+          >
+            <SelectTrigger className="h-8 w-44 *:data-[slot=select-value]:min-w-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {/* Label + description in ONE row, not stacked — Radix mirrors an
+                  item's full children into the closed trigger, so a stacked
+                  pair here would centre two lines in the trigger instead of
+                  reading as a single compact control (see the identical fix
+                  applied to the Creatives page's scope selectors). */}
+              {ALL_ASSET_TYPES.map(t => (
+                <SelectItem key={t} value={t}>
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="font-medium shrink-0">{ASSET_TYPE_CONFIG[t].label}</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {ASSET_TYPE_CONFIG[t].aspectRatio}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
           <Select
             value={canvasData.aspectRatio || '1:1'}

@@ -6,9 +6,11 @@
  * RESPONSIBILITIES:
  *   - getActiveTemplateRules — load a store's active rules, priority-ordered (ascending; lower number wins)
  *   - resolveTemplateForProduct — load rules and resolve the first matching template for one product/variant
+ *   - resolveTemplateForProductAndAssetType — same, restricted to a given placement
  *   - evaluateCondition — evaluate a single v2 condition against a product/variant
  *   - ruleMatches — evaluate a full rule (v2 multi-condition, or legacy single-condition fallback)
  *   - resolveTemplateFromRules — first-match-wins template id for a product/variant against an already-loaded rule list
+ *   - resolveTemplateFromRulesForAssetType — same, restricted to rules whose template targets a given AssetType
  *   - matchingRules — every rule that would match, in priority order (rule-editor preview)
  *
  * v2 — MULTI-CONDITION RULES. A rule used to be a single
@@ -25,6 +27,7 @@
  * relative order has inverted and needs checking.
  */
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
+import type { AssetType } from '@/types/template'
 // Node.js 20 has no native WebSocket global — must pass ws explicitly
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ws = require('ws') as any
@@ -63,6 +66,14 @@ export interface TemplateRule {
   rule_operator?: string | null
   rule_value?: string | null
   created_at?: string | null
+  /**
+   * The asset_type of this rule's own template — flattened onto the rule by
+   * getActiveTemplateRules() from an embedded `templates(asset_type)` join, so
+   * resolveTemplateFromRulesForAssetType() can filter without a second query.
+   * Absent (not just undefined) on rules loaded any other way; treat missing
+   * the same as 'catalog', matching the column's own DB default.
+   */
+  template_asset_type?: AssetType | null
 }
 
 /** Everything a rule can be evaluated against. */
@@ -96,7 +107,7 @@ export async function getActiveTemplateRules(storeId: string): Promise<TemplateR
 
   const { data: rules } = await supabase
     .from('template_rules')
-    .select('*')
+    .select('*, templates(asset_type)')
     .eq('store_id', storeId)
     .eq('is_active', true)
     // Lower priority number wins (v2 semantics). created_at is a deterministic
@@ -105,7 +116,13 @@ export async function getActiveTemplateRules(storeId: string): Promise<TemplateR
     .order('priority', { ascending: true })
     .order('created_at', { ascending: true })
 
-  return rules || []
+  // Flatten the embedded templates.asset_type onto the rule itself, so
+  // resolveTemplateFromRulesForAssetType() can filter the list without a
+  // second query per job.
+  return (rules ?? []).map((r: any) => ({
+    ...r,
+    template_asset_type: r.templates?.asset_type ?? 'catalog',
+  }))
 }
 
 /**
@@ -120,6 +137,17 @@ export async function resolveTemplateForProduct(
 ): Promise<string | null> {
   const rules = await getActiveTemplateRules(storeId)
   return resolveTemplateFromRules(product, rules, variant)
+}
+
+/** Same as resolveTemplateForProduct, restricted to a given placement. */
+export async function resolveTemplateForProductAndAssetType(
+  product: RuleProduct,
+  storeId: string,
+  assetType: AssetType,
+  variant?: RuleVariant
+): Promise<string | null> {
+  const rules = await getActiveTemplateRules(storeId)
+  return resolveTemplateFromRulesForAssetType(product, rules, assetType, variant)
 }
 
 const lower = (v: unknown) => String(v ?? '').toLowerCase().trim()
@@ -252,6 +280,24 @@ export function resolveTemplateFromRules(
     if (rule.template_id && ruleMatches(rule, product, variant)) return rule.template_id
   }
   return null
+}
+
+/**
+ * First-match-wins template id for a product (+ optional variant), restricted
+ * to rules whose OWN template targets `assetType`. A store with no template
+ * configured for a given asset type (e.g. no 'reel' template yet) correctly
+ * resolves to null here — the caller (runJob) treats that as "skip this job,"
+ * not an error, so catalog generation is never blocked by an unconfigured
+ * placement.
+ */
+export function resolveTemplateFromRulesForAssetType(
+  product: RuleProduct,
+  rules: TemplateRule[],
+  assetType: AssetType,
+  variant?: RuleVariant
+): string | null {
+  const matching = rules.filter(rule => (rule.template_asset_type ?? 'catalog') === assetType)
+  return resolveTemplateFromRules(product, matching, variant)
 }
 
 /**

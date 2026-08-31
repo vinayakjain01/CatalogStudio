@@ -11,7 +11,11 @@
  *
  * Fan-out is per in-stock VARIANT (sold-out variants are filtered out before
  * fan-out — see the In-Stock Only comments below) times per IMAGE depending on
- * imageScope ('first' or 'all'). Every `.in()` query against Supabase goes
+ * imageScope ('first' or 'all') times per placement ASSET TYPE ('catalog' by
+ * default; opt into 'feed'/'story'/'reel' via assetTypes). Only 'catalog'
+ * creatives are ever read by the public feed or the dashboard's coverage
+ * stats — see ASSET_TYPE_CONFIG in src/types/template.ts and migration 009.
+ * Every `.in()` query against Supabase goes
  * through fetchAllChunked, which both chunks the input id list (PostgREST's
  * URL-length limit) and paginates each chunk's result (PostgREST's per-request
  * row cap) — chunking the input alone does not bound the output size; both are
@@ -40,6 +44,7 @@ const ws = require('ws') as any
 import {
   getActiveTemplateRules,
   resolveTemplateFromRules,
+  resolveTemplateFromRulesForAssetType,
   TemplateRule,
 } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
@@ -51,6 +56,7 @@ import { mapWithConcurrency } from '@/lib/concurrency'
 import { logPerf, measureAsync } from '@/lib/perf'
 import { enqueueGenerationJobs, redisQueuesEnabled } from '@/lib/queues'
 import type { CompositorBundle } from '@/types/product-layer'
+import { ASSET_TYPE_CONFIG, type AspectRatio, type AssetType, type CanvasData } from '@/types/template'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SECTION — Chunked `.in()` Query Helpers
@@ -290,6 +296,16 @@ export interface EnqueueArgs {
    *      Creatives page's "All poses" scope.
    */
   imageScope?: 'all' | 'first'
+  /**
+   * Which placements to generate. One job per (variant, image, assetType) —
+   * this multiplies the fan-out on top of variantOption/imageScope, so
+   * requesting all four alongside "all variants + all poses" reaches
+   * MAX_JOBS_PER_ENQUEUE much sooner than a catalog-only request would.
+   * Defaults to ['catalog'] so every existing caller (the sync's
+   * auto-enqueue-on-change, in particular) keeps producing exactly the same
+   * jobs it always has.
+   */
+  assetTypes?: AssetType[]
 }
 
 /**
@@ -329,6 +345,7 @@ export interface GenerationRow {
   variant_id?: string
   image_id?: string
   creative_type: string
+  asset_type: AssetType
   status: string
   batch_id: string | null
 }
@@ -340,6 +357,8 @@ export interface ComputeRowsArgs {
   batchId?: string | null
   variantOption?: { name: string; value: string } | null
   imageScope?: 'all' | 'first'
+  /** See EnqueueArgs.assetTypes. Defaults to ['catalog']. */
+  assetTypes?: AssetType[]
 }
 
 /**
@@ -352,7 +371,7 @@ export interface ComputeRowsArgs {
 export async function computeGenerationRows(
   {
     storeId, productIds, creativeType = 'default', batchId = null,
-    variantOption = null, imageScope = 'first',
+    variantOption = null, imageScope = 'first', assetTypes = ['catalog'],
   }: ComputeRowsArgs,
   supabase: SupabaseClient
 ): Promise<GenerationRow[]> {
@@ -446,13 +465,16 @@ export async function computeGenerationRows(
       //    that is entirely out of stock, defeating the whole point of the
       //    is_sold_out filter above.
       if (variantOption || productsWithVariantRows.has(pid)) continue
-      rows.push({
-        store_id: storeId,
-        product_id: pid,
-        creative_type: creativeType,
-        status: 'pending',
-        batch_id: batchId ?? null,
-      })
+      for (const assetType of assetTypes) {
+        rows.push({
+          store_id: storeId,
+          product_id: pid,
+          creative_type: creativeType,
+          asset_type: assetType,
+          status: 'pending',
+          batch_id: batchId ?? null,
+        })
+      }
       continue
     }
 
@@ -461,15 +483,18 @@ export async function computeGenerationRows(
     for (const variant of productVariants) {
       const images = imagesForVariant(productImages, (variant as any).shopify_variant_id, imageScope)
       for (const img of images) {
-        rows.push({
-          store_id: storeId,
-          product_id: pid,
-          variant_id: (variant as any).id,
-          image_id: img.id,
-          creative_type: creativeType,
-          status: 'pending',
-          batch_id: batchId ?? null,
-        })
+        for (const assetType of assetTypes) {
+          rows.push({
+            store_id: storeId,
+            product_id: pid,
+            variant_id: (variant as any).id,
+            image_id: img.id,
+            creative_type: creativeType,
+            asset_type: assetType,
+            status: 'pending',
+            batch_id: batchId ?? null,
+          })
+        }
       }
     }
   }
@@ -488,7 +513,7 @@ export async function computeGenerationRows(
 export async function enqueueGeneration(
   {
     storeId, productIds, creativeType = 'default', batchId, basePriority = 100,
-    variantOption = null, imageScope = 'first',
+    variantOption = null, imageScope = 'first', assetTypes = ['catalog'],
   }: EnqueueArgs,
   supabase: SupabaseClient = getAdminClient()
 ): Promise<number> {
@@ -496,11 +521,12 @@ export async function enqueueGeneration(
 
   console.log(
     `[enqueueGeneration] START storeId=${storeId} products=${productIds.length} ` +
-    `batchId=${batchId ?? 'none'} variantOption=${variantOption ? `${variantOption.name}:${variantOption.value}` : 'none'} imageScope=${imageScope}`
+    `batchId=${batchId ?? 'none'} variantOption=${variantOption ? `${variantOption.name}:${variantOption.value}` : 'none'} ` +
+    `imageScope=${imageScope} assetTypes=${assetTypes.join(',')}`
   )
 
   const rows = await computeGenerationRows(
-    { storeId, productIds, creativeType, batchId: batchId ?? null, variantOption, imageScope },
+    { storeId, productIds, creativeType, batchId: batchId ?? null, variantOption, imageScope, assetTypes },
     supabase
   )
 
@@ -890,7 +916,14 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   if (productError) throw new Error(productError.message)
   if (!product) throw new Error('Product not found')
 
-  const templateId = job.template_id || resolveTemplateFromRules(
+  // Placement this job targets — defaults to 'catalog' so every job enqueued
+  // before migration 009 (asset_type NOT NULL DEFAULT 'catalog') behaves
+  // identically to before. An explicit job.template_id (the single-generate
+  // routes) bypasses rule resolution entirely, same as always — asset_type
+  // only gates the RULE-based lookup below, not an explicit override.
+  const jobAssetType: AssetType = (job as any).asset_type ?? 'catalog'
+
+  const templateId = job.template_id || resolveTemplateFromRulesForAssetType(
     {
       id: product.id,
       tags: product.tags || [],
@@ -899,7 +932,8 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
       price: product.price,
       compare_at_price: product.compare_at_price,
     },
-    rules
+    rules,
+    jobAssetType
   )
   if (!templateId) {
     // 'skipped', not 'completed'. Nothing was generated, and calling that
@@ -908,8 +942,17 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     // deployed worker predated the multi-condition resolver and could not match
     // a rule defined by `conditions`. Nothing filters generation_jobs on
     // 'completed', so this is safe and makes the outcome countable.
+    //
+    // A store with no template configured for jobAssetType (e.g. no 'reel'
+    // template yet) hits this path for every reel job — that's expected, not
+    // a failure: it lets catalog generation succeed independently of whether
+    // every ad placement has been designed yet.
     await supabase.from('generation_jobs')
-      .update({ status: 'skipped', error: 'no matching rule', updated_at: new Date().toISOString() })
+      .update({
+        status: 'skipped',
+        error: `no matching rule for asset_type=${jobAssetType}`,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', job.id)
     return
   }
@@ -1008,7 +1051,24 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     variant = data ?? null
   }
 
-  const buffer = await compositeImage(canvasData as any, {
+  // Placement dimensions come from the job's asset_type, not the template's
+  // own stored canvas_data.width/height. The template's LAYOUT (layers, their
+  // 0–100% positions) is reused as-is across every placement — only the
+  // output canvas size changes — so the same template can back a 1:1 catalog
+  // render and a 9:16 story render, and a merchant picking "generate catalog
+  // + story" for one template gets both without maintaining two templates.
+  // This does mean a layout designed for one aspect ratio can look
+  // meaningfully different once stretched to another — that's the deliberate
+  // trade this feature makes, not an oversight.
+  const assetConfig = ASSET_TYPE_CONFIG[jobAssetType]
+  const renderCanvas: CanvasData = {
+    ...(canvasData as CanvasData),
+    width: assetConfig.width,
+    height: assetConfig.height,
+    aspectRatio: assetConfig.aspectRatio as AspectRatio,
+  }
+
+  const buffer = await compositeImage(renderCanvas as any, {
     title:           product.title,
     price:           variant?.price ?? product.price,
     compare_at_price: variant?.compare_at_price ?? product.compare_at_price,
@@ -1071,19 +1131,34 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
   // every variant of a product renders to the same Cloudinary asset; without
   // the image id, generating "all poses" for one variant would have every
   // image overwrite the last, leaving one creative where there should be
-  // several.
+  // several. jobAssetType (not job.creative_type) is part of it too, so
+  // catalog and feed/story/reel renders of the same variant+image+template
+  // never collide on the same Cloudinary asset.
   const publicId = [
     'product', product.id,
     variant?.id ?? null,
     chosenImage?.id ?? null,
-    templateId, job.creative_type,
+    templateId, jobAssetType,
   ].filter(Boolean).join('_')
+  // Placement-scoped folder: catalog-creatives/{catalog,feed,story,reel}/... —
+  // existing uploads (all pre-migration-009 rows are 'catalog') stay in the
+  // root catalog-creatives/ folder they were already uploaded to; this only
+  // affects new uploads going forward, matching how folder was previously
+  // left at uploadBuffer's own 'catalog-creatives' default.
+  const cloudinaryFolder = `catalog-creatives/${jobAssetType}`
   const { deliveredUrl, publicId: cloudPublicId } = await measureAsync(
     'cloudinary.upload',
-    () => uploadBuffer(buffer, publicId),
+    () => uploadBuffer(buffer, publicId, cloudinaryFolder),
     { productId: product.id, templateId, bytes: buffer.length }
   )
 
+  // Legacy table — NOT asset_type-aware (it predates this feature and has no
+  // such column). Keyed on (product_id, template_id, creative_type), which
+  // stays 'default' across every asset type, so generating catalog + feed +
+  // story for the same product/template overwrites this single row on every
+  // write, leaving only whichever placement rendered last. Acceptable: this
+  // table is vestigial (see creatives.ts) — nothing in the v2 UI, the feed, or
+  // the dashboard reads it any more, only recordCreative's write below is load-bearing.
   const { error: upsertError } = await measureAsync(
     'supabase.generated_images.upsert',
     () => supabase.from('generated_images').upsert(
@@ -1116,6 +1191,7 @@ async function runJob(job: any, supabase: SupabaseClient, context: JobContext) {
     jobId: job.id,
     url: deliveredUrl,
     cloudinaryId: cloudPublicId,
+    assetType: jobAssetType,
   })
 
   // Guarded on status still being 'processing': the upload above takes long

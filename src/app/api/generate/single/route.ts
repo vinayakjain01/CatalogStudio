@@ -8,7 +8,8 @@
  * Auth:    Supabase session (getUser())
  * Rate:    rateLimit(`single:${user.id}`) — max 60 requests per user per hour
  *          (SINGLE_GEN_LIMIT / SINGLE_GEN_WINDOW_SECS)
- * Body:    { productId: string, storeId: string, variantId?: string, imageId?: string }
+ * Body:    { productId: string, storeId: string, variantId?: string, imageId?: string, assetType?: 'catalog'|'feed'|'story'|'reel' }
+ *          assetType defaults to 'catalog'; an invalid value silently falls back to it rather than erroring.
  * Returns: { generated: 1, url } on success; { generated: 0, message } when no
  *          rule matches; { error } on failure
  *
@@ -20,13 +21,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
-import { resolveTemplateForProduct } from '@/lib/template-resolver'
+import { resolveTemplateForProductAndAssetType } from '@/lib/template-resolver'
 import { compositeImage } from '@/lib/compositor'
 import { uploadBuffer } from '@/lib/cloudinary'
 import { recordCreative } from '@/lib/creatives'
 import { getProductLayerBundle } from '@/lib/product-layer-engine'
 import { getUser } from '@/lib/supabase/get-user'
 import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
+import { ALL_ASSET_TYPES, ASSET_TYPE_CONFIG, type AspectRatio, type AssetType } from '@/types/template'
 
 const SINGLE_GEN_LIMIT = 60
 const SINGLE_GEN_WINDOW_SECS = 3600
@@ -66,6 +68,7 @@ export async function POST(request: NextRequest) {
   if (!productId || !storeId) {
     return NextResponse.json({ error: 'productId and storeId required' }, { status: 400 })
   }
+  const assetType: AssetType = ALL_ASSET_TYPES.includes(body.assetType) ? body.assetType : 'catalog'
 
   // Rate limit: max 60 single generations per user per hour
   const rl = await rateLimit(`single:${user.id}`, SINGLE_GEN_LIMIT, SINGLE_GEN_WINDOW_SECS)
@@ -95,8 +98,9 @@ export async function POST(request: NextRequest) {
 
   if (!product) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
 
-  // Resolve rule → template for THIS product
-  const templateId = await resolveTemplateForProduct(
+  // Resolve rule → template for THIS product, restricted to templates
+  // targeting the requested placement.
+  const templateId = await resolveTemplateForProductAndAssetType(
     {
       id: product.id,
       tags: product.tags || [],
@@ -105,13 +109,19 @@ export async function POST(request: NextRequest) {
       price: product.price,
       compare_at_price: product.compare_at_price,
     },
-    storeId
+    storeId,
+    assetType
   )
 
   if (!templateId) {
     // No rule matched — do nothing, tell the user clearly.
     return NextResponse.json(
-      { generated: 0, message: 'No rule matches this product. Add or adjust a rule in Rules Engine.' },
+      {
+        generated: 0,
+        message: assetType === 'catalog'
+          ? 'No rule matches this product. Add or adjust a rule in Rules Engine.'
+          : `No ${assetType} template rule matches this product. Add or adjust a rule in Rules Engine.`,
+      },
       { status: 200 }
     )
   }
@@ -179,7 +189,20 @@ export async function POST(request: NextRequest) {
     }
 
     const productLayerSettings = canvasData.productLayerSettings || undefined
-    const buffer = await compositeImage(canvasData, {
+
+    // Placement dimensions come from the requested assetType, not the
+    // template's own stored canvas_data.width/height — same override the
+    // bulk pipeline applies in generation-queue.ts's runJob, so a preview
+    // generated here matches what a bulk run for the same asset type produces.
+    const assetConfig = ASSET_TYPE_CONFIG[assetType]
+    const renderCanvas = {
+      ...canvasData,
+      width: assetConfig.width,
+      height: assetConfig.height,
+      aspectRatio: assetConfig.aspectRatio as AspectRatio,
+    }
+
+    const buffer = await compositeImage(renderCanvas, {
       title: product.title,
       price: variant?.price ?? product.price,
       compare_at_price: variant?.compare_at_price ?? product.compare_at_price,
@@ -215,14 +238,16 @@ export async function POST(request: NextRequest) {
     // Variant-scoped public_id, or every variant of a product would overwrite
     // the same Cloudinary asset and leave one creative where there should be many.
     // Image id is part of the public_id too, so generating from a second photo
-    // adds a creative rather than overwriting the first.
+    // adds a creative rather than overwriting the first. assetType (not the
+    // fixed 'default' creative_type) keeps a catalog and a feed/story/reel
+    // preview of the same variant+image+template from colliding.
     const publicId = [
       'product', product.id,
       variant ? variant.id : null,
       chosenImage?.id ?? null,
-      templateId, 'default',
+      templateId, assetType,
     ].filter(Boolean).join('_')
-    const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId)
+    const { deliveredUrl: url, publicId: cloudPublicId } = await uploadBuffer(buffer, publicId, `catalog-creatives/${assetType}`)
 
     const { error: upsertError } = await adminSupabase
       .from('generated_images')
@@ -253,6 +278,7 @@ export async function POST(request: NextRequest) {
       templateId,
       url,
       cloudinaryId: cloudPublicId,
+      assetType,
     })
 
     return NextResponse.json({ generated: 1, url })

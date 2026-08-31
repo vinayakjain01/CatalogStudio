@@ -16,6 +16,14 @@
  * Meta's crawler. The token grants read-only access to this feed and nothing
  * else, which is why it is safe to embed in the URL.
  *
+ * CATALOG ONLY: generated_creatives carries an asset_type ('catalog' | 'feed'
+ * | 'story' | 'reel'). Only 'catalog' creatives are ever used as image_link
+ * here — 'feed'/'story'/'reel' are separate ad placements this feed never
+ * reads, filtered out in buildRow(). Never change this to an `!inner` embed
+ * on generated_creatives: a variant with only a 'feed'/'story'/'reel'
+ * creative (or none yet) must still appear here, falling back to its
+ * original product photo — `!inner` would drop it from the feed entirely.
+ *
  * Streamed and paginated: a 10k-variant catalog must not buffer in memory or
  * trip the function timeout.
  */
@@ -97,7 +105,12 @@ function buildRow(
   // slip through if buildRow is ever called from somewhere that doesn't.
   if (variant.is_sold_out) return null
 
-  const creatives: any[] = product.generated_creatives ?? []
+  // Catalog only: 'feed'/'story'/'reel' creatives are ad placements, never
+  // read by the Meta Commerce Manager catalog feed. `c.asset_type` is treated
+  // as 'catalog' when absent so pre-migration-009 rows (all implicitly
+  // catalog) keep appearing exactly as before.
+  const creatives: any[] = (product.generated_creatives ?? [])
+    .filter((c: any) => (c.asset_type ?? 'catalog') === 'catalog')
 
   // Creative for THIS variant wins; a product-level creative is the fallback.
   const forVariant = creatives
@@ -217,7 +230,7 @@ export async function GET(
               products!inner (
                 id, shopify_id, title, handle, vendor, product_type, tags, description, status,
                 product_images ( src, cloudinary_url, is_primary, variant_ids, position ),
-                generated_creatives ( url, variant_id, created_at )
+                generated_creatives ( url, variant_id, created_at, asset_type )
               )
             `)
             .eq('store_id', storeId)

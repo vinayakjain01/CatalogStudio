@@ -8,11 +8,13 @@
  * Auth:    Supabase session cookie (supabase.auth.getUser()); storeId ownership
  *          re-checked explicitly (404s rather than returning an empty page)
  * Query:   storeId (required), templateId, productId, variantId, search,
+ *          assetType ('catalog'|'feed'|'story'|'reel', defaults to 'catalog'),
  *          page (1-based), pageSize (max 100)
  * Returns: { creatives, page, pageSize, total, totalPages }
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { ALL_ASSET_TYPES, type AssetType } from '@/types/template'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,17 +44,23 @@ export async function GET(request: NextRequest) {
   const from = (page - 1) * pageSize
 
   const select = `
-    id, url, width, height, created_at,
+    id, url, width, height, created_at, asset_type,
     variant_id, template_id, product_id,
     products!inner(id, title, handle, vendor),
     product_variants(id, title, sku),
     templates(id, name)
   `
 
+  const assetTypeParam = sp.get('assetType')
+  const assetType: AssetType = ALL_ASSET_TYPES.includes(assetTypeParam as AssetType)
+    ? (assetTypeParam as AssetType)
+    : 'catalog'
+
   let query = supabase
     .from('generated_creatives')
     .select(select, { count: 'exact' })
     .eq('store_id', storeId)
+    .eq('asset_type', assetType)
 
   const templateId = sp.get('templateId')
   const productId = sp.get('productId')

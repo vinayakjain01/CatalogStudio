@@ -8,7 +8,9 @@
  * Auth:    Supabase session (getUser())
  * Rate:    POST only — rateLimit(`bulk:${storeId}`), 5 requests per store per
  *          hour (BULK_RATE_LIMIT_PER_STORE / BULK_RATE_WINDOW_SECS)
- * Body:    POST { storeId, filter?, creativeType?, variantScope?, variantOption?, imageScope? }
+ * Body:    POST { storeId, filter?, creativeType?, variantScope?, variantOption?, imageScope?,
+ *          assetTypes? } — assetTypes defaults to ['catalog']; invalid values are dropped,
+ *          and an empty result after that is a 400
  * Query:   GET ?batchId=
  * Returns: GET  { pending, processing, completed, failed, cancelled, total }
  *          POST { batchId, enqueued, redisEnabled, priority } on success, or
@@ -25,6 +27,7 @@ import { getAdminClient, enqueueGeneration, collectFilteredProductIds } from '@/
 import { isRedisEnabled } from '@/lib/redis'
 import { rateLimit, rateLimitHeaders } from '@/lib/rate-limit'
 import { randomUUID } from 'crypto'
+import { ALL_ASSET_TYPES, type AssetType } from '@/types/template'
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 
@@ -73,6 +76,7 @@ export async function POST(request: NextRequest) {
   const {
     storeId, filter, creativeType,
     variantScope = 'all', variantOption = null, imageScope = 'all',
+    assetTypes = ['catalog'],
   } = body
   if (!storeId) return NextResponse.json({ error: 'storeId required' }, { status: 400 })
 
@@ -91,6 +95,13 @@ export async function POST(request: NextRequest) {
   }
   if (imageScope !== 'all' && imageScope !== 'first') {
     return NextResponse.json({ error: 'imageScope must be "all" or "first"' }, { status: 400 })
+  }
+
+  const validatedAssetTypes: AssetType[] = Array.isArray(assetTypes)
+    ? assetTypes.filter((t: unknown): t is AssetType => ALL_ASSET_TYPES.includes(t as AssetType))
+    : []
+  if (validatedAssetTypes.length === 0) {
+    return NextResponse.json({ error: 'At least one valid assetType is required' }, { status: 400 })
   }
 
   // ── 1. Verify store ownership ─────────────────────────────────────────────
@@ -162,6 +173,7 @@ export async function POST(request: NextRequest) {
           ? { name: variantOption.name.trim(), value: variantOption.value.trim() }
           : null,
         imageScope,
+        assetTypes: validatedAssetTypes,
       },
       admin
     )
@@ -178,7 +190,8 @@ export async function POST(request: NextRequest) {
   const redisEnabled = isRedisEnabled()
   console.log(
     `[enqueue] batchId=${batchId} enqueued=${enqueued} priority=${basePriority} ` +
-    `redisEnabled=${redisEnabled} storeId=${storeId} variantScope=${variantScope} imageScope=${imageScope}`
+    `redisEnabled=${redisEnabled} storeId=${storeId} variantScope=${variantScope} ` +
+    `imageScope=${imageScope} assetTypes=${validatedAssetTypes.join(',')}`
   )
 
   return NextResponse.json(

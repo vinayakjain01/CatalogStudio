@@ -3,14 +3,17 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Download, Loader2, CheckCircle2 } from 'lucide-react'
+import type { AssetType } from '@/types/template'
 
 interface DownloadZipButtonProps {
   storeId: string
+  /** Restricts the ZIP to one placement, matching the grid's active tab. Defaults to 'catalog'. */
+  assetType?: AssetType
 }
 
 type ZipState = 'idle' | 'fetching' | 'downloading' | 'zipping' | 'done'
 
-export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
+export function DownloadZipButton({ storeId, assetType = 'catalog' }: DownloadZipButtonProps) {
   const [zipState, setZipState] = useState<ZipState>('idle')
   const [progress, setProgress] = useState(0)
   const [total, setTotal] = useState(0)
@@ -36,6 +39,7 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
           product_variants(title, sku, option1, option2, option3)
         `)
         .eq('store_id', storeId)
+        .eq('asset_type', assetType)
         .not('url', 'is', null)
         .order('created_at', { ascending: false })
 
@@ -76,7 +80,7 @@ export function DownloadZipButton({ storeId }: DownloadZipButtonProps) {
       const zipUrl = URL.createObjectURL(zipBlob)
       const anchor = document.createElement('a')
       anchor.href = zipUrl
-      anchor.download = `creatives-${new Date().toISOString().slice(0, 10)}.zip`
+      anchor.download = `creatives-${assetType}-${new Date().toISOString().slice(0, 10)}.zip`
       document.body.appendChild(anchor)
       anchor.click()
       document.body.removeChild(anchor)

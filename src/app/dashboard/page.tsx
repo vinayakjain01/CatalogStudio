@@ -4,6 +4,7 @@ import { getUser } from '@/lib/supabase/get-user'
 import { getActiveStore } from '@/lib/active-store'
 import { findUncoveredInStockVariants } from '@/lib/generation-queue'
 import { formatDistanceToNow } from 'date-fns'
+import { ALL_ASSET_TYPES, ASSET_TYPE_CONFIG } from '@/types/template'
 import {
   ShoppingBag, Layers, ImageIcon, Zap, AlertTriangle,
   Clock, Loader2, X, ArrowUpRight, RefreshCw, Wand2, Plus, Settings,
@@ -109,6 +110,22 @@ export default async function DashboardPage({
         .in('status', ['pending', 'processing', 'failed'])
     : Promise.resolve({ data: [] as Array<{ status: string }> })
 
+  // Asset breakdown — creative count per placement (catalog/feed/story/reel).
+  // One count query per type rather than a single grouped query, since
+  // PostgREST has no group-by without an RPC — matching the count-query style
+  // already used above for products/templates/creatives.
+  const assetBreakdownQuery = activeStoreId
+    ? Promise.all(
+        ALL_ASSET_TYPES.map(t =>
+          supabase
+            .from('generated_creatives')
+            .select('id', { count: 'exact', head: true })
+            .eq('store_id', activeStoreId)
+            .eq('asset_type', t)
+        )
+      )
+    : Promise.resolve(ALL_ASSET_TYPES.map(() => ({ count: 0 })) as Array<{ count: number | null }>)
+
   // Recent creatives — last 3 with product title
   const recentCreativesQuery = activeStoreId
     ? supabase
@@ -132,6 +149,7 @@ export default async function DashboardPage({
     totalInStockResult,
     uncoveredInStock,
     [rulesTotal, rulesActive],
+    assetBreakdownResult,
     { data: queueJobs },
     { data: recentCreatives },
     { data: reauthStores },
@@ -141,6 +159,7 @@ export default async function DashboardPage({
     totalInStockQuery,
     uncoveredQuery,
     rulesQuery,
+    assetBreakdownQuery,
     queueQuery,
     recentCreativesQuery,
     reauthQuery,
@@ -160,6 +179,12 @@ export default async function DashboardPage({
   const queuePending    = queueJobs?.filter(j => j.status === 'pending').length    ?? 0
   const queueProcessing = queueJobs?.filter(j => j.status === 'processing').length ?? 0
   const queueFailed     = queueJobs?.filter(j => j.status === 'failed').length     ?? 0
+
+  const assetBreakdown = ALL_ASSET_TYPES.map((type, i) => ({
+    type,
+    count: assetBreakdownResult[i]?.count ?? 0,
+  }))
+  const maxAssetCount = Math.max(1, ...assetBreakdown.map(a => a.count))
 
   const reauthStoreCount = (reauthStores ?? []).filter(s => s.needs_reauth).length
   const needsReauth      = reauthStoreCount > 0
@@ -422,6 +447,36 @@ export default async function DashboardPage({
               )}
             </div>
           )}
+
+          {/* Asset breakdown — creatives generated per placement */}
+          <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#6B6280', marginBottom: 12 }}>
+              Asset breakdown
+            </div>
+            {creativeCount === 0 ? (
+              <p style={{ fontSize: 13, color: '#6B6280' }}>No creatives generated yet.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {assetBreakdown.map(({ type, count }) => (
+                  <div key={type}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontSize: 12.5, color: '#241A3D' }}>
+                        {ASSET_TYPE_CONFIG[type].label}
+                        <span style={{ color: '#6B6280' }}> · {ASSET_TYPE_CONFIG[type].aspectRatio}</span>
+                      </span>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#241A3D' }}>{count}</span>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 6, background: '#EFEAF9', overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${(count / maxAssetCount) * 100}%`, height: '100%',
+                        background: '#4B2E83', transition: 'width 0.3s',
+                      }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Top templates */}
           <div style={{ background: '#FFFFFF', border: '1px solid #E7E2F0', borderRadius: 14, padding: '16px 18px' }}>
