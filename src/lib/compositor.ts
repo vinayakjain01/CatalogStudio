@@ -53,7 +53,6 @@ import type { Canvas } from '@napi-rs/canvas'
 // QUALITY CONFIG — unchanged from original
 // ──────────────────────────────────────────────────────────────────────────
 
-const OUTPUT_SIZE      = 2048
 const SUPERSAMPLE      = 2   // 2× for large canvases (≥1440px longest side)
 const SUPERSAMPLE_SM   = 2   // 2× for small canvases too — was 3×, which OOM-kills 1GB worker
                               // Memory at 3× 1080px canvas: 3240×3240×4 = 40MB × 4 concurrent = 160MB
@@ -579,17 +578,20 @@ export async function compositeImage(
     const rawW = canvasData.width  || 1080
     const rawH = canvasData.height || 1080
 
-    let targetW: number
-    let targetH: number
-
-    if (rawW >= OUTPUT_SIZE || rawH >= OUTPUT_SIZE) {
-      targetW = rawW
-      targetH = rawH
-    } else {
-      const upScale = OUTPUT_SIZE / Math.max(rawW, rawH)
-      targetW = Math.round(rawW * upScale / 2) * 2
-      targetH = Math.round(rawH * upScale / 2) * 2
-    }
+    // The delivered creative is EXACTLY the requested canvas size — for an
+    // asset-type render (see buildRenderCanvas in types/template.ts) that's
+    // ASSET_TYPE_CONFIG's literal width/height (e.g. Feed's 1080×1350), which
+    // is what Meta's placement specs expect and what a merchant picking
+    // "Feed" on the Creatives page is choosing. This used to upscale any
+    // canvas under 2048px on its longest side to hit that as a fixed quality
+    // floor, which silently changed a Feed job's delivered file to 1638×2048
+    // — proportionally identical, but no longer matching the placement's own
+    // declared dimensions. Supersampling below still renders at higher
+    // internal resolution before downscaling to this exact size, so removing
+    // the upscale costs no rendering quality — it only stops inflating the
+    // final pixel dimensions past what was actually requested.
+    const targetW = rawW
+    const targetH = rawH
 
     const S = chooseSuperSample(targetW, targetH, options.supersample)
     const W = targetW * S
