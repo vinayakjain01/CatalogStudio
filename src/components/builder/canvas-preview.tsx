@@ -486,10 +486,17 @@ function LayerRenderer({ layer, selected, scaleX, product, canvasEl, onSelect, o
       }
 
       if (l.objectFit === 'ai_extend' && isProductImage) {
-        const canvasW = canvasEl?.offsetWidth ?? 1080
-        const canvasH = canvasEl?.offsetHeight ?? 1080
-        const targetW = Math.round((layer.width / 100) * canvasW)
-        const targetH = Math.round((layer.height / 100) * canvasH)
+        // cW/cH are the template's own DESIGN dimensions (canvasData.width/
+        // height, e.g. 1080×1080) — NOT canvasEl.offsetWidth/Height, which is
+        // whatever CSS pixel size the canvas happens to render at on screen.
+        // That on-screen size changes with browser window size and zoom, so
+        // every resize computed a different cache key and re-ran the ~10-20s
+        // Cloudinary generative-fill call from scratch — the preview never
+        // reused a previous result and looked stuck/broken far more often
+        // than it should. Design dimensions are stable across reloads/resizes
+        // and are also what the sibling Head-Space branch above already uses.
+        const targetW = Math.round((layer.width / 100) * cW)
+        const targetH = Math.round((layer.height / 100) * cH)
         return wrap(
           <AiExtendImageLayer imageUrl={product.imageUrl} storeId={storeId} targetWidth={targetW} targetHeight={targetH} />,
           { borderRadius: l.borderRadius, overflow: 'hidden' }

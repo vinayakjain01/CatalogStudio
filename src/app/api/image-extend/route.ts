@@ -18,7 +18,12 @@ import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/generation-queue'
 import { getExtendedImage, getExtendCacheKey } from '@/lib/image-extend'
 
-export const maxDuration = 60
+// getExtendedImage now polls Cloudinary's Admin API for up to 60s (2s ×
+// 30 attempts) on top of the initial upload call when Generative Fill
+// doesn't finish synchronously — 60s here left no headroom and would cut the
+// request off mid-poll. Matches background-reconstruction's route budget for
+// the same class of Cloudinary AI call.
+export const maxDuration = 90
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()

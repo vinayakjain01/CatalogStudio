@@ -100,6 +100,46 @@ async function ensureOnCloudinary(sourceUrl: string): Promise<string> {
   return result.public_id
 }
 
+// ─── Wait for AI processing to actually finish ───────────────────────────────
+//
+// This module's original comments assumed Generative Fill "reliably completes
+// synchronously" under eager_async: false, unlike the heavier Generative
+// Remove call in background-reconstruction/index.ts. That assumption was
+// wrong: b_gen_fill also ignores eager_async: false — the upload call returns
+// almost immediately with eager[0].status === 'processing' AND a populated
+// secure_url that nonetheless 423s (Locked) for anywhere from ~2s to 15s+
+// depending on Cloudinary's AI queue — the field being present is not a
+// readiness signal. Treating that URL as immediately usable was a race:
+// whichever caller loaded it first — the compositor rendering a creative, or
+// the builder's live preview <img> tag — sometimes won and sometimes got a
+// 423 and a broken/gray result.
+//
+// background-reconstruction/index.ts's own comments cite polling
+// cloudinary.api.resource(publicId, { eager: true }) as "the proven pattern"
+// for this exact class of problem, but verified directly against this
+// account: for gen_fill, that Admin API lookup never returns an `eager` array
+// at all (always undefined) — polling it would spin for the full 60s cap on
+// every single call. What DOES reliably work, confirmed by direct testing: a
+// plain HEAD request against the transformation URL itself — 423 while
+// Cloudinary is still generating it, 200 the moment it's ready.
+
+const POLL_INTERVAL_MS = 2000
+const POLL_MAX_ATTEMPTS = 30 // 60 seconds max
+
+async function waitForCloudinaryAsset(url: string): Promise<boolean> {
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, { method: 'HEAD' })
+      if (res.ok) return true
+      if (res.status !== 423) return false // a real failure — polling won't fix it
+    } catch {
+      // transient network hiccup — keep polling
+    }
+    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
+  }
+  return false
+}
+
 // ─── Main extend function ─────────────────────────────────────────────────────
 
 export interface ExtendResult {
@@ -175,10 +215,12 @@ export async function getExtendedImage(
   let finalCloudinaryId: string
 
   try {
-    // Upload with eager transformation to pre-generate the result
+    // Upload with eager transformation to pre-generate the result.
+    // public_id already starts with 'extend-results/' — adding folder:
+    // 'extend-results' on top made Cloudinary prepend it a second time,
+    // landing every result under extend-results/extend-results/<hash>.
     const uploadResult = await cloudinary.uploader.upload(sourceUrl, {
       public_id: eagerPublicId,
-      folder: 'extend-results',
       overwrite: true,
       resource_type: 'image',
       eager: [
@@ -191,10 +233,12 @@ export async function getExtendedImage(
           quality: 'auto:best',
         },
       ],
-      eager_async: false, // Wait for eager transform to complete
+      eager_async: false,
     })
 
-    // Use the eager transformation result URL
+    // eager[0].secure_url is populated even while status is 'processing' — it
+    // names where the result WILL be, not that it's there yet. waitForCloudinaryAsset
+    // below is what actually confirms it's safe to hand out and cache.
     const eagerResult = uploadResult.eager?.[0]
     if (eagerResult?.secure_url) {
       finalUrl = eagerResult.secure_url
@@ -209,6 +253,14 @@ export async function getExtendedImage(
     // The URL-based approach still works — just triggers generation on first view
     finalUrl = transformedUrl
     finalCloudinaryId = publicId
+  }
+
+  // Don't hand back (or cache) a URL that still 423s — wait for Cloudinary's
+  // AI generation to actually finish so every caller gets a working image on
+  // its very first load.
+  const ready = await waitForCloudinaryAsset(finalUrl)
+  if (!ready) {
+    console.warn(`[image-extend] Asset still not ready after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS}ms, returning anyway: ${finalUrl}`)
   }
 
   // 5. Store in cache
@@ -390,6 +442,8 @@ export async function getExtendedImagePositioned(
       eager_async: false,
     })
 
+    // Same caveat as getExtendedImage: secure_url is populated regardless of
+    // whether it's actually ready — waitForCloudinaryAsset below confirms it.
     const eagerResult = uploadResult.eager?.[0]
     if (eagerResult?.secure_url) {
       finalUrl = eagerResult.secure_url
@@ -412,6 +466,12 @@ export async function getExtendedImagePositioned(
     // Fallback: use plain centered extend
     const fallback = await getExtendedImage(sourceUrl, targetWidth, targetHeight, storeId, supabase)
     return { ...fallback, fromCache: false }
+  }
+
+  // Same race as getExtendedImage: wait for it to actually be servable.
+  const ready = await waitForCloudinaryAsset(finalUrl)
+  if (!ready) {
+    console.warn(`[image-extend/positioned] Asset still not ready after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS}ms, returning anyway: ${finalUrl}`)
   }
 
   // Store in cache

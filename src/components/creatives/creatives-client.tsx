@@ -112,7 +112,9 @@ export function CreativesClient({ stores }: { stores: { id: string; shop_name: s
   const pollingActive = useRef(false)
   const lastCompletedAt = useRef<{ count: number; time: number }>({ count: 0, time: Date.now() })
 
-  const PER_PAGE = 10
+  // 12 divides evenly by the grid's 2/3/4-column breakpoints, so the last row
+  // is never a ragged partial row the way 10 was at the 4-column breakpoint.
+  const PER_PAGE = 12
 
   // Plain function, not useCallback: it's invoked imperatively from event
   // handlers (Refresh, post-delete, the generation-progress poll), which is

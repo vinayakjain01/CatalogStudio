@@ -15,6 +15,10 @@ type StockFilter = (typeof OPTIONS)[number]['value']
  * param the page's own query reads (see products/page.tsx) rather than
  * filtering client-side — a client-side filter would only ever narrow the
  * current page's 10 rows, not the underlying result set or its pagination.
+ *
+ * 'in_stock' is the default view, so a bare `stock`-less URL already means
+ * "in stock" (see products/page.tsx) — selecting it here just removes the
+ * param instead of writing back the value it already resolves to.
  */
 export function StockToggle({ current }: { current: StockFilter }) {
   const router = useRouter()
@@ -24,7 +28,7 @@ export function StockToggle({ current }: { current: StockFilter }) {
   function select(value: StockFilter) {
     if (value === current) return
     const params = new URLSearchParams(searchParams.toString())
-    if (value === 'all') params.delete('stock')
+    if (value === 'in_stock') params.delete('stock')
     else params.set('stock', value)
     params.set('page', '1') // reset to page 1 — the previous page may not exist in the new set
     router.push(`${pathname}?${params.toString()}`)

@@ -75,7 +75,9 @@ export default async function ProductsPage({
 
   const supabase = await createClient()
   const { search, tag, page, stock: stockParam } = await searchParams
-  const stock = stockParam === 'in_stock' ? 'in_stock' : 'all'
+  // In Stock is the default view (no ?stock= param) — merchants land on what
+  // they can actually sell first; "All Products" is an explicit opt-in.
+  const stock = stockParam === 'all' ? 'all' : 'in_stock'
 
   const currentPage = Math.max(1, parseInt(page || '1', 10) || 1)
   const from = (currentPage - 1) * PAGE_SIZE
