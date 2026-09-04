@@ -39,7 +39,9 @@ export async function middleware(request: NextRequest) {
   // --- Shopify embedded app launch ---
   // These paths must NOT be blocked regardless of auth state.
   // /api/shopify/auth validates via HMAC, not Supabase session.
-  // /api/shopify/auth/finalize is hit after Supabase magic-link auth.
+  // /api/shopify/install and /api/shopify/callback run the OAuth handshake
+  // itself and sign a brand-new merchant in server-side before ever reaching
+  // a page middleware would otherwise gate.
   const isShopifyAuthRoute =
     pathname.startsWith('/api/shopify/auth') ||
     pathname.startsWith('/api/shopify/install') ||

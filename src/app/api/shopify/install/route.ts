@@ -6,7 +6,9 @@
  * Auth:    None required — a Supabase session cookie is read opportunistically
  *          (to remember which user to attach the store to) but is optional;
  *          CSRF is protected via a nonce cookie checked in the callback.
- * Query:   shop (required), host (optional, passed through for App Bridge)
+ * Query:   shop (required), host (optional — stashed in a cookie so
+ *          /api/shopify/callback can forward it to App Bridge after the
+ *          OAuth round trip through Shopify, which has no passthrough for it)
  * Returns: 302 redirect to Shopify's OAuth authorize URL, or to
  *          /dashboard/settings with an error param on a bad shop.
  *
@@ -93,6 +95,23 @@ export async function GET(request: NextRequest) {
     maxAge: 600,
     path: '/',
   })
+
+  // host is only ever present on an embedded launch (see /api/shopify/auth) —
+  // Shopify's OAuth authorize endpoint has no passthrough for it, so it has to
+  // survive here instead. Without it, the callback's final /dashboard redirect
+  // for a BRAND NEW merchant's first install has no host at all, and App
+  // Bridge fails with "missing required configuration fields: shop" on that
+  // very first load — before the SHOPIFY_HOST_COOKIE self-heal in middleware.ts
+  // even has a value to fall back to.
+  if (host) {
+    response.cookies.set('shopify_oauth_host', host, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 600,
+      path: '/',
+    })
+  }
 
   return response
 }

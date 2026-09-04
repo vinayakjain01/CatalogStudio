@@ -36,8 +36,8 @@ export async function POST(request: NextRequest) {
     // inside that iframe. A 'lax' cookie here is silently dropped by the
     // browser on the embedded app's subsequent (cross-site) requests, so the
     // switch never actually takes effect on reload — see the identical fix
-    // in /api/shopify/auth/finalize/route.ts, which sets this same cookie
-    // for the first-install path.
+    // in /api/shopify/callback/route.ts and /api/shopify/auth/route.ts, which
+    // set this same cookie for the first-install and reconnect paths.
     secure: true,
     sameSite: 'none',
     partitioned: true,

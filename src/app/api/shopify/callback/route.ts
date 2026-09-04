@@ -7,8 +7,8 @@
  *          cookie (shopify_oauth_nonce) matched against the `state` param —
  *          this IS the auth check for this route.
  * Query:   code, shop, state, hmac (all required)
- * Returns: 302 redirect — to /dashboard/settings (existing user) or, via a
- *          generated magic link, to /dashboard (new merchant); to an error
+ * Returns: 302 redirect — to /dashboard/settings (existing user) or straight
+ *          to /dashboard, already signed in (new merchant); to an error
  *          query param on failure.
  *
  * Two scenarios:
@@ -19,19 +19,52 @@
  * B) New merchant installing for the first time (via embedded app launch):
  *    - No shopify_oauth_user cookie
  *    - Creates a new Supabase user account using shop email from Shopify
- *    - Saves store → generates magic link → redirects to /dashboard
+ *    - Saves store → verifies a magic-link OTP SERVER-SIDE (no browser hop
+ *      through Supabase's own domain) → redirects straight to /dashboard
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseAdmin } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
 import crypto from 'crypto'
 import { ACTIVE_STORE_COOKIE } from '@/lib/active-store'
+import { SHOPIFY_HOST_COOKIE } from '@/lib/shopify-host'
 import { createShopifyClient } from '@/lib/shopify'
 
 function adminClient() {
   return createSupabaseAdmin(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
+
+/**
+ * Supabase server client that writes session cookies onto `response` with
+ * SameSite=None so they're sent on requests inside the Shopify iframe.
+ * Identical to /api/shopify/auth's helper of the same name.
+ */
+function sessionClient(request: NextRequest, response: NextResponse) {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll()
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, {
+              ...options,
+              sameSite: 'none',
+              secure: true,
+              partitioned: true,
+              path: '/',
+            })
+          })
+        },
+      },
+    }
   )
 }
 
@@ -253,48 +286,110 @@ export async function GET(request: NextRequest) {
   }).catch(console.error)
 
   // Clear OAuth cookies
+  const hostParam = request.cookies.get('shopify_oauth_host')?.value
   const clearCookies = (res: NextResponse) => {
     res.cookies.delete('shopify_oauth_nonce')
     res.cookies.delete('shopify_oauth_user')
     res.cookies.delete('shopify_oauth_shop')
+    res.cookies.delete('shopify_oauth_host')
     return res
   }
 
   if (userId) {
     // Scenario A: existing user connecting store → go to settings
-    const response = NextResponse.redirect(
-      new URL('/dashboard/settings?success=store_connected', request.url)
-    )
+    const settingsUrl = new URL('/dashboard/settings', request.url)
+    settingsUrl.searchParams.set('success', 'store_connected')
+    if (hostParam) settingsUrl.searchParams.set('host', hostParam)
+    const response = NextResponse.redirect(settingsUrl)
     clearCookies(response)
+    // sameSite 'none' + Secure + Partitioned: this cookie must be readable
+    // from inside Shopify admin's iframe, same as every other Shopify-flow
+    // cookie in this app (see /api/shopify/auth) — 'lax' here silently never
+    // reaches the embedded app's own requests.
     response.cookies.set(ACTIVE_STORE_COOKIE, store.id, {
       httpOnly: false,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true,
+      sameSite: 'none',
+      partitioned: true,
       maxAge: 60 * 60 * 24 * 30,
       path: '/',
     })
     return response
   }
 
-  // Scenario B: new merchant — generate magic link to sign them in automatically
-  const redirectTo = `${getAppOrigin(request)}/api/shopify/auth/finalize?store_id=${store.id}`
-
+  // Scenario B: new merchant — sign them in SERVER-SIDE via the same
+  // verifyOtp pattern /api/shopify/auth already uses for reconnects, instead
+  // of redirecting the browser to Supabase's own hosted action_link.
+  //
+  // That redirect-through-supabase.co was the actual cause of a real Shopify
+  // App Store rejection: nothing in this app reads the token that comes back
+  // from it (finalize/route.ts assumed middleware had already exchanged it
+  // into a session cookie; middleware only ever calls getUser(), never
+  // exchangeCodeForSession or a hash-fragment handoff), so no session was
+  // ever established. The merchant/reviewer landed on our own /login with no
+  // way in, tried "Sign up" to self-serve an account, and hit Supabase's
+  // signup email rate limit after a few attempts. Verifying the OTP here,
+  // server-side, and writing the session cookie directly onto this response
+  // removes that failure surface entirely — no other domain is ever visited.
   const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
     type: 'magiclink',
     email: shopInfo.email,
-    options: { redirectTo },
   })
 
-  if (linkError || !linkData?.properties?.action_link) {
-    console.error('[callback] Magic link failed:', linkError)
-    // Fallback — user must log in manually
+  const tokenHash = linkData?.properties?.hashed_token
+  if (linkError || !tokenHash) {
+    console.error('[callback] generateLink failed:', linkError)
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('email', shopInfo.email)
     loginUrl.searchParams.set('hint', 'Check your email to sign in')
-    const response = clearCookies(NextResponse.redirect(loginUrl.toString()))
-    return response
+    return clearCookies(NextResponse.redirect(loginUrl.toString()))
   }
 
-  const response = clearCookies(NextResponse.redirect(linkData.properties.action_link))
+  const dashboardUrl = new URL('/dashboard', getAppOrigin(request))
+  dashboardUrl.searchParams.set('shop', shop)
+  dashboardUrl.searchParams.set('embedded', '1')
+  if (hostParam) dashboardUrl.searchParams.set('host', hostParam)
+
+  const response = NextResponse.redirect(dashboardUrl)
+  clearCookies(response)
+  if (hostParam) {
+    response.cookies.set(SHOPIFY_HOST_COOKIE, hostParam, {
+      httpOnly: false,
+      secure: true,
+      sameSite: 'none',
+      partitioned: true,
+      maxAge: 60 * 60 * 24 * 30,
+      path: '/',
+    })
+  }
+  response.cookies.set(ACTIVE_STORE_COOKIE, store.id, {
+    httpOnly: false,
+    secure: true,
+    sameSite: 'none',
+    partitioned: true,
+    maxAge: 60 * 60 * 24 * 30,
+    path: '/',
+  })
+
+  const session = sessionClient(request, response)
+  // generateLink('magiclink') hashes can verify as either type depending on
+  // project config; try both before giving up (mirrors /api/shopify/auth).
+  let verified = false
+  for (const type of ['email', 'magiclink'] as const) {
+    const { error } = await session.auth.verifyOtp({ token_hash: tokenHash, type })
+    if (!error) {
+      verified = true
+      break
+    }
+  }
+
+  if (!verified) {
+    console.error('[callback] verifyOtp failed for store:', store.id)
+    const loginUrl = new URL('/login', request.url)
+    loginUrl.searchParams.set('email', shopInfo.email)
+    loginUrl.searchParams.set('hint', 'Check your email to sign in')
+    return clearCookies(NextResponse.redirect(loginUrl.toString()))
+  }
+
   return response
 }

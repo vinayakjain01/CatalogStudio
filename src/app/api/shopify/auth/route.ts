@@ -128,10 +128,14 @@ export async function GET(request: NextRequest) {
     .eq('shop_domain', shop)
     .maybeSingle()
 
-  // Not installed yet — run OAuth install.
+  // Not installed yet — run OAuth install. host must ride along or it's lost
+  // for the rest of the install chain — see install/route.ts's own comment on
+  // why that broke App Bridge on a brand-new merchant's very first load.
   if (!store) {
     const installUrl = new URL('/api/shopify/install', request.url)
     installUrl.searchParams.set('shop', shop)
+    const hostParam = searchParams.get('host')
+    if (hostParam) installUrl.searchParams.set('host', hostParam)
     return NextResponse.redirect(installUrl.toString())
   }
 
